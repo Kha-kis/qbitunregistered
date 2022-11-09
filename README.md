@@ -5,7 +5,7 @@ Install requirements
 
 ```pip install -r requirements.txt```
 
-Config
+Config:
 
 This is found in the config.py file
 
