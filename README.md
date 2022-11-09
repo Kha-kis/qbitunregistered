@@ -23,4 +23,5 @@ The delete files option is if you would like to remove files from disk.
 TO-DO:
 
 Add a dry run option.
+
 When delete_files option is enabled identification of torrents that are cross seeded and removing just the torrent for these and not the files.
