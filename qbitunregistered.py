@@ -11,6 +11,6 @@ for torrent in client.torrents.info():
             count = count + 1
             tracker = urlsplit(torrent.tracker)
             print(torrent.name,' ',status.msg,' ',tracker.netloc)
-            torrent.delete(hash=(torrent.hash),delete_files=(config.delete_files))
+            client.torrents_add_tags(tags=(config.tagname).torrent_hashes=(torrent.hash))
 
-print('Torrents Deleted = ', ' ', count)
+print('Torrents Tagged = ', ' ', count)
