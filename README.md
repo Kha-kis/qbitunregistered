@@ -1,5 +1,5 @@
 # qbitunregistered
-This is a simple script to allow deletion of unregistered torrents in QbitTorrent
+This is a simple script to tag unregistered torrents in QbitTorrent
 
 Install requirements
 
@@ -14,14 +14,14 @@ It is used to define the following parameters:
 host 
 username
 password
-delete_files
+tagname
 
 Host, Username, and Password are specific to your Qbittorrent client
 
-The delete files option is if you would like to remove files from disk.
+tagname is the tag you would like use in qbittorrent
 
 TO-DO:
 
 Add a dry run option.
 
-When delete_files option is enabled identification of torrents that are cross seeded and removing just the torrent for these and not the files.
+Identification of torrents that are cross seeded and applying a different tag.
