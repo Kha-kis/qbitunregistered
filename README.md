@@ -7,9 +7,10 @@ Install requirements
 
 Config:
 
-This is found in the config.py file
+copy the config.py.example to config.py
+Update the needed paramaters for your qbittorrent client.
 
-It is used to define the following parameters:
+config.py is used to define the following parameters:
 
 host 
 username
