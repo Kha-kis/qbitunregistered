@@ -1,5 +1,6 @@
 # qbitunregistered
-This is a simple script to tag unregistered torrents in QbitTorrent
+This is a simple script to tag unregistered torrents in QbitTorrent.
+Other messages whhere a torrent is in a not working status are also tagged with a tag named from the message
 
 Install requirements
 
