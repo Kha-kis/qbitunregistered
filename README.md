@@ -17,10 +17,13 @@ host
 username
 password
 tagname
+errortag
 
 Host, Username, and Password are specific to your Qbittorrent client
 
-tagname is the tag you would like use in qbittorrent
+tagname is the tag you would like use in qbittorrent for torrents that are unregistered
+
+errortag is the tag you would like to use for torrents that are not working due to another error
 
 TO-DO:
 
