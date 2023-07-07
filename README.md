@@ -41,6 +41,18 @@ Below are the options you can set in `config.py`:
 1. Make sure you've configured the script correctly via the `config.py` file.
 2. Run the script by executing: `python qbitunregistered.py`.
 
+You can also override configuration settings with command-line arguments:
+
+`python qbitunregistered.py --host "localhost:8080" --username "admin" --password "password" --dry-run --other-issues-tag "other_issues"`
+
+Available command-line arguments:
+
+- `--host`: Override the host and port where qBittorrent is running.
+- `--username`: Override the username for logging into qBittorrent's Web UI.
+- `--password`: Override the password for logging into qBittorrent's Web UI.
+- `--dry-run`: If set, the script will only print actions without executing them.
+- `--other-issues-tag`: Override the tag to be used for torrents that have issues other than being unregistered.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a pull request or create issues if you find any.
