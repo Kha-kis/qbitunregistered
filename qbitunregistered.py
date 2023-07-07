@@ -47,6 +47,7 @@ logging.info("Total torrents found: %d", len(torrents))
 # Variables to store statistics
 total_deleted_count = 0
 total_deleted_from_disk_count = 0
+tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}  # Initialize tag_counts
 
 # Iterate through all the torrents
 for torrent in client.torrents.info():
@@ -90,7 +91,7 @@ for torrent in client.torrents.info():
             logging.info("Added tags %s to torrent with name %s", tags_to_add, torrent.name)
         continue
 
-        # Check trackers for other issues
+    # Check trackers for other issues
     for tracker in torrent.trackers:
         if tracker.msg != 'This torrent is private' and tracker.status == 4 and tracker.msg.lower() not in [p.lower() for p in unregistered]:
             tracker_short = urlsplit(tracker.url)
@@ -106,16 +107,36 @@ for torrent in client.torrents.info():
                 client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
                 logging.info("Added tags %s to torrent with name %s", tags_to_add, torrent.name)
 
-# Log tag statistics at the end
-logging.info("Tag statistics:")
-tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
-for torrent in torrents:
+    # Update tag_counts after adding the tags
     tags = torrent.tags
     for tag in tags:
         if tag in tag_counts:
             tag_counts[tag] += 1
 
-# Log additional statistics
+    # Delete torrents and files based on delete_tags and delete_files configuration
+    for tag in args.delete_tags:
+        if tag in torrent.tags:
+            if args.delete_files:
+                if not args.dry_run:
+                    # Delete files
+                    client.torrents.delete(torrent.hash, delete_files=True)
+                    logging.info("Deleted torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
+                    total_deleted_from_disk_count += 1
+                else:
+                    # Dry run, only log what would be done
+                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
+            else:
+                if not args.dry_run:
+                    # Delete torrent without files
+                    client.torrents.delete(torrent.hash, delete_files=False)
+                    logging.info("Deleted torrent '%s' with hash %s.", torrent.name, torrent.hash)
+                else:
+                    # Dry run, only log what would be done
+                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
+            total_deleted_count += 1
+
+# Log tag statistics at the end
+logging.info("Tag statistics:")
 logging.info("Total torrents with 'unregistered' tag: %d", tag_counts["unregistered"])
 logging.info("Total torrents with 'unregistered:crossseeding' tag: %d", tag_counts["unregistered:crossseeding"])
 logging.info("Total torrents with '%s' tag: %d", config.other_issues_tag, tag_counts[config.other_issues_tag])
