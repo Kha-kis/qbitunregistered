@@ -3,7 +3,14 @@ import config
 import argparse
 from urllib.parse import urlsplit
 from qbittorrentapi import Client
+import logging
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,  # Set the desired logging level (e.g., INFO, DEBUG, WARNING)
+    format='%(asctime)s %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+    
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
 parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
@@ -25,6 +32,9 @@ unregistered = config.unregistered
 
 # Connect to qbittorrent client
 client = Client(host=config.host, username=config.username, password=config.password)
+
+# Log script start
+logging.info("Starting qbitunregistered script...")
 
 # List of unregistered tracker messages
 unregistered = config.unregistered
@@ -61,7 +71,7 @@ for torrent in client.torrents.info():
         if is_unregistered and tracker.status == 4:
             unregistered_count += 1
             tracker_short = urlsplit(tracker.url)
-            print(torrent.name, ' ', tracker.msg, ' ', tracker_short.netloc)
+            logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
 
     # Add tags based on unregistered_count
     if unregistered_count > 0:
@@ -78,13 +88,15 @@ for torrent in client.torrents.info():
     for tracker in torrent.trackers:
         if tracker.msg != 'This torrent is private' and tracker.status == 4 and tracker.msg.lower() not in [p.lower() for p in unregistered]:
             tracker_short = urlsplit(tracker.url)
-            print(torrent.name, ' ', tracker.msg, ' ', tracker_short.netloc)
+            logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
             
             # Add a tag to the torrent
             tags_to_add = [config.other_issues_tag]
             if config.dry_run:
                 # Dry run, only print what would be done
-                print(f"[Dry Run] Would add tags {tags_to_add} to torrent with hash {torrent.hash}")
+                logging.info("[Dry Run] Would add tags %s to torrent with hash %s", tags_to_add, torrent.hash)
             else:
                 # Not a dry run, execute the action
                 client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
+# Log script end
+logging.info("qbitunregistered script completed.")
