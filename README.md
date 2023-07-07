@@ -1,32 +1,44 @@
 # qbitunregistered
-This is a simple script to tag unregistered torrents in QbitTorrent.
-Other messages whhere a torrent is in a not working status are also tagged with a tag named from the message
 
-Install requirements
+This is a Python script that helps manage torrents in qBittorrent by checking torrent tracker messages. It can add specific tags to torrents based on tracker messages and status, particularly focusing on unregistered torrents.
 
-```pip install -r requirements.txt```
+## Features
 
-Config:
+- Checks all torrents in qBittorrent for tracker status messages.
+- Adds tags to torrents that have unregistered tracker messages.
+- Validates if cross-seeding is taking place and tags seperatly
+- Customizable through a config file.
+- Option for a dry run to see what actions the script will perform without making changes.
 
-copy the config.py.example to config.py
-Update the needed paramaters for your qbittorrent client.
+## Requirements
 
-config.py is used to define the following parameters:
+- Python 3.x
+- qBittorrent with Web UI enabled
 
-host 
-username
-password
-tagname
-errortag
+## Installation
 
-Host, Username, and Password are specific to your Qbittorrent client
+1. Clone the repository or download the source code.
+2. Install the required Python libraries by running: `pip install -r requirements.txt`.
 
-tagname is the tag you would like use in qbittorrent for torrents that are unregistered
+## Configuration
 
-errortag is the tag you would like to use for torrents that are not working due to another error
+Before running the script, you must configure it by editing the `config.py` file. Below are the options you can set:
 
-TO-DO:
+- `host`: The host and port where qBittorrent is running.
+- `username`: The username for logging into qBittorrent's Web UI.
+- `password`: The password for logging into qBittorrent's Web UI.
+- `unregistered`: A list of messages or patterns to identify unregistered torrents.
+- `dry_run`: A flag for dry run mode. If set to True, the script will only print actions without executing them.
+- `other_issues_tag`: The tag to be used for torrents that have issues other than being unregistered.
 
-Add a dry run option.
+## Usage
 
-Identification of torrents that are cross seeded and applying a different tag.
+1. Make sure you've configured the script correctly via the `config.py` file.
+2. Run the script by executing: `python qbitunregistered.py`
+## Contributing
+
+Contributions are welcome! Please feel free to submit a pull request or create issues if you find any.
+
+## License
+
+[MIT License](LICENSE)
