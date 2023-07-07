@@ -31,4 +31,4 @@ for torrent in client.torrents.info():
         if tracker.msg != 'This torrent is private' and tracker.status == 4 and tracker.msg not in unregistered:
             tracker_short = urlsplit(tracker.url)
             print(torrent.name,' ',tracker.msg,' ',tracker_short.netloc)
-            client.torrents_add_tags(tags=[tracker.msg],torrent_hashes=[torrent.hash])
+            client.torrents_add_tags(tags=issue,torrent_hashes=[torrent.hash])
