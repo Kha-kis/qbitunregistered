@@ -30,6 +30,13 @@ delete_files = {
     "unregistered:crossseeding": True
 }
 
+# A flag to enable or disable the scheduler. If set to True, the script will run as per the scheduled times.
+enable_scheduler = False
+
+# The scheduled times for the script to run. This is a list of strings in the format 'HH:MM', representing hours and minutes.
+# The script will run at each of the specified times.
+scheduled_times = ["02:00"]
+
 # A list of messages or patterns to match for unregistered torrents.
 # Each entry in this list can be a full message (e.g., 'This torrent does not exist')
 # or a pattern to match messages that start with specific text (e.g., 'starts_with:Trump').
