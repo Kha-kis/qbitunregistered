@@ -56,7 +56,7 @@ logging.info("Total torrents found: %d", len(torrents))
 
 # Iterate through all the torrents
 for torrent in client.torrents.info():
-
+    
     # Store the hashes in the torrent_file_paths dictionary
     if torrent.save_path not in torrent_file_paths:
         torrent_file_paths[torrent.save_path] = [torrent.hash]
@@ -86,31 +86,48 @@ for torrent in client.torrents.info():
             logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
 
     # Add tags based on unregistered_count
-    tags_to_add = []
     if unregistered_count > 0:
         tags_to_add = ["unregistered:crossseeding"] if len(torrent_file_paths[torrent.save_path]) > 1 else ["unregistered"]
-        if dry_run:
+        if config.dry_run:
             # Dry run, only print what would be done
-            logging.info("[Dry Run] Would add tags %s to torrent with hash %s", tags_to_add, torrent.hash)
+            print(f"[Dry Run] Would add tags {tags_to_add} to torrent with hash {torrent.hash}")
         else:
             # Not a dry run, execute the action
-            client.torrents.add_tags(torrent_hashes=[torrent.hash], tags=tags_to_add)
+            client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
+        continue
 
     # Check trackers for other issues
     for tracker in torrent.trackers:
         if tracker.msg != 'This torrent is private' and tracker.status == 4 and tracker.msg.lower() not in [p.lower() for p in unregistered]:
             tracker_short = urlsplit(tracker.url)
             logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
+            
+            # Add a tag to the torrent
+            tags_to_add = [config.other_issues_tag]
+            if config.dry_run:
+                # Dry run, only print what would be done
+                logging.info("[Dry Run] Would add tags %s to torrent with hash %s", tags_to_add, torrent.hash)
+            else:
+                # Not a dry run, execute the action
+                client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
 
-# Log the total number of torrents with each tag
+# Log the total number of torrents with each added tag
 logging.info("Tag statistics:")
-tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
+
+# Define the tags that the script adds
+added_tags = ["unregistered", "unregistered:crossseeding", config.other_issues_tag]
+
+# Initialize the tag counts dictionary
+tag_counts = {tag: 0 for tag in added_tags}
+
+# Iterate through all the torrents
 for torrent in torrents:
-    tags = client.get_torrent_tags(torrent.hash)
+    tags = client.torrents.get_tags(torrent.hash)
     for tag in tags:
         if tag in tag_counts:
             tag_counts[tag] += 1
 
+# Log the tag statistics
 for tag, count in tag_counts.items():
     logging.info("Total torrents with tag '%s': %d", tag, count)
 
