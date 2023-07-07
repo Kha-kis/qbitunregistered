@@ -84,10 +84,11 @@ for torrent in client.torrents.info():
         tags_to_add = ["unregistered:crossseeding"] if len(torrent_file_paths[torrent.save_path]) > 1 else ["unregistered"]
         if args.dry_run:
             # Dry run, only print what would be done
-            print(f"[Dry Run] Would add tags {tags_to_add} to torrent with hash {torrent.hash}")
+            print(f"[Dry Run] Would add tags {tags_to_add} to torrent with name {torrent.name}")
         else:
             # Not a dry run, execute the action
             client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
+            logging.info("Added tags %s to torrent with name %s", tags_to_add, torrent.name)
         continue
 
     # Check trackers for other issues
@@ -100,10 +101,11 @@ for torrent in client.torrents.info():
             tags_to_add = [args.other_issues_tag]
             if args.dry_run:
                 # Dry run, only print what would be done
-                logging.info("[Dry Run] Would add tags %s to torrent with hash %s", tags_to_add, torrent.hash)
+                logging.info("[Dry Run] Would add tags %s to torrent with name %s", tags_to_add, torrent.name)
             else:
                 # Not a dry run, execute the action
                 client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
+                logging.info("[Dry Run] Would add tags %s to torrent with name %s", tags_to_add, torrent.name)
 
     # Delete torrents and files based on delete_tags and delete_files configuration
     for tag in args.delete_tags:
@@ -140,7 +142,7 @@ logging.info("Total torrents with 'unregistered:crossseeding' tag: %d", tag_coun
 logging.info("Total torrents with '%s' tag: %d", args.other_issues_tag, tag_counts[args.other_issues_tag])
 
 # Log additional statistics
-logging.info("Total torrents deleted: %d", total_deleted_count)
+logging.info("Total torrents removed from qbittorrent: %d", total_deleted_count)
 logging.info("Total torrents deleted from disk: %d", total_deleted_from_disk_count)
 
 # Log script end
