@@ -10,7 +10,8 @@ logging.basicConfig(
     level=logging.INFO,  # Set the desired logging level (e.g., INFO, DEBUG, WARNING)
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
-    
+)
+
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
 parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
