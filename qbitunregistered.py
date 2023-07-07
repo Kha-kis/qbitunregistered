@@ -62,7 +62,7 @@ for torrent in client.torrents.info():
             print(torrent.name, ' ', tracker.msg, ' ', tracker_short.netloc)
             
             # Add a tag to the torrent
-            tags_to_add = ["issue"]
+            tags_to_add = [config.other_issues_tag]
             if config.dry_run:
                 # Dry run, only print what would be done
                 print(f"[Dry Run] Would add tags {tags_to_add} to torrent with hash {torrent.hash}")
