@@ -25,15 +25,17 @@ for torrent in client.torrents.info():
     # Initialize unregistered_count to 0
     unregistered_count = 0
 
-# Check trackers for unregistered messages
+    # Check trackers for unregistered messages
     for tracker in torrent.trackers:
         is_unregistered = False
         # Check if the message matches any pattern in the unregistered list
         for pattern in unregistered:
-            if pattern.startswith("starts_with:") and tracker.msg.startswith(pattern.split("starts_with:")[1]):
+            lower_pattern = pattern.lower()
+            lower_msg = tracker.msg.lower()
+            if lower_pattern.startswith("starts_with:") and lower_msg.startswith(lower_pattern.split("starts_with:")[1]):
                 is_unregistered = True
                 break
-            elif tracker.msg == pattern:
+            elif lower_msg == lower_pattern:
                 is_unregistered = True
                 break
         # If the message is unregistered, increment the counter and print info
