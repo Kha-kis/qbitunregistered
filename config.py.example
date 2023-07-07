@@ -1,4 +1,5 @@
 # config.py
+dry_run = True # Set to False if you want the script to actually execute actions
 host = "localhost:8080"
 username = "admin"
 password = "adminadmin"
