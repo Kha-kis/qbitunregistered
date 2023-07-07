@@ -18,11 +18,7 @@ parser.add_argument('--host', type=str, default=config.host, help='The host and 
 parser.add_argument('--username', type=str, default=config.username, help='The username for logging into qBittorrent Web UI.')
 parser.add_argument('--password', type=str, default=config.password, help='The password for logging into qBittorrent Web UI.')
 parser.add_argument('--dry-run', action='store_true', default=config.dry_run, help='If set, the script will only log actions without executing them.')
-parser.add_argument('--delete-tags', nargs='+', default=config.delete_tags, help='A list of tags that should trigger the deletion of torrents and/or files.')
-parser.add_argument('--delete-files', action='store_true', help='If set, the script will delete files along with torrents for the specified delete tags.')
 parser.add_argument('--enable-scheduler', action='store_true', default=config.enable_scheduler, help='If set, the script will run as per the scheduled times.')
-parser.add_argument('--scheduled-times', nargs='+', default=config.scheduled_times, help='The scheduled times for the script to run.')
-parser.add_argument('--unregistered', nargs='+', default=config.unregistered, help='A list of messages or patterns to match for unregistered torrents.')
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -34,7 +30,7 @@ client = Client(host=args.host, username=args.username, password=args.password)
 logging.info("Starting qbitunregistered script...")
 
 # List of unregistered tracker messages
-unregistered = args.unregistered
+unregistered = config.unregistered
 
 # Dictionary to store file paths and their associated hashes
 torrent_file_paths = {}
@@ -47,7 +43,6 @@ logging.info("Total torrents found: %d", len(torrents))
 # Variables to store statistics
 total_deleted_count = 0
 total_deleted_from_disk_count = 0
-tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}  # Initialize tag_counts
 
 # Iterate through all the torrents
 for torrent in client.torrents.info():
@@ -114,22 +109,22 @@ for torrent in client.torrents.info():
             tag_counts[tag] += 1
 
     # Delete torrents and files based on delete_tags and delete_files configuration
-    for tag in args.delete_tags:
+    for tag in config.delete_tags:
         if tag in torrent.tags:
-            if args.delete_files:
-                if not args.dry_run:
+            if not args.dry_run:
+                if config.delete_files:
                     # Delete files
                     client.torrents.delete(torrent.hash, delete_files=True)
                     logging.info("Deleted torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
                     total_deleted_from_disk_count += 1
                 else:
-                    # Dry run, only log what would be done
-                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
-            else:
-                if not args.dry_run:
                     # Delete torrent without files
                     client.torrents.delete(torrent.hash, delete_files=False)
                     logging.info("Deleted torrent '%s' with hash %s.", torrent.name, torrent.hash)
+            else:
+                if config.delete_files:
+                    # Dry run, only log what would be done
+                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
                 else:
                     # Dry run, only log what would be done
                     logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
