@@ -105,7 +105,7 @@ for torrent in client.torrents.info():
             else:
                 # Not a dry run, execute the action
                 client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
-                logging.info("[Dry Run] Would add tags %s to torrent with name %s", tags_to_add, torrent.name)
+                logging.info("Added tags %s to torrent with name %s", tags_to_add, torrent.name)
 
     # Delete torrents and files based on delete_tags and delete_files configuration
     for tag in args.delete_tags:
@@ -142,7 +142,7 @@ logging.info("Total torrents with 'unregistered:crossseeding' tag: %d", tag_coun
 logging.info("Total torrents with '%s' tag: %d", args.other_issues_tag, tag_counts[args.other_issues_tag])
 
 # Log additional statistics
-logging.info("Total torrents removed from qbittorrent: %d", total_deleted_count)
+logging.info("Total torrents removed from qBittorrent: %d", total_deleted_count)
 logging.info("Total torrents deleted from disk: %d", total_deleted_from_disk_count)
 
 # Log script end
