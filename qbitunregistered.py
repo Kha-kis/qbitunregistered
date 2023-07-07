@@ -102,6 +102,23 @@ for torrent in client.torrents.info():
             # Not a dry run, execute the action
             client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
 
+        # Check if torrent should be deleted
+        if tags_to_add[0] in config.delete_tags:
+            if config.dry_run:
+                # Dry run, only print what would be done
+                print(f"[Dry Run] Would delete torrent with hash {torrent.hash}")
+            else:
+                # Not a dry run, execute the action
+                if config.delete_files:
+                    # Delete files on disk
+                    client.torrents.delete(torrent.hash, delete_files=True)
+                    logging.info("Deleted torrent with name %s and files from disk", torrent.name)
+                else:
+                    # Delete torrent only, keep files on disk
+                    client.torrents.delete(torrent.hash)
+                    logging.info("Deleted torrent with name %s", torrent.name)
+        continue
+
         # Update the tag counts
         for tag in tags_to_add:
             if tag in tag_counts:
