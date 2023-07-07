@@ -19,7 +19,11 @@ dry_run = True
 other_issues_tag = "custom_tag"
 
 delete_tags = ["unregistered", "unregistered:crossseeding"]
-delete_files = False
+delete_files = {
+    "unregistered": True,
+    "unregistered:crossseeding": False,
+    "custom_tag": False
+}
 
 # A list of messages or patterns to match for unregistered torrents.
 # Each entry in this list can be a full message (e.g. 'This torrent does not exist')
