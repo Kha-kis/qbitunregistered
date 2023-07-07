@@ -85,6 +85,12 @@ for torrent in torrents:
             client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
             logging.info("Added tags %s to torrent with name %s", tags_to_add, torrent.name)
 
+        # Update tag_counts after adding the tags
+        tags = torrent.tags
+        for tag in tags:
+            if tag in tag_counts:
+                tag_counts[tag] += 1
+
         continue
 
     # Check trackers for other issues
@@ -102,28 +108,6 @@ for torrent in torrents:
                 # Not a dry run, execute the action
                 client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
                 logging.info("Added tags %s to torrent with name %s", tags_to_add, torrent.name)
-
-    # Delete torrents and files based on delete_tags and delete_files configuration
-    for tag in config.delete_tags:
-        if tag in torrent.tags:
-            if config.delete_files:
-                if not args.dry_run:
-                    # Delete files
-                    client.torrents.delete(torrent.hash, delete_files=True)
-                    logging.info("Deleted torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
-                    total_deleted_from_disk_count += 1
-                else:
-                    # Dry run, only log what would be done
-                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
-            else:
-                if not args.dry_run:
-                    # Delete torrent without files
-                    client.torrents.delete(torrent.hash, delete_files=False)
-                    logging.info("Deleted torrent '%s' with hash %s.", torrent.name, torrent.hash)
-                else:
-                    # Dry run, only log what would be done
-                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
-            total_deleted_count += 1
 
 # Reinitialize tag_counts dictionary
 tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
@@ -146,4 +130,5 @@ logging.info("Total torrents removed from qBittorrent: %d", total_deleted_count)
 logging.info("Total torrents deleted from disk: %d", total_deleted_from_disk_count)
 
 # Log script end
+logging.info("qbitunregistered script completed.")
 logging.info("qbitunregistered script completed.")
