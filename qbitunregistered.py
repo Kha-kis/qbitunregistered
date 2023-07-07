@@ -1,9 +1,10 @@
 #!/usr/bin/python3
+import config
 import argparse
-import logging
 from urllib.parse import urlsplit
 from qbittorrentapi import Client
-import config
+import logging
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -14,17 +15,25 @@ logging.basicConfig(
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
-parser.add_argument('--host', type=str, default=config.host, help='The host and port where qBittorrent is running.')
-parser.add_argument('--username', type=str, default=config.username, help='The username for logging into qBittorrent Web UI.')
-parser.add_argument('--password', type=str, default=config.password, help='The password for logging into qBittorrent Web UI.')
-parser.add_argument('--dry-run', action='store_true', default=config.dry_run, help='If set, the script will only log actions without executing them.')
-parser.add_argument('--enable-scheduler', action='store_true', default=config.enable_scheduler, help='If set, the script will run as per the scheduled times.')
+parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
+parser.add_argument('--username', type=str, help='The username for logging into qBittorrent Web UI.')
+parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
+parser.add_argument('--dry-run', action='store_true', help='If set, the script will only print actions without executing them.')
+parser.add_argument('--other-issues-tag', type=str, help='The tag to be used for torrents that have issues other than being unregistered.')
 
 # Parse command-line arguments
 args = parser.parse_args()
 
+# Override configuration with command-line arguments if provided
+host = args.host if args.host else config.host
+username = args.username if args.username else config.username
+password = args.password if args.password else config.password
+dry_run = args.dry_run if args.dry_run else config.dry_run
+other_issues_tag = args.other_issues_tag if args.other_issues_tag else config.other_issues_tag
+unregistered = config.unregistered
+
 # Connect to qBittorrent client
-client = Client(host=args.host, username=args.username, password=args.password)
+client = Client(host=config.host, username=config.username, password=config.password)
 
 # Log script start
 logging.info("Starting qbitunregistered script...")
@@ -40,14 +49,9 @@ logging.info("Fetching torrent information from qBittorrent...")
 torrents = client.torrents.info()
 logging.info("Total torrents found: %d", len(torrents))
 
-# Variables to store statistics
-total_deleted_count = 0
-total_deleted_from_disk_count = 0
-
 # Iterate through all the torrents
-for torrent in torrents:
-    # Initialize tag_counts dictionary
-    tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
+for torrent in client.torrents.info():
+    
     # Store the hashes in the torrent_file_paths dictionary
     if torrent.save_path not in torrent_file_paths:
         torrent_file_paths[torrent.save_path] = [torrent.hash]
@@ -70,7 +74,7 @@ for torrent in torrents:
             elif lower_msg == lower_pattern:
                 is_unregistered = True
                 break
-        # If the message is unregistered, increment the counter and log info
+        # If the message is unregistered, increment the counter and print info
         if is_unregistered and tracker.status == 4:
             unregistered_count += 1
             tracker_short = urlsplit(tracker.url)
@@ -79,20 +83,12 @@ for torrent in torrents:
     # Add tags based on unregistered_count
     if unregistered_count > 0:
         tags_to_add = ["unregistered:crossseeding"] if len(torrent_file_paths[torrent.save_path]) > 1 else ["unregistered"]
-        if args.dry_run:
-            # Dry run, only log what would be done
-            logging.info("[Dry Run] Would add tags %s to torrent with name %s", tags_to_add, torrent.name)
+        if config.dry_run:
+            # Dry run, only print what would be done
+            print(f"[Dry Run] Would add tags {tags_to_add} to torrent with hash {torrent.hash}")
         else:
             # Not a dry run, execute the action
             client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
-            logging.info("Added tags %s to torrent with name %s", tags_to_add, torrent.name)
-
-        # Update tag_counts after adding the tags
-        tags = torrent.tags
-        for tag in tags:
-            if tag in tag_counts:
-                tag_counts[tag] += 1
-
         continue
 
     # Check trackers for other issues
@@ -100,38 +96,35 @@ for torrent in torrents:
         if tracker.msg != 'This torrent is private' and tracker.status == 4 and tracker.msg.lower() not in [p.lower() for p in unregistered]:
             tracker_short = urlsplit(tracker.url)
             logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
-
+            
             # Add a tag to the torrent
             tags_to_add = [config.other_issues_tag]
-            if args.dry_run:
-                # Dry run, only log what would be done
-                logging.info("[Dry Run] Would add tags %s to torrent with name %s", tags_to_add, torrent.name)
+            if config.dry_run:
+                # Dry run, only print what would be done
+                logging.info("[Dry Run] Would add tags %s to torrent with hash %s", tags_to_add, torrent.hash)
             else:
                 # Not a dry run, execute the action
                 client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
-                logging.info("Added tags %s to torrent with name %s", tags_to_add, torrent.name)
-
-# Reinitialize tag_counts dictionary
-tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
-
-# Update tag_counts based on the updated torrents list
-for torrent in torrents:
-    tags = torrent.tags
-    for tag in tags:
-        if tag in tag_counts:
-            tag_counts[tag] += 1
-
-# Log tag statistics at the end
-logging.info("Tag statistics:")
-for torrent in torrents:
-    tags = torrent.tags
-    for tag in tags:
-        if tag in tag_counts:
-            tag_counts[tag] += 1
-
-# Log additional statistics
-logging.info("Total torrents removed from qBittorrent: %d", total_deleted_count)
-logging.info("Total torrents deleted from disk: %d", total_deleted_from_disk_count)
+                
+    # Delete torrents and files based on delete_tags and delete_files configuration
+    for tag in config.delete_tags:
+        if tag in torrent.tags:
+            if config.delete_files.get(tag, False):
+                if not config.dry_run:
+                    # Delete files
+                    client.torrents.delete(torrent.hash, delete_files=True)
+                    logging.info("Deleted torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
+                else:
+                    # Dry run, only print what would be done
+                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
+            else:
+                if not config.dry_run:
+                    # Delete torrent without files
+                    client.torrents.delete(torrent.hash, delete_files=False)
+                    logging.info("Deleted torrent '%s' with hash %s.", torrent.name, torrent.hash)
+                else:
+                    # Dry run, only print what would be done
+                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
