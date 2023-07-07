@@ -135,4 +135,3 @@ logging.info("Total torrents deleted from disk: %d", total_deleted_from_disk_cou
 
 # Log script end
 logging.info("qbitunregistered script completed.")
-logging.info("qbitunregistered script completed.")
