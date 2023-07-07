@@ -119,7 +119,7 @@ for torrent in client.torrents.info():
             tags_to_add = [config.other_issues_tag]
             if config.dry_run:
                 # Dry run, only print what would be done
-                logging.info("[Dry Run] Would add tags %s to torrent with hash %s", tags_to_add, torrent.hash)
+                logging.info("[Dry Run] Would add tags %s to torrent with hash %s", tags_to_add, torrent.name)
             else:
                 # Not a dry run, execute the action
                 client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
