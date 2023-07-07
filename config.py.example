@@ -5,7 +5,7 @@ password = "adminadmin"
 unregistered = [
     'This torrent does not exist',
     '002: Invalid InfoHash, Torrent not found',
-    'starts_with:Torrent is not authorized
+    'starts_with:Torrent is not authorized',
     'starts_with:Torrent not',
     'starts_with:unregistered',
     'starts_with:Trump'
