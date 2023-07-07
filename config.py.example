@@ -22,7 +22,6 @@ delete_tags = ["unregistered", "unregistered:crossseeding"]
 delete_files = {
     "unregistered": True,
     "unregistered:crossseeding": False,
-    "custom_tag": False
 }
 
 # A list of messages or patterns to match for unregistered torrents.
