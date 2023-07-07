@@ -46,17 +46,26 @@ for torrent in client.torrents.info():
 
     # Add tags based on unregistered_count
     if unregistered_count > 0:
-        if len(torrent_file_paths[torrent.save_path]) > 1:
-            client.torrents_add_tags(tags=["unregistered:crossseeding"], torrent_hashes=[torrent.hash])
+        tags_to_add = ["unregistered:crossseeding"] if len(torrent_file_paths[torrent.save_path]) > 1 else ["unregistered"]
+        if config.dry_run:
+            # Dry run, only print what would be done
+            print(f"[Dry Run] Would add tags {tags_to_add} to torrent with hash {torrent.hash}")
         else:
-            client.torrents_add_tags(tags=["unregistered"], torrent_hashes=[torrent.hash])
+            # Not a dry run, execute the action
+            client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
         continue
 
     # Check trackers for other issues
     for tracker in torrent.trackers:
-        if tracker.msg != 'This torrent is private' and tracker.status == 4 and tracker.msg not in unregistered:
+        if tracker.msg != 'This torrent is private' and tracker.status == 4 and tracker.msg.lower() not in [p.lower() for p in unregistered]:
             tracker_short = urlsplit(tracker.url)
             print(torrent.name, ' ', tracker.msg, ' ', tracker_short.netloc)
             
-            # Add a tag to the torrent
-            client.torrents_add_tags(tags=["issue"], torrent_hashes=[torrent.hash])
+            # Add a tag to the torrent (replace "some_tag" with the tag you want to use)
+            tags_to_add = ["some_tag"]
+            if config.dry_run:
+                # Dry run, only print what would be done
+                print(f"[Dry Run] Would add tags {tags_to_add} to torrent with hash {torrent.hash}")
+            else:
+                # Not a dry run, execute the action
+                client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
