@@ -27,7 +27,7 @@ delete_tags = ["unregistered", "unregistered:crossseeding"]
 # Note: The tags specified in `delete_tags` should have corresponding entries in this dictionary.
 delete_files = {
     "unregistered": False,
-    "unregistered:crossseeding": True,
+    "unregistered:crossseeding": True
 }
 
 # A list of messages or patterns to match for unregistered torrents.
