@@ -1,8 +1,27 @@
 #!/usr/bin/python3
-
 import config
+import argparse
 from urllib.parse import urlsplit
 from qbittorrentapi import Client
+
+# Set up command-line argument parsing
+parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
+parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
+parser.add_argument('--username', type=str, help='The username for logging into qBittorrent Web UI.')
+parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
+parser.add_argument('--dry-run', action='store_true', help='If set, the script will only print actions without executing them.')
+parser.add_argument('--other-issues-tag', type=str, help='The tag to be used for torrents that have issues other than being unregistered.')
+
+# Parse command-line arguments
+args = parser.parse_args()
+
+# Override configuration with command-line arguments if provided
+host = args.host if args.host else config.host
+username = args.username if args.username else config.username
+password = args.password if args.password else config.password
+dry_run = args.dry_run if args.dry_run else config.dry_run
+other_issues_tag = args.other_issues_tag if args.other_issues_tag else config.other_issues_tag
+unregistered = config.unregistered
 
 # Connect to qbittorrent client
 client = Client(host=config.host, username=config.username, password=config.password)
