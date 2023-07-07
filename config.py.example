@@ -8,6 +8,9 @@ unregistered = [
     'starts_with:Torrent is not authorized',
     'starts_with:Torrent not',
     'starts_with:unregistered',
-    'starts_with:Trump'
+    'starts_with:Trump',
+    'starts_with:Complete Season Uploaded',
+    'starts_with:Nuked',
+    'starts_with:Torrent is not found',
+    'starts_with:Specifically Banned'
 ]
-
