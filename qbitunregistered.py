@@ -4,6 +4,7 @@ import argparse
 from urllib.parse import urlsplit
 from qbittorrentapi import Client
 import logging
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -37,12 +38,6 @@ client = Client(host=config.host, username=config.username, password=config.pass
 # Log script start
 logging.info("Starting qbitunregistered script...")
 
-# Log dry run mode
-if dry_run:
-    logging.info("Running in dry run mode. No actions will be executed.")
-else:
-    logging.info("Running in normal mode. Actions will be executed.")
-
 # List of unregistered tracker messages
 unregistered = config.unregistered
 
@@ -54,16 +49,9 @@ logging.info("Fetching torrent information from qBittorrent...")
 torrents = client.torrents.info()
 logging.info("Total torrents found: %d", len(torrents))
 
-# Initialize tag counts
-tag_counts = {
-    "unregistered": 0,
-    "unregistered:crossseeding": 0,
-    config.other_issues_tag: 0
-}
-
 # Iterate through all the torrents
 for torrent in client.torrents.info():
-
+    
     # Store the hashes in the torrent_file_paths dictionary
     if torrent.save_path not in torrent_file_paths:
         torrent_file_paths[torrent.save_path] = [torrent.hash]
@@ -101,29 +89,6 @@ for torrent in client.torrents.info():
         else:
             # Not a dry run, execute the action
             client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
-
-        # Check if torrent should be deleted
-        if tags_to_add[0] in config.delete_tags:
-            if config.dry_run:
-                # Dry run, only print what would be done
-                print(f"[Dry Run] Would delete torrent with hash {torrent.hash}")
-            else:
-                # Not a dry run, execute the action
-                if config.delete_files:
-                    # Delete files on disk
-                    client.torrents.delete(torrent.hash, delete_files=True)
-                    logging.info("Deleted torrent with name %s and files from disk", torrent.name)
-                else:
-                    # Delete torrent only, keep files on disk
-                    client.torrents.delete(torrent.hash)
-                    logging.info("Deleted torrent with name %s", torrent.name)
-        continue
-
-        # Update the tag counts
-        for tag in tags_to_add:
-            if tag in tag_counts:
-                tag_counts[tag] += 1
-
         continue
 
     # Check trackers for other issues
@@ -131,27 +96,35 @@ for torrent in client.torrents.info():
         if tracker.msg != 'This torrent is private' and tracker.status == 4 and tracker.msg.lower() not in [p.lower() for p in unregistered]:
             tracker_short = urlsplit(tracker.url)
             logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
-
+            
             # Add a tag to the torrent
             tags_to_add = [config.other_issues_tag]
             if config.dry_run:
                 # Dry run, only print what would be done
-                logging.info("[Dry Run] Would add tags %s to torrent with name %s", tags_to_add, torrent.name)
+                logging.info("[Dry Run] Would add tags %s to torrent with hash %s", tags_to_add, torrent.hash)
             else:
                 # Not a dry run, execute the action
                 client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
-
-            # Update the tag counts
-            for tag in tags_to_add:
-                if tag in tag_counts:
-                    tag_counts[tag] += 1
-
-# Log the total number of torrents with each added tag
-logging.info("Tag statistics:")
-
-for tag, count in tag_counts.items():
-    logging.info("Total torrents with tag '%s': %d", tag, count)
+                
+    # Delete torrents and files based on delete_tags and delete_files configuration
+    for tag in config.delete_tags:
+        if tag in torrent.tags:
+            if config.delete_files.get(tag, False):
+                if not config.dry_run:
+                    # Delete files
+                    client.torrents.delete(torrent.hash, delete_files=True)
+                    logging.info("Deleted torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
+                else:
+                    # Dry run, only print what would be done
+                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
+            else:
+                if not config.dry_run:
+                    # Delete torrent without files
+                    client.torrents.delete(torrent.hash, delete_files=False)
+                    logging.info("Deleted torrent '%s' with hash %s.", torrent.name, torrent.hash)
+                else:
+                    # Dry run, only print what would be done
+                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
-
