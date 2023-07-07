@@ -1,3 +1,4 @@
+# config.py
 host = "localhost:8080"
 username = "admin"
 password = "adminadmin"
@@ -11,5 +12,7 @@ unregistered = [
     'Torrent not registered with this tracker.',
     'Unregistered torrent',
     'unregistered torrent',
-    'unregistered'
+    'unregistered',
+    'starts_with:Trump'
 ]
+
