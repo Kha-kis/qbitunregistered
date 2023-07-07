@@ -17,7 +17,7 @@ parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by 
 parser.add_argument('--host', type=str, default=config.host, help='The host and port where qBittorrent is running.')
 parser.add_argument('--username', type=str, default=config.username, help='The username for logging into qBittorrent Web UI.')
 parser.add_argument('--password', type=str, default=config.password, help='The password for logging into qBittorrent Web UI.')
-parser.add_argument('--dry-run', action='store_true', default=config.dry_run, help='If set, the script will only print actions without executing them.')
+parser.add_argument('--dry-run', action='store_true', default=config.dry_run, help='If set, the script will only log actions without executing them.')
 parser.add_argument('--other-issues-tag', type=str, default=config.other_issues_tag, help='The tag to be used for torrents that have issues other than being unregistered.')
 parser.add_argument('--delete-tags', nargs='+', default=config.delete_tags, help='A list of tags that should trigger the deletion of torrents and/or files.')
 parser.add_argument('--delete-files', action='store_true', help='If set, the script will delete files along with torrents for the specified delete tags.')
@@ -73,7 +73,7 @@ for torrent in client.torrents.info():
             elif lower_msg == lower_pattern:
                 is_unregistered = True
                 break
-        # If the message is unregistered, increment the counter and print info
+        # If the message is unregistered, increment the counter and log info
         if is_unregistered and tracker.status == 4:
             unregistered_count += 1
             tracker_short = urlsplit(tracker.url)
@@ -83,8 +83,8 @@ for torrent in client.torrents.info():
     if unregistered_count > 0:
         tags_to_add = ["unregistered:crossseeding"] if len(torrent_file_paths[torrent.save_path]) > 1 else ["unregistered"]
         if args.dry_run:
-            # Dry run, only print what would be done
-            print(f"[Dry Run] Would add tags {tags_to_add} to torrent with name {torrent.name}")
+            # Dry run, only log what would be done
+            logging.info("[Dry Run] Would add tags %s to torrent with name %s", tags_to_add, torrent.name)
         else:
             # Not a dry run, execute the action
             client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
@@ -100,7 +100,7 @@ for torrent in client.torrents.info():
             # Add a tag to the torrent
             tags_to_add = [args.other_issues_tag]
             if args.dry_run:
-                # Dry run, only print what would be done
+                # Dry run, only log what would be done
                 logging.info("[Dry Run] Would add tags %s to torrent with name %s", tags_to_add, torrent.name)
             else:
                 # Not a dry run, execute the action
@@ -117,7 +117,7 @@ for torrent in client.torrents.info():
                     logging.info("Deleted torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
                     total_deleted_from_disk_count += 1
                 else:
-                    # Dry run, only print what would be done
+                    # Dry run, only log what would be done
                     logging.info("[Dry Run] Would delete torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
             else:
                 if not args.dry_run:
@@ -125,7 +125,7 @@ for torrent in client.torrents.info():
                     client.torrents.delete(torrent.hash, delete_files=False)
                     logging.info("Deleted torrent '%s' with hash %s.", torrent.name, torrent.hash)
                 else:
-                    # Dry run, only print what would be done
+                    # Dry run, only log what would be done
                     logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
             total_deleted_count += 1
 
