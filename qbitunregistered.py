@@ -45,7 +45,7 @@ total_deleted_count = 0
 total_deleted_from_disk_count = 0
 
 # Iterate through all the torrents
-for torrent in client.torrents.info():
+for torrent in torrents:
     # Store the hashes in the torrent_file_paths dictionary
     if torrent.save_path not in torrent_file_paths:
         torrent_file_paths[torrent.save_path] = [torrent.hash]
@@ -84,12 +84,6 @@ for torrent in client.torrents.info():
             # Not a dry run, execute the action
             client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
             logging.info("Added tags %s to torrent with name %s", tags_to_add, torrent.name)
-
-        # Update tag_counts after adding the tags
-        tags = torrent.tags
-        for tag in tags:
-            if tag in tag_counts:
-                tag_counts[tag] += 1
 
         continue
 
@@ -130,6 +124,16 @@ for torrent in client.torrents.info():
                     # Dry run, only log what would be done
                     logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
             total_deleted_count += 1
+
+# Reinitialize tag_counts dictionary
+tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
+
+# Update tag_counts based on the updated torrents list
+for torrent in torrents:
+    tags = torrent.tags
+    for tag in tags:
+        if tag in tag_counts:
+            tag_counts[tag] += 1
 
 # Log tag statistics at the end
 logging.info("Tag statistics:")
