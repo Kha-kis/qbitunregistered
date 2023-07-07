@@ -46,6 +46,8 @@ total_deleted_from_disk_count = 0
 
 # Iterate through all the torrents
 for torrent in torrents:
+    # Initialize tag_counts dictionary
+    tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
     # Store the hashes in the torrent_file_paths dictionary
     if torrent.save_path not in torrent_file_paths:
         torrent_file_paths[torrent.save_path] = [torrent.hash]
@@ -121,9 +123,11 @@ for torrent in torrents:
 
 # Log tag statistics at the end
 logging.info("Tag statistics:")
-logging.info("Total torrents with 'unregistered' tag: %d", tag_counts["unregistered"])
-logging.info("Total torrents with 'unregistered:crossseeding' tag: %d", tag_counts["unregistered:crossseeding"])
-logging.info("Total torrents with '%s' tag: %d", config.other_issues_tag, tag_counts[config.other_issues_tag])
+for torrent in torrents:
+    tags = torrent.tags
+    for tag in tags:
+        if tag in tag_counts:
+            tag_counts[tag] += 1
 
 # Log additional statistics
 logging.info("Total torrents removed from qBittorrent: %d", total_deleted_count)
