@@ -43,7 +43,9 @@ Below are the options you can set in `config.py`:
 
 You can also override configuration settings with command-line arguments:
 
-```python qbitunregistered.py --host "localhost:8080" --username "admin" --password "password" --dry-run --other-issues-tag "other_issues"```
+```sh
+python qbitunregistered.py --host "localhost:8080" --username "admin" --password "password" --dry-run --other-issues-tag "other_issues"
+```
 
 Available command-line arguments:
 
