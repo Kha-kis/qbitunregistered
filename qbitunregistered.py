@@ -48,6 +48,10 @@ logging.info("Fetching torrent information from qBittorrent...")
 torrents = client.torrents.info()
 logging.info("Total torrents found: %d", len(torrents))
 
+# Log the total number of torrents with each tag
+logging.info("Tag statistics:")
+tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
+
 # Iterate through all the torrents
 for torrent in client.torrents.info():
     
@@ -89,11 +93,11 @@ for torrent in client.torrents.info():
             # Not a dry run, execute the action
             client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
         continue
+        
         # Increment the tag count
-        if "unregistered" in tags_to_add:
-            tag_counts["unregistered"] += 1
-        if "unregistered:crossseeding" in tags_to_add:
-            tag_counts["unregistered:crossseeding"] += 1
+        for tag in tags_to_add:
+            tag_counts[tag] += 1
+            
     # Check trackers for other issues
     for tracker in torrent.trackers:
         if tracker.msg != 'This torrent is private' and tracker.status == 4 and tracker.msg.lower() not in [p.lower() for p in unregistered]:
