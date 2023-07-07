@@ -48,6 +48,10 @@ logging.info("Fetching torrent information from qBittorrent...")
 torrents = client.torrents.info()
 logging.info("Total torrents found: %d", len(torrents))
 
+# Log the total number of each tag
+logging.info("Tag statistics:")
+tag_counts = {tag: 0 for tag in set(config.unregistered + [config.other_issues_tag])}
+
 # Iterate through all the torrents
 for torrent in client.torrents.info():
     
@@ -104,16 +108,13 @@ for torrent in client.torrents.info():
             else:
                 # Not a dry run, execute the action
                 client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
-
-# Log the total number of each tag
-logging.info("Tag statistics:")
-tag_counts = {tag: 0 for tag in set(tags_to_add)}
-for torrent in torrents:
+    # Update tag counts for the current torrent
     tags = client.torrents.get_tags(torrent.hash)
     for tag in tags:
         if tag in tag_counts:
             tag_counts[tag] += 1
 
+# Log the total number of each tag
 for tag, count in tag_counts.items():
     logging.info("Total torrents with tag '%s': %d", tag, count)
 
