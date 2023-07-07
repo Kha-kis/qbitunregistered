@@ -6,7 +6,7 @@ This is a Python script that helps manage torrents in qBittorrent by checking to
 
 - Checks all torrents in qBittorrent for tracker status messages.
 - Adds tags to torrents that have unregistered tracker messages.
-- Validates if unregistered torrents are cross-seeding tags them separately.
+- Validates if unregistered torrents are cross-seeding tags and them separately.
 - Customizable through a config file.
 - Option for a dry run to see what actions the script will perform without making changes.
 
