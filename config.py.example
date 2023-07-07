@@ -26,8 +26,8 @@ delete_tags = ["unregistered", "unregistered:crossseeding"]
 # The keys represent the tags, and the values represent whether to delete files (True) or not (False) for each tag.
 # Note: The tags specified in `delete_tags` should have corresponding entries in this dictionary.
 delete_files = {
-    "unregistered": False,
-    "unregistered:crossseeding": True
+    "unregistered": True,
+    "unregistered:crossseeding": False
 }
 
 # A flag to enable or disable the scheduler. If set to True, the script will run as per the scheduled times.
