@@ -6,11 +6,9 @@ unregistered = [
     'This torrent does not exist',
     'Unregistered torrent',
     '002: Invalid InfoHash, Torrent not found',
-    'Torrent is not authorized for use on this tracker',
-    'Torrent is not authorized for use on this tracker or Torrent Deleted',
+    'starts_with:Torrent is not authorized
     'Torrent not found',
     'Torrent not registered with this tracker.',
-    'Unregistered torrent',
     'unregistered torrent',
     'unregistered',
     'starts_with:Trump'
