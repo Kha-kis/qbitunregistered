@@ -6,7 +6,7 @@ unregistered = [
     'Unregistered torrent',
     '002: Invalid InfoHash, Torrent not found',
     'Torrent is not authorized for use on this tracker',
-    'Torrent is not authorized for use on this tracker or Torrent Deleted'
+    'Torrent is not authorized for use on this tracker or Torrent Deleted',
     'Torrent not found',
     'Torrent not registered with this tracker.',
     'Unregistered torrent',
