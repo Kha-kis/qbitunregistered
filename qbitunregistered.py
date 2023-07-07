@@ -44,9 +44,6 @@ logging.info("Total torrents found: %d", len(torrents))
 total_deleted_count = 0
 total_deleted_from_disk_count = 0
 
-# Initialize tag_counts dictionary
-tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
-
 # Iterate through all the torrents
 for torrent in client.torrents.info():
     # Store the hashes in the torrent_file_paths dictionary
@@ -87,7 +84,7 @@ for torrent in client.torrents.info():
             # Not a dry run, execute the action
             client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
             logging.info("Added tags %s to torrent with name %s", tags_to_add, torrent.name)
-        
+
         # Update tag_counts after adding the tags
         tags = torrent.tags
         for tag in tags:
@@ -136,13 +133,6 @@ for torrent in client.torrents.info():
 
 # Log tag statistics at the end
 logging.info("Tag statistics:")
-tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
-for torrent in torrents:
-    tags = torrent.tags
-    for tag in tags:
-        if tag in tag_counts:
-            tag_counts[tag] += 1
-
 logging.info("Total torrents with 'unregistered' tag: %d", tag_counts["unregistered"])
 logging.info("Total torrents with 'unregistered:crossseeding' tag: %d", tag_counts["unregistered:crossseeding"])
 logging.info("Total torrents with '%s' tag: %d", config.other_issues_tag, tag_counts[config.other_issues_tag])
