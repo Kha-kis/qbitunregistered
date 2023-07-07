@@ -1,13 +1,13 @@
 # config.py
 
-# The host and port where qBittorrent is running.
+# The host and port where qbittorrent is running.
 # For example, if it's running locally on port 8080, you can use "localhost:8080".
 host = "localhost:8080"
 
-# The username for logging into qBittorrent's web UI.
+# The username for logging into qbittorrent's web UI.
 username = "admin"
 
-# The password for logging into qBittorrent's web UI.
+# The password for logging into qbittorrent's web UI.
 password = "adminadmin"
 
 # A flag for dry run mode. If set to True, the script will print what it would do
@@ -19,8 +19,7 @@ dry_run = True
 # You can change this value to any tag you want.
 other_issues_tag = "custom_tag"
 
-# A list of tags that should trigger the deletion of torrents and/or files.
-# Torrents with any of these tags will be deleted based on the `delete_files` flag.
+# A list of tags that should trigger the deletion of torrents and/or files (files are only removed if delete_files is set).
 delete_tags = ["unregistered", "unregistered:crossseeding"]
 
 # A dictionary specifying whether to delete files for each tag.
@@ -29,12 +28,11 @@ delete_tags = ["unregistered", "unregistered:crossseeding"]
 delete_files = {
     "unregistered": False,
     "unregistered:crossseeding": True,
-    "custom_tag": False
 }
 
 # A list of messages or patterns to match for unregistered torrents.
-# Each entry in this list can be a full message (e.g. 'This torrent does not exist')
-# or a pattern to match messages that start with specific text (e.g. 'starts_with:Trump').
+# Each entry in this list can be a full message (e.g., 'This torrent does not exist')
+# or a pattern to match messages that start with specific text (e.g., 'starts_with:Trump').
 unregistered = [
     'This torrent does not exist',
     'Unregistered torrent',
