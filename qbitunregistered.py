@@ -109,7 +109,7 @@ for torrent in client.torrents.info():
                 # Not a dry run, execute the action
                 client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
     # Update tag counts for the current torrent
-    tags = client.torrents.get_tags(torrent.hash)
+    tags = torrent.tags()
     for tag in tags:
         if tag in tag_counts:
             tag_counts[tag] += 1
