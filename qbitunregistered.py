@@ -18,7 +18,6 @@ parser.add_argument('--host', type=str, default=config.host, help='The host and 
 parser.add_argument('--username', type=str, default=config.username, help='The username for logging into qBittorrent Web UI.')
 parser.add_argument('--password', type=str, default=config.password, help='The password for logging into qBittorrent Web UI.')
 parser.add_argument('--dry-run', action='store_true', default=config.dry_run, help='If set, the script will only log actions without executing them.')
-parser.add_argument('--other-issues-tag', type=str, default=config.other_issues_tag, help='The tag to be used for torrents that have issues other than being unregistered.')
 parser.add_argument('--delete-tags', nargs='+', default=config.delete_tags, help='A list of tags that should trigger the deletion of torrents and/or files.')
 parser.add_argument('--delete-files', action='store_true', help='If set, the script will delete files along with torrents for the specified delete tags.')
 parser.add_argument('--enable-scheduler', action='store_true', default=config.enable_scheduler, help='If set, the script will run as per the scheduled times.')
@@ -98,7 +97,7 @@ for torrent in client.torrents.info():
             logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
 
             # Add a tag to the torrent
-            tags_to_add = [args.other_issues_tag]
+            tags_to_add = [config.other_issues_tag]
             if args.dry_run:
                 # Dry run, only log what would be done
                 logging.info("[Dry Run] Would add tags %s to torrent with name %s", tags_to_add, torrent.name)
@@ -131,7 +130,7 @@ for torrent in client.torrents.info():
 
 # Log tag statistics at the end
 logging.info("Tag statistics:")
-tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, args.other_issues_tag: 0}
+tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
 for torrent in torrents:
     tags = torrent.tags
     for tag in tags:
@@ -139,7 +138,7 @@ for torrent in torrents:
             tag_counts[tag] += 1
 logging.info("Total torrents with 'unregistered' tag: %d", tag_counts["unregistered"])
 logging.info("Total torrents with 'unregistered:crossseeding' tag: %d", tag_counts["unregistered:crossseeding"])
-logging.info("Total torrents with '%s' tag: %d", args.other_issues_tag, tag_counts[args.other_issues_tag])
+logging.info("Total torrents with '%s' tag: %d", config.other_issues_tag, tag_counts[config.other_issues_tag])
 
 # Log additional statistics
 logging.info("Total torrents removed from qBittorrent: %d", total_deleted_count)
