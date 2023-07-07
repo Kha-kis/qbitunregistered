@@ -6,7 +6,7 @@ This is a Python script that helps manage torrents in qBittorrent by checking to
 
 - Checks all torrents in qBittorrent for tracker status messages.
 - Adds tags to torrents that have unregistered tracker messages.
-- Validates if cross-seeding is taking place and tags seperatly
+- Validates if unregistered torrents are cross-seeding tags them separately.
 - Customizable through a config file.
 - Option for a dry run to see what actions the script will perform without making changes.
 
@@ -22,7 +22,12 @@ This is a Python script that helps manage torrents in qBittorrent by checking to
 
 ## Configuration
 
-Before running the script, you must configure it by editing the `config.py` file. Below are the options you can set:
+Before running the script, you must create a configuration file by copying the provided example configuration file and editing it.
+
+1. Copy the example configuration file: `cp config.py.example config.py`.
+2. Edit `config.py` with your own settings.
+
+Below are the options you can set in `config.py`:
 
 - `host`: The host and port where qBittorrent is running.
 - `username`: The username for logging into qBittorrent's Web UI.
@@ -34,7 +39,8 @@ Before running the script, you must configure it by editing the `config.py` file
 ## Usage
 
 1. Make sure you've configured the script correctly via the `config.py` file.
-2. Run the script by executing: `python qbitunregistered.py`
+2. Run the script by executing: `python qbitunregistered.py`.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a pull request or create issues if you find any.
