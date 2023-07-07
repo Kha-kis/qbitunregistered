@@ -101,11 +101,12 @@ for torrent in client.torrents.info():
         else:
             # Not a dry run, execute the action
             client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
-        
+
         # Update the tag counts
         for tag in tags_to_add:
-            tag_counts[tag] += 1
-        
+            if tag in tag_counts:
+                tag_counts[tag] += 1
+
         continue
 
     # Check trackers for other issues
@@ -125,7 +126,8 @@ for torrent in client.torrents.info():
 
             # Update the tag counts
             for tag in tags_to_add:
-                tag_counts[tag] += 1
+                if tag in tag_counts:
+                    tag_counts[tag] += 1
 
 # Log the total number of torrents with each added tag
 logging.info("Tag statistics:")
@@ -135,3 +137,4 @@ for tag, count in tag_counts.items():
 
 # Log script end
 logging.info("qbitunregistered script completed.")
+
