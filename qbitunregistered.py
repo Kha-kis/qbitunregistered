@@ -94,7 +94,7 @@ for torrent in client.torrents.info():
             logging.info("[Dry Run] Would add tags %s to torrent with hash %s", tags_to_add, torrent.hash)
         else:
             # Not a dry run, execute the action
-            client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
+            client.torrents.add_tags(torrent_hashes=[torrent.hash], tags=tags_to_add)
 
     # Check trackers for other issues
     for tracker in torrent.trackers:
@@ -106,7 +106,7 @@ for torrent in client.torrents.info():
 logging.info("Tag statistics:")
 tag_counts = {"unregistered": 0, "unregistered:crossseeding": 0, config.other_issues_tag: 0}
 for torrent in torrents:
-    tags = client.torrents.get_tags(torrent.hash)
+    tags = client.get_torrent_tags(torrent.hash)
     for tag in tags:
         if tag in tag_counts:
             tag_counts[tag] += 1
