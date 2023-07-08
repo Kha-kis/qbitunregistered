@@ -20,6 +20,8 @@ parser.add_argument('--username', type=str, help='The username for logging into 
 parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
 parser.add_argument('--dry-run', action='store_true', help='If set, the script will only print actions without executing them.')
 parser.add_argument('--other-issues-tag', type=str, help='The tag to be used for torrents that have issues other than being unregistered.')
+parser.add_argument('--use-delete-tags', type=bool, help='Flag for using delete_tags in the script.')
+parser.add_argument('--use-delete-files', type=bool, help='Flag for using delete_files in the script.')
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -31,6 +33,8 @@ password = args.password if args.password else config.password
 dry_run = args.dry_run if args.dry_run else config.dry_run
 other_issues_tag = args.other_issues_tag if args.other_issues_tag else config.other_issues_tag
 unregistered = config.unregistered
+use_delete_tags = args.use_delete_tags if args.use_delete_tags is not None else config.use_delete_tags
+use_delete_files = args.use_delete_files if args.use_delete_files is not None else config.use_delete_files
 
 # Connect to qBittorrent client
 client = Client(host=config.host, username=config.username, password=config.password)
