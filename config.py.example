@@ -19,16 +19,22 @@ dry_run = True
 # You can change this value to any tag you want.
 other_issues_tag = "custom_tag"
 
+# Flag for using delete_tags in the script.
+use_delete_tags = True 
+
 # A list of tags that should trigger the deletion of torrents and/or files (files are only removed if delete_files is set).
 delete_tags = ["unregistered", "unregistered:crossseeding"]
+
+# Flag for using delete_files in the script.
+use_delete_files = True
 
 # A dictionary specifying whether to delete files for each tag.
 # The keys represent the tags, and the values represent whether to delete files (True) or not (False) for each tag.
 # Note: The tags specified in `delete_tags` should have corresponding entries in this dictionary.
 delete_files = {
     "unregistered": False,
-    "unregistered:crossseeding": True,
-}
+    "unregistered:crossseeding": False,
+}}
 
 # A list of messages or patterns to match for unregistered torrents.
 # Each entry in this list can be a full message (e.g., 'This torrent does not exist')
