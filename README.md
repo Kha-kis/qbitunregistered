@@ -35,6 +35,10 @@ Below are the options you can set in `config.py`:
 - `unregistered`: A list of messages or patterns to identify unregistered torrents.
 - `dry_run`: A flag for dry run mode. If set to True, the script will only print actions without executing them.
 - `other_issues_tag`: The tag to be used for torrents that have issues other than being unregistered.
+- `use_delete_tags`: If set to True, torrents with specified tags will be deleted.
+- `use_delete_files`: If set to True, files for torrents with specified tags will be deleted.
+- `delete_tags`: A list of tags that should trigger the deletion of torrents and/or files.
+- `delete_files`: A dictionary specifying whether to delete files for each tag. The keys represent the tags, and the values represent whether to delete files (True) or not (False) for each tag.
 
 ## Usage
 
@@ -44,7 +48,7 @@ Below are the options you can set in `config.py`:
 You can also override configuration settings with command-line arguments:
 
 ```sh
-python qbitunregistered.py --host "localhost:8080" --username "admin" --password "password" --dry-run --other-issues-tag "other_issues"
+python qbitunregistered.py --host "localhost:8080" --username "admin" --password "password" --dry-run --other-issues-tag "other_issues" --use-delete-tags True --use-delete-files True
 ```
 
 Available command-line arguments:
@@ -54,6 +58,8 @@ Available command-line arguments:
 - `--password`: Override the password for logging into qBittorrent's Web UI.
 - `--dry-run`: If set, the script will only print actions without executing them.
 - `--other-issues-tag`: Override the tag to be used for torrents that have issues other than being unregistered.
+- `--use-delete-tags`: If set to True, torrents with specified tags will be deleted. If set to False, the deletion is ignored.
+- `--use-delete-files`: If set to True, files for torrents with specified tags will be deleted. If set to False, file deletion is ignored.
 
 ## Contributing
 
