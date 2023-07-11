@@ -42,9 +42,12 @@ def check_files_on_disk(client):
     for save_path in save_paths:
         logging.info(f"Checking save path: {save_path}")
 
-        # Get files on disk for current save path
-        files_on_disk = get_files_in_directory(save_path)
-        dirs_on_disk = get_directories_in_directory(save_path)
+        # Get files and directories on disk for current save path
+        files_on_disk = set()
+        dirs_on_disk = set()
+        for root, dirs, filenames in os.walk(save_path):
+            files_on_disk.update([os.path.join(root, filename) for filename in filenames])
+            dirs_on_disk.update([os.path.join(root, directory) for directory in dirs])
 
         # Collect unregistered files and directories per save path
         unregistered_files = set()
@@ -56,10 +59,10 @@ def check_files_on_disk(client):
                 torrent_files = set(os.path.join(torrent.save_path, file['name']) for file in torrent.files)
                 unregistered_files.update(file for file in files_on_disk if file not in torrent_files)
 
-        # Check for unregistered directories
+        # Check for orphaned directories
         for directory in dirs_on_disk:
             dir_path = os.path.join(save_path, directory)
-            if not os.listdir(dir_path):
+            if not any(os.path.join(dir_path, file) in unregistered_files for file in os.listdir(dir_path)):
                 unregistered_dirs.add(dir_path)
 
         num_unregistered_files = len(unregistered_files)
