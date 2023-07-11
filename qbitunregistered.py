@@ -47,7 +47,7 @@ if args.unregistered:
 
 # Call the check_files_on_disk function if --orphaned argument is passed
 if args.orphaned:
-    check_files_on_disk(client, config, torrents)
+    check_files_on_disk(client)
 
 # Log script end
 logging.info("qbitunregistered script completed.")

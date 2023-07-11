@@ -34,7 +34,10 @@ def check_files_on_disk(client):
                 check_files_for_torrent(torrent, files_on_disk)
 
 def check_files_for_torrent(torrent, files_on_disk):
-    # Check if each file in the given list is in the torrent's files.
+    # Get the file paths for all files in the torrent
+    torrent_files = {os.path.join(torrent.save_path, file['name']) for file in torrent.files()}
+
+    # Check if each file on disk is in the torrent's files
     for file in files_on_disk:
-        if file not in torrent.files:
+        if file not in torrent_files:
             logging.info(f'File "{file}" is on disk but not in the client for save path "{torrent.save_path}"')
