@@ -2,7 +2,14 @@ import os
 
 def check_files_on_disk(client):
     # Retrieve the save paths for each category
-    category_save_paths = [category["savePath"] for category in client.torrents_categories() if category.get("savePath")]
+    categories = client.torrents_categories()
+
+    if not isinstance(categories, list):
+        # Handle case where only a single category is returned as a string
+        categories = [categories]
+
+    # Filter out categories without savePath
+    category_save_paths = [category["savePath"] for category in categories if category.get("savePath")]
 
     # Iterate over the save paths and check for orphaned files
     for category_save_path in category_save_paths:
