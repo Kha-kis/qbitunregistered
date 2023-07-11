@@ -76,11 +76,15 @@ def check_files_for_torrent(torrent, files_on_disk):
     logging.info(f"Total files associated with torrent: {len(torrent_files)}")
 
     unregistered_files = files_on_disk_set - torrent_files
+    num_unregistered_files = len(unregistered_files)
 
-    logging.info(f"Total unregistered files: {len(unregistered_files)}")
-    logging.info("Unregistered Files:")
-    for file in unregistered_files:
-        logging.info(file)
-    logging.info("End of Unregistered Files")
+    logging.info(f"Total unregistered files: {num_unregistered_files}")
+    if num_unregistered_files > 0:
+        logging.info("Unregistered Files:")
+        for file in unregistered_files:
+            logging.info(file)
+        logging.info("End of Unregistered Files")
+    else:
+        logging.info("No unregistered files found.")
 
 
