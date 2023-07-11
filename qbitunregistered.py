@@ -4,14 +4,12 @@ import argparse
 import os
 import logging
 from qbittorrentapi import Client
-from scripts.orphaned import check_files_on_disk
-from scripts.unregistered_checks import unregistered_checks
+from scripts.orphaned import find_orphaned_files
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
 parser.add_argument('--config', type=str, default='config.json', help='Path to the config.json file.')
 parser.add_argument('--orphaned', action='store_true', help='If set, check for orphaned files on disk.')
-parser.add_argument('--unregistered', action='store_true', help='If set, check for unregistered torrents.')
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -41,13 +39,10 @@ logging.info("Fetching torrent information from qBittorrent...")
 torrents = client.torrents.info()
 logging.info("Total torrents found: %d", len(torrents))
 
-# Call the unregistered_checks function if --unregistered argument is passed
-if args.unregistered:
-    torrent_file_paths, unregistered_counts_per_path = unregistered_checks(client, config['unregistered'], config['dry_run'], config['use_delete_tags'], config['use_delete_files'])
-
-# Call the check_files_on_disk function if --orphaned argument is passed
+# Call the find_orphaned_files function if --orphaned argument is passed
 if args.orphaned:
-    check_files_on_disk(client)
+    orphaned_files = find_orphaned_files(client)
+    logging.info("Total orphaned files: %d", len(orphaned_files))
 
 # Log script end
 logging.info("qbitunregistered script completed.")
