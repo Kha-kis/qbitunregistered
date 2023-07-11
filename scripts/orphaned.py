@@ -74,18 +74,19 @@ def check_files_for_torrent(torrent, files_on_disk):
     num_unregistered_files = len(unregistered_files)
 
     logging.info(f"Total unregistered files: {num_unregistered_files}")
+
     if num_unregistered_files > 0:
         logging.info("Unregistered Files:")
-        # Set the maximum number of unregistered files to display
-        max_display = 1
-        count = 0
         for file in unregistered_files:
             logging.info(file)
-            count += 1
-            if count >= max_display:
-                break
-        if num_unregistered_files > max_display:
-            logging.info(f"and {num_unregistered_files - max_display} more unregistered files.")
+
+        # Add an additional check for the specific file path
+        orphaned_file_path = '/home/khak1s/torrents/qbittorrent/reuploads/Gundarr S01 720p WEB-DL AAC2.0 H.264-cfandora'
+        if orphaned_file_path in unregistered_files:
+            logging.info(f"Orphaned file found: {orphaned_file_path}")
+        else:
+            logging.info(f"Orphaned file not found: {orphaned_file_path}")
+
         logging.info("End of Unregistered Files")
     else:
         logging.info("No unregistered files found.")
