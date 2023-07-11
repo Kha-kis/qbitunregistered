@@ -1,4 +1,5 @@
 import os
+import logging
 
 def check_files_on_disk(client):
     # Check files on disk for orphaned files.
