@@ -47,7 +47,7 @@ def check_files_on_disk(client):
     for category in categories:
         if category.savePath != '':
             save_path = category.savePath
-            #print(f"Checking save path: {save_path}")
+            print(f"Checking save path: {save_path}")
             files_on_disk = get_files_in_directory(save_path)
             category_torrents = client.torrents.info(category=category.name)
             for torrent in category_torrents:
