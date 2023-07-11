@@ -21,7 +21,7 @@ def get_directories_in_directory(directory):
 
 
 def check_files_on_disk(client):
-    # Check files on disk for orphaned files and directories.
+    # Check files on disk for orphaned files.
 
     # Get default save path from qBittorrent API
     default_save_path = client.app.default_save_path
@@ -40,56 +40,30 @@ def check_files_on_disk(client):
     for save_path in save_paths:
         logging.info(f"Checking save path: {save_path}")
 
-        # Get files and directories on disk for current save path
-        files_on_disk = set()
-        dirs_on_disk = set()
+        # Get all files on disk in the save path
+        files_on_disk = get_files_in_directory(save_path)
 
-        queue = deque()
-        queue.append(save_path)
+        # Get all torrent files in the save path
+        torrent_files = set()
+        torrents = client.torrents.info()
+        for torrent in torrents:
+            if torrent.save_path == save_path:
+                torrent_files.update([os.path.join(save_path, file['name']) for file in torrent.files()])
 
-        while queue:
-            current_dir = queue.popleft()
+        # Find orphaned files
+        orphaned_files = files_on_disk - torrent_files
 
-            try:
-                entries = os.scandir(current_dir)
-            except OSError:
-                continue
-
-            for entry in entries:
-                if entry.is_file():
-                    files_on_disk.add(entry.path)
-                elif entry.is_dir():
-                    dirs_on_disk.add(entry.path)
-                    queue.append(entry.path)
-
-        # Check for orphaned files
-        orphaned_files = set()
-        for file in files_on_disk:
-            if not any(os.path.join(save_path, torrent_file['name']) == file for torrent_file in client.torrents.info()):
-                orphaned_files.add(file)
-
-        # Check for orphaned directories
-        orphaned_dirs = set()
-        for directory in dirs_on_disk:
-            dir_path = os.path.join(save_path, directory)
-            if not os.listdir(dir_path):
-                orphaned_dirs.add(dir_path)
-
-        num_orphaned_files = len(orphaned_files)
-        num_orphaned_dirs = len(orphaned_dirs)
-
-        logging.info(f"Total orphaned files: {num_orphaned_files}")
-        logging.info(f"Total orphaned directories: {num_orphaned_dirs}")
-
-        if num_orphaned_files > 0 or num_orphaned_dirs > 0:
+        if orphaned_files:
             logging.info("Orphaned Files:")
             for file in orphaned_files:
                 logging.info(file)
-
-            logging.info("Orphaned Directories:")
-            for directory in orphaned_dirs:
-                logging.info(directory)
-
-            logging.info("End of Orphaned Files and Directories")
         else:
-            logging.info("No orphaned files or directories found.")
+            logging.info("No orphaned files found.")
+
+def get_files_in_directory(directory):
+    # Get all files in a given directory.
+    files = set()
+    for root, _, filenames in os.walk(directory):
+        for filename in filenames:
+            files.add(os.path.join(root, filename))
+    return files
