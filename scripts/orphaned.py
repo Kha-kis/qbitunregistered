@@ -24,14 +24,16 @@ def check_files_on_disk(client):
             check_files_for_torrent(torrent, files_on_disk)
 
     # Get save paths for each category
-    categories = client.categories.info()
-    for category_name in categories.keys():
-        save_path = categories[category_name].savePath
-        files_on_disk = get_files_in_directory(save_path)
-        category_torrents = client.torrents.info(category=category_name)
-        for torrent in category_torrents:
-            if torrent.save_path == save_path:
-                check_files_for_torrent(torrent, files_on_disk)
+    categories = client.torrents_categories()
+    for category_name, category in categories.items():
+        if category.savePath != '':
+            save_path = category.savePath
+            files_on_disk = get_files_in_directory(save_path)
+            category_torrents = client.torrents.info(category=category_name)
+            for torrent in category_torrents:
+                if torrent.save_path == save_path:
+                    check_files_for_torrent(torrent, files_on_disk)
+
 
 
 
