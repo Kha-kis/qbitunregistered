@@ -16,12 +16,27 @@ def check_files_on_disk(client):
     # Get default save path from qBittorrent API
     default_save_path = client.app.default_save_path
 
+    print(f"Checking save path: {default_save_path}")
+
     # Get files on disk for default save path
     files_on_disk = get_files_in_directory(default_save_path)
     torrents = client.torrents.info()
     for torrent in torrents:
         if not torrent.category and torrent.save_path == default_save_path:
             check_files_for_torrent(torrent, files_on_disk)
+
+    # Get save paths for each category
+    categories = client.torrents_categories().values()
+    for category in categories:
+        if category.savePath != '':
+            save_path = category.savePath
+            print(f"Checking save path: {save_path}")
+            files_on_disk = get_files_in_directory(save_path)
+            category_torrents = client.torrents.info(category=category.name)
+            for torrent in category_torrents:
+                if torrent.save_path == save_path:
+                    check_files_for_torrent(torrent, files_on_disk)
+
 
     # Get save paths for each category
     categories = client.torrents_categories()
