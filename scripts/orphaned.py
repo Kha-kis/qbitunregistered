@@ -26,26 +26,32 @@ def check_files_on_disk(client):
     # Get default save path from qBittorrent API
     default_save_path = client.app.default_save_path
 
-    # Create a set of all unique save paths
-    save_paths = set()
-    save_paths.add(default_save_path)
+    # Create a dictionary to store the count of torrents per save path
+    torrents_count_per_path = {default_save_path: 0}
 
     # Get save paths for each category
     categories = client.torrents_categories().values()
     for category in categories:
-        if category.savePath != '':
-            save_paths.add(category.savePath)
+        save_path = category.savePath
+        if save_path != '':
+            torrents_count_per_path[save_path] = 0
 
-    # Iterate over unique save paths
-    for save_path in save_paths:
-        logging.info(f"Checking save path: {save_path}")
+    # Iterate over torrents and increment the count for each save path
+    torrents = client.torrents.info()
+    for torrent in torrents:
+        save_path = torrent.save_path
+        if save_path in torrents_count_per_path:
+            torrents_count_per_path[save_path] += 1
+
+    # Iterate over save paths and log the count of torrents
+    for save_path, count in torrents_count_per_path.items():
+        logging.info(f"Save Path: {save_path} | Torrents Count: {count}")
 
         # Get all files on disk in the save path
         files_on_disk = get_files_in_directory(save_path)
 
         # Get all torrent files in the save path
         torrent_files = set()
-        torrents = client.torrents.info()
         for torrent in torrents:
             if torrent.save_path == save_path:
                 torrent_files.update([os.path.join(save_path, file['name']) for file in torrent.files()])
