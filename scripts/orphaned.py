@@ -1,38 +1,37 @@
-#!/usr/bin/python3
-import json
-import argparse
+import os
 import logging
-from qbittorrentapi import Client
-from scripts.orphaned import check_files_on_disk
 
-# Set up command-line argument parsing
-parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
-parser.add_argument('--config', type=str, default='config.json', help='Path to the config.json file.')
-parser.add_argument('--orphaned', action='store_true', help='If set, check for orphaned files on disk.')
+def get_files_in_directory(directory):
+    # Get all files in a given directory.
+    files = []
+    for root, _, filenames in os.walk(directory):
+        for filename in filenames:
+            files.append(os.path.join(root, filename))
+    return files
 
-# Parse command-line arguments
-args = parser.parse_args()
+def check_files_on_disk(client, config):
+    # Check files on disk against torrents in each save path.
 
-# Load configuration from config.json
-with open(args.config, 'r') as config_file:
-    config = json.load(config_file)
+    # Get default save path
+    default_save_path = config['default_save_path']
+    files_on_disk = get_files_in_directory(default_save_path)
+    torrents = client.torrents.info()
+    for torrent in torrents:
+        if not torrent.category and torrent.save_path == default_save_path:
+            check_files_for_torrent(torrent, files_on_disk)
 
-# Connect to qBittorrent client
-client = Client(host=config['host'], port=config['port'], username=config['username'], password=config['password'])
+    # Get save paths for each category
+    categories = client.torrents.categories()
+    for category in categories:
+        save_path = category['savePath']
+        files_on_disk = get_files_in_directory(save_path)
+        torrents = client.torrents.info(category=category['name'])
+        for torrent in torrents:
+            if torrent.save_path == save_path:
+                check_files_for_torrent(torrent, files_on_disk)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
-# Log script start
-logging.info("Starting qbitunregistered script...")
-
-# Call the check_files_on_disk function if --orphaned argument is passed
-if args.orphaned:
-    check_files_on_disk(client, config)
-
-# Log script end
-logging.info("qbitunregistered script completed.")
+def check_files_for_torrent(torrent, files_on_disk):
+    # Check if each file in the given list is in the torrent's files.
+    for file in files_on_disk:
+        if file not in torrent.files:
+            logging.info(f'File "{file}" is on disk but not in the client for save path "{torrent.save_path}"')
