@@ -2,6 +2,23 @@
 import os
 import logging
 
+def get_files_in_directory(directory):
+    # Get all files in a given directory.
+    files = []
+    for root, _, filenames in os.walk(directory):
+        for filename in filenames:
+            files.append(os.path.join(root, filename))
+    return files
+
+def get_directories_in_directory(directory):
+    # Get all directories in a given directory.
+    directories = []
+    for root, dirs, _ in os.walk(directory):
+        for directory in dirs:
+            directories.append(os.path.join(root, directory))
+    return directories
+
+
 def check_files_on_disk(client):
     # Check files on disk against torrents in each save path.
 
