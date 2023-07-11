@@ -80,12 +80,11 @@ def check_files_for_torrent(torrent, files_on_disk):
         for file in unregistered_files:
             logging.info(file)
 
-        # Add an additional check for the specific file path
-        orphaned_file_path = '/home/khak1s/torrents/qbittorrent/reuploads/Gundarr S01 720p WEB-DL AAC2.0 H.264-cfandora'
-        if orphaned_file_path in unregistered_files:
-            logging.info(f"Orphaned file found: {orphaned_file_path}")
-        else:
-            logging.info(f"Orphaned file not found: {orphaned_file_path}")
+        # Check for unregistered directories
+        unregistered_dirs = set(os.path.dirname(file) for file in unregistered_files)
+        for dir_path in unregistered_dirs:
+            if not os.listdir(dir_path):
+                logging.info(f"Orphaned directory found: {dir_path}")
 
         logging.info("End of Unregistered Files")
     else:
