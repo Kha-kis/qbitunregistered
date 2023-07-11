@@ -1,13 +1,16 @@
 import os
 
 def check_files_on_disk(client):
-    # Retrieve the save paths from qBittorrent
-    category_save_paths = [category for category in client.torrents_categories() if category]
+    # Retrieve the save paths for each category
+    category_save_paths = [category.savePath for category in client.torrents_categories() if category.savePath]
 
     # Iterate over the save paths and check for orphaned files
     for save_path in category_save_paths:
+        # Get the full save path for each category
+        full_save_path = os.path.join(client.config.save_path, save_path)
+
         # Get the list of files/directories in the save path
-        files_on_disk = os.listdir(save_path)
+        files_on_disk = os.listdir(full_save_path)
 
         # Fetch the list of torrents from qBittorrent
         torrents = client.torrents.info()
@@ -17,7 +20,7 @@ def check_files_on_disk(client):
             # Check if the file is orphaned
             if is_orphaned(file, torrents):
                 # File is orphaned, perform actions
-                process_orphaned_file(save_path, file)
+                process_orphaned_file(full_save_path, file)
 
 def is_orphaned(file, torrents):
     # Check if the file is orphaned based on the list of torrents
