@@ -14,7 +14,7 @@ def check_files_on_disk(client):
     root_directory = os.path.commonpath(save_paths)
 
     # Traverse the root directory and identify orphaned files
-    orphaned_files = set()
+    orphaned_files = set(root_files.result()) - set(torrent_files)
     for root, _, files in os.walk(root_directory):
         for file in files:
             file_path = os.path.join(root, file)
