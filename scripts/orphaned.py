@@ -68,8 +68,8 @@ def check_files_on_disk(client):
 
 def check_files_for_torrent(torrent, files_on_disk):
     # Check if each file in the given list is in the torrent's files.
-    torrent_files = set(os.path.join(torrent.save_path, file['name']) for file in torrent.files())
+    torrent_files = set(os.path.join(torrent.save_path, file['name']) for file in torrent.files)
+
     for file in files_on_disk:
         if file not in torrent_files:
             logging.info(f'File "{file}" is on disk but not in the client for save path "{torrent.save_path}"')
-            print(f'Orphaned file: {file}')
