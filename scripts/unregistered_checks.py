@@ -1,25 +1,24 @@
-# File: scripts/unregistered_checks.py
 import logging
 from urllib.parse import urlsplit
 
 def check_unregistered_message(tracker, unregistered):
-    #Check if tracker message matches any pattern in the unregistered list.
-    for pattern in unregistered:
-        lower_pattern = pattern.lower()
-        lower_msg = tracker.msg.lower()
+    lower_unregistered = {pattern.lower() for pattern in unregistered}
+    lower_msg = tracker.msg.lower()
 
-        if lower_pattern.startswith("starts_with:") and lower_msg.startswith(lower_pattern.split("starts_with:")[1]):
+    for pattern in lower_unregistered:
+        if pattern.startswith("starts_with:") and lower_msg.startswith(pattern.split("starts_with:")[1]):
             return True
-        elif lower_msg == lower_pattern:
+        elif lower_msg == pattern:
             return True
+
     return False
 
 def process_torrent(torrent, unregistered):
-    #Process a torrent to check for unregistered messages and return count.
     unregistered_count = 0
+    lower_unregistered = {pattern.lower() for pattern in unregistered}
 
     for tracker in torrent.trackers:
-        if check_unregistered_message(tracker, unregistered) and tracker.status == 4:
+        if check_unregistered_message(tracker, lower_unregistered) and tracker.status == 4:
             unregistered_count += 1
             tracker_short = urlsplit(tracker.url)
             logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
@@ -27,14 +26,9 @@ def process_torrent(torrent, unregistered):
     return unregistered_count
 
 def update_torrent_file_paths(torrent_file_paths, torrent):
-    #Update the file paths of torrents.
-    if torrent.save_path not in torrent_file_paths:
-        torrent_file_paths[torrent.save_path] = [torrent.hash]
-    else:
-        torrent_file_paths[torrent.save_path].append(torrent.hash)
+    torrent_file_paths.setdefault(torrent.save_path, []).append(torrent.hash)
 
 def delete_torrents_and_files(client, config, dry_run):
-    #Delete torrents and their files based on configuration and tags.
     if config.use_delete_tags:
         for torrent in client.torrents.info():
             for tag in config.delete_tags:
@@ -57,7 +51,6 @@ def delete_torrents_and_files(client, config, dry_run):
                             logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
 
 def unregistered_checks(client, unregistered, config, dry_run):
-    #Check for unregistered torrents and process them.
     torrent_file_paths = {}
     unregistered_counts_per_path = {}
 
@@ -66,10 +59,7 @@ def unregistered_checks(client, unregistered, config, dry_run):
 
         unregistered_count = process_torrent(torrent, unregistered)
 
-        if torrent.save_path not in unregistered_counts_per_path:
-            unregistered_counts_per_path[torrent.save_path] = unregistered_count
-        else:
-            unregistered_counts_per_path[torrent.save_path] += unregistered_count
+        unregistered_counts_per_path[torrent.save_path] = unregistered_counts_per_path.get(torrent.save_path, 0) + unregistered_count
 
     delete_torrents_and_files(client, config, dry_run)
 
