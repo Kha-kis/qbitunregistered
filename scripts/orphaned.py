@@ -44,8 +44,8 @@ def check_files_on_disk(client):
 
         if orphaned_files:
             logging.info(f"Orphaned Files Count: {len(orphaned_files)}")
-            for file in orphaned_files:
-                logging.info(file)
+            #for file in orphaned_files:
+            #    logging.info(file)
 
 def get_files_in_directory(directory):
     # Get all files in a given directory.
