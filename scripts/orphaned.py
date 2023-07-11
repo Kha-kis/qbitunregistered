@@ -11,12 +11,12 @@ def get_files_in_directory(directory):
     return files
 
 def check_files_on_disk(client):
-    # Check files on_disk against torrents in each save path.
+    # Check files on disk against torrents in each save path.
 
     # Get default save path from qBittorrent API
     default_save_path = client.app.default_save_path
 
-    # Get files on_disk for default save path
+    # Get files on disk for default save path
     files_on_disk = get_files_in_directory(default_save_path)
     torrents = client.torrents.info()
     for torrent in torrents:
@@ -34,15 +34,9 @@ def check_files_on_disk(client):
                 if torrent.save_path == save_path:
                     check_files_for_torrent(torrent, files_on_disk)
 
-
-
-
-
 def check_files_for_torrent(torrent, files_on_disk):
-    # Get the file paths for all files in the torrent
-    torrent_files = {os.path.join(torrent.save_path, file['name']) for file in torrent.files()}
-
-    # Check if each file on disk is in the torrent's files
+    # Check if each file in the given list is in the torrent's files.
+    torrent_files = set(file['name'] for file in torrent.files())  # Adjust this line as needed
     for file in files_on_disk:
         if file not in torrent_files:
             logging.info(f'File "{file}" is on disk but not in the client for save path "{torrent.save_path}"')
