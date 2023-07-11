@@ -2,12 +2,12 @@ import os
 
 def check_files_on_disk(client):
     # Retrieve the save paths for each category
-    category_save_paths = [category for category in client.torrents_categories() if category]
+    category_save_paths = [category["savePath"] for category in client.torrents_categories() if category.get("savePath")]
 
     # Iterate over the save paths and check for orphaned files
-    for category in category_save_paths:
-        # Get the full save path for each category
-        full_save_path = os.path.join(client.config.save_path, category)
+    for category_save_path in category_save_paths:
+        # Get the full save path
+        full_save_path = os.path.join(client.qb.config.save_path, category_save_path)
 
         # Get the list of files/directories in the save path
         files_on_disk = os.listdir(full_save_path)
