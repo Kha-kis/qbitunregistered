@@ -9,7 +9,7 @@ def get_files_in_directory(directory):
             files.append(os.path.join(root, filename))
     return files
 
-def check_files_on_disk(client, config):
+def check_files_on_disk(client, config, torrents):
     # Check files on disk against torrents in each save path.
 
     # Get default save path

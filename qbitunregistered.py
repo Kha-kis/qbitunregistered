@@ -43,7 +43,7 @@ logging.info("Total torrents found: %d", len(torrents))
 
 # Call the unregistered_checks function if --unregistered argument is passed
 if args.unregistered:
-    torrent_file_paths, unregistered_counts_per_path = unregistered_checks(client, config['unregistered'], config['dry_run'], config['use_delete_tags'], config['use_delete_files'])
+    torrent_file_paths, unregistered_counts_per_path = unregistered_checks(client, config, torrents)
 
 # Call the check_files_on_disk function if --orphaned argument is passed
 if args.orphaned:
