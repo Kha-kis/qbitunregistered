@@ -2,8 +2,8 @@ import os
 
 def check_files_on_disk(client):
     # Retrieve the save paths from torrent categories
-    category_save_paths = [category.savePath for category in client.torrents_categories() if category.savePath != '']
-    
+    category_save_paths = [category["savePath"] for category in client.torrents_categories() if category["savePath"]]
+
     # Retrieve the save path from qBittorrent configuration
     qbit_save_path = client.app.preferences().get("save_path")
 
@@ -30,6 +30,7 @@ def check_files_on_disk(client):
 
     # Return the set of orphaned files
     return orphaned_files
+
 
 
 def is_orphaned(file, torrents):
