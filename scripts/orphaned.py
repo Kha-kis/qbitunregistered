@@ -24,7 +24,7 @@ def check_files_on_disk(client):
         if save_path in torrents_count_per_path:
             torrents_count_per_path[save_path] += 1
 
-    # Iterate over save paths and log the count of torrents
+    # Iterate over save paths and log the count of torrents and orphaned files
     for save_path, count in torrents_count_per_path.items():
         logging.info(f"Save Path: {save_path} | Torrents Count: {count}")
 
@@ -42,6 +42,8 @@ def check_files_on_disk(client):
 
         if orphaned_files:
             logging.info(f"Orphaned Files Count: {len(orphaned_files)}")
+            for file in orphaned_files:
+                logging.info(file)
 
 def get_files_in_directory(directory):
     # Get all files in a given directory.
