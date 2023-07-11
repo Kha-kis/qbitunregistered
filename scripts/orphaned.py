@@ -1,32 +1,27 @@
 import os
 import logging
-from tqdm import tqdm
 
-def find_orphaned_files(client):
-    logging.info("Checking for orphaned files...")
-    save_paths = set()
-    orphaned_files = []
+def check_files_on_disk(client):
+    logging.info("Checking for orphaned files on disk...")
 
-    # Get save paths from qBittorrent client
-    categories = client.torrents_categories()
-    for category in categories.values():
-        save_path = category.savePath
-        if save_path:
-            save_paths.add(save_path)
+    # Fetch torrent information from qBittorrent
+    torrents = client.torrents.info()
 
-    # Count the total number of files to check
-    total_files = sum(len(files) for save_path in save_paths for _, _, files in os.walk(save_path))
+    # Get the save paths of the torrents
+    save_paths = set(torrent.save_path for torrent in torrents)
 
-    # Traverse the save paths and find orphaned files
-    with tqdm(total=total_files, desc="Progress") as pbar:
-        for save_path in save_paths:
-            for root, _, files in os.walk(save_path):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    if not any(torrent.content_path == file_path for torrent in client.torrents.info()):
-                        orphaned_files.append(file_path)
-                    pbar.update(1)
+    # Determine the root directory based on the common parent directory of the save paths
+    root_directory = os.path.commonpath(save_paths)
 
-    # Log the orphaned files count and return the list of orphaned files
-    logging.info("Total orphaned files: %d", len(orphaned_files))
-    return orphaned_files
+    # Traverse the root directory and identify orphaned files
+    orphaned_files = set()
+    for root, _, files in os.walk(root_directory):
+        for file in files:
+            file_path = os.path.join(root, file)
+            if not any(os.path.join(save_path, file) == file_path for save_path in save_paths):
+                orphaned_files.add(file_path)
+
+    # Display the count and paths of orphaned files
+    logging.info(f"Total orphaned files: {len(orphaned_files)}")
+    for file_path in orphaned_files:
+        logging.info(file_path)
