@@ -40,3 +40,4 @@ def check_files_for_torrent(torrent, files_on_disk):
     for file in files_on_disk:
         if file not in torrent_files:
             logging.info(f'File "{file}" is on disk but not in the client for save path "{torrent.save_path}"')
+            print(f'Orphaned file: {file}')
