@@ -1,24 +1,4 @@
-# File: scripts/orphaned.py
 import os
-import logging
-from collections import deque
-
-def get_files_in_directory(directory):
-    # Get all files in a given directory.
-    files = []
-    for root, _, filenames in os.walk(directory):
-        for filename in filenames:
-            files.append(os.path.join(root, filename))
-    return files
-
-def get_directories_in_directory(directory):
-    # Get all directories in a given directory.
-    directories = []
-    for root, dirs, _ in os.walk(directory):
-        for directory in dirs:
-            directories.append(os.path.join(root, directory))
-    return directories
-
 
 def check_files_on_disk(client):
     # Check files on disk for orphaned files.
@@ -72,3 +52,4 @@ def get_files_in_directory(directory):
     for root, _, filenames in os.walk(directory):
         for filename in filenames:
             files.add(os.path.join(root, filename))
+    return files
