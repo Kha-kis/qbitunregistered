@@ -22,13 +22,13 @@ def check_files_on_disk(client):
 def is_orphaned(file, torrents):
     # Check if the file is orphaned based on the list of torrents
     for torrent in torrents:
-        for torrent_file in torrent.files:
-            if os.path.join(torrent.save_path, torrent_file["name"]) == file:
-                # File is associated with a torrent, not orphaned
-                return False
+        if any(file.startswith(content_path) for content_path in torrent.content_path):
+            # File is associated with a torrent, not orphaned
+            return False
     
     # File is orphaned
     return True
+
 
 def process_orphaned_file(save_path, file):
     # Perform actions for orphaned file
