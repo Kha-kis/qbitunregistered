@@ -43,14 +43,19 @@ def check_files_on_disk(client):
         # Get files and directories on disk for current save path
         files_on_disk = set()
         dirs_on_disk = set()
-        
+
         queue = deque()
         queue.append(save_path)
 
         while queue:
             current_dir = queue.popleft()
 
-            for entry in os.scandir(current_dir):
+            try:
+                entries = os.scandir(current_dir)
+            except OSError:
+                continue
+
+            for entry in entries:
                 if entry.is_file():
                     files_on_disk.add(entry.path)
                 elif entry.is_dir():
