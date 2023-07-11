@@ -20,7 +20,7 @@ def get_directories_in_directory(directory):
 
 
 def check_files_on_disk(client):
-    # Check files on disk against torrents in each save path.
+    # Check files on disk for orphaned files and directories.
 
     # Get default save path from qBittorrent API
     default_save_path = client.app.default_save_path
@@ -35,9 +35,6 @@ def check_files_on_disk(client):
         if category.savePath != '':
             save_paths.add(category.savePath)
 
-    # Get all torrents
-    torrents = client.torrents.info()
-
     # Iterate over unique save paths
     for save_path in save_paths:
         logging.info(f"Checking save path: {save_path}")
@@ -49,37 +46,34 @@ def check_files_on_disk(client):
             files_on_disk.update([os.path.join(root, filename) for filename in filenames])
             dirs_on_disk.update([os.path.join(root, directory) for directory in dirs])
 
-        # Collect unregistered files and directories per save path
-        unregistered_files = set()
-        unregistered_dirs = set()
-
-        # Check each torrent in current save path
-        for torrent in torrents:
-            if torrent.save_path == save_path:
-                torrent_files = set(os.path.join(torrent.save_path, file['name']) for file in torrent.files)
-                unregistered_files.update(file for file in files_on_disk if file not in torrent_files)
+        # Check for orphaned files
+        orphaned_files = set()
+        for file in files_on_disk:
+            if not any(os.path.join(save_path, torrent_file['name']) == file for torrent_file in client.torrents.files()):
+                orphaned_files.add(file)
 
         # Check for orphaned directories
+        orphaned_dirs = set()
         for directory in dirs_on_disk:
             dir_path = os.path.join(save_path, directory)
-            if not any(os.path.join(dir_path, file) in unregistered_files for file in os.listdir(dir_path)):
-                unregistered_dirs.add(dir_path)
+            if not os.listdir(dir_path):
+                orphaned_dirs.add(dir_path)
 
-        num_unregistered_files = len(unregistered_files)
-        num_unregistered_dirs = len(unregistered_dirs)
+        num_orphaned_files = len(orphaned_files)
+        num_orphaned_dirs = len(orphaned_dirs)
 
-        logging.info(f"Total unregistered files: {num_unregistered_files}")
-        logging.info(f"Total unregistered directories: {num_unregistered_dirs}")
+        logging.info(f"Total orphaned files: {num_orphaned_files}")
+        logging.info(f"Total orphaned directories: {num_orphaned_dirs}")
 
-        if num_unregistered_files > 0 or num_unregistered_dirs > 0:
-            logging.info("Unregistered Files:")
-            for file in unregistered_files:
+        if num_orphaned_files > 0 or num_orphaned_dirs > 0:
+            logging.info("Orphaned Files:")
+            for file in orphaned_files:
                 logging.info(file)
 
-            logging.info("Unregistered Directories:")
-            for directory in unregistered_dirs:
+            logging.info("Orphaned Directories:")
+            for directory in orphaned_dirs:
                 logging.info(directory)
 
-            logging.info("End of Unregistered Files and Directories")
+            logging.info("End of Orphaned Files and Directories")
         else:
-            logging.info("No unregistered files or directories found.")
+            logging.info("No orphaned files or directories found.")
