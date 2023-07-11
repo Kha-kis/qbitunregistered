@@ -1,6 +1,7 @@
 # File: scripts/orphaned.py
 import os
 import logging
+from collections import deque
 
 def get_files_in_directory(directory):
     # Get all files in a given directory.
