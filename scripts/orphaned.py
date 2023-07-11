@@ -1,46 +1,58 @@
 import os
 import logging
-from typing import List
 from qbittorrentapi import Client
 
-def get_files_in_directory(directory: str) -> List[str]:
+def get_files_in_directory(directory):
     # Get all files in a given directory.
-    files = []
+    files = set()
     for root, _, filenames in os.walk(directory):
         for filename in filenames:
-            files.append(os.path.join(root, filename))
+            files.add(os.path.join(root, filename))
     return files
 
-def check_files_on_disk(client: Client):
+def check_files_on_disk(client):
     # Check files on disk against torrents in each save path.
 
-    # Get default save path
-    default_save_path = client.application.default_save_path
-    files_on_disk = get_files_in_directory(default_save_path)
-    torrents = client.torrents.info(save_path=default_save_path)
+    # Get download folders from qBittorrent client
+    download_folders = set(client.app.default_save_path)
+    categories = client.torrents_categories()
+    for category in categories.values():
+        if category.savePath:
+            download_folders.add(category.savePath)
+
+    # Collect files from download folders
+    files_on_disk = set()
+    for folder in download_folders:
+        files_on_disk.update(get_files_in_directory(folder))
+
+    # Fetch file information from qBittorrent
+    qbit_files = set()
+    torrents = client.torrents.info()
     for torrent in torrents:
-        if not torrent.category:
-            check_files_for_torrent(torrent, files_on_disk)
+        for file in torrent.files:
+            qbit_files.add(os.path.join(torrent.save_path, file.name))
 
-    # Get save paths for each category
-    categories = client.application.torrent_categories()
-    for category in categories:
-        save_path = category["savePath"]
-        if save_path == default_save_path:
-            continue  # Skip checking default save path for torrents with categories
-        files_on_disk = get_files_in_directory(save_path)
-        torrents = client.torrents.info(category=category["name"], save_path=save_path)
-        for torrent in torrents:
-            check_files_for_torrent(torrent, files_on_disk)
+    # Calculate orphaned files
+    orphaned_files = files_on_disk - qbit_files
 
-def check_files_for_torrent(torrent, files_on_disk):
-    # Check if each file in the given list is in the torrent's files.
-    parent_folder = os.path.dirname(torrent.save_path)
-    for file in files_on_disk:
-        if (
-            file not in torrent.files
-            and not file.startswith(".!qB")
-            and not file.endswith(".fastresume")
-            and not file.startswith(parent_folder + os.path.sep)
-        ):
-            logging.info(f'File "{file}" is on disk but not in the client for save path "{torrent.save_path}"')
+    # Display orphaned file information
+    logging.info(f"Total orphaned files: {len(orphaned_files)}")
+    total_size = sum(os.path.getsize(file) for file in orphaned_files)
+    logging.info(f"Total size of orphaned files: {total_size} bytes")
+
+    for file in orphaned_files:
+        size = os.path.getsize(file)
+        logging.info(f"Orphaned File: {file} - Size: {size} bytes")
+
+def __init__(args, logger):
+    client = Client(host=args.host, port=args.port, username=args.username, password=args.password)
+
+    # Check files on disk against torrents in each save path
+    check_files_on_disk(client)
+
+def add_arguments(subparser):
+    parser = subparser.add_parser('orphaned')
+    parser.add_argument('--host', type=str, default='localhost', help='qBittorrent host')
+    parser.add_argument('--port', type=int, default=8080, help='qBittorrent port')
+    parser.add_argument('--username', type=str, default='', help='qBittorrent username')
+    parser.add_argument('--password', type=str, default='', help='qBittorrent password')
