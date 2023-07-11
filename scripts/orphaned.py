@@ -1,4 +1,3 @@
-# File: scripts/orphaned.py
 import os
 import logging
 from typing import List
@@ -36,10 +35,12 @@ def check_files_on_disk(client: Client):
 
 def check_files_for_torrent(torrent, files_on_disk):
     # Check if each file in the given list is in the torrent's files.
+    parent_folder = os.path.dirname(torrent.save_path)
     for file in files_on_disk:
         if (
             file not in torrent.files
             and not file.startswith(".!qB")
             and not file.endswith(".fastresume")
+            and not file.startswith(parent_folder + os.path.sep)
         ):
             logging.info(f'File "{file}" is on disk but not in the client for save path "{torrent.save_path}"')
