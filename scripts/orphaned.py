@@ -1,12 +1,13 @@
+# File: scripts/orphaned.py
 import os
 import logging
 
 def get_files_in_directory(directory):
     # Get all files in a given directory.
-    files = []
+    files = set()
     for root, _, filenames in os.walk(directory):
         for filename in filenames:
-            files.append(os.path.join(root, filename))
+            files.add(os.path.join(root, filename))
     return files
 
 def check_files_on_disk(client, torrents):
@@ -15,7 +16,7 @@ def check_files_on_disk(client, torrents):
     # Get default save path from qBittorrent API
     default_save_path = client.app.default_save_path
 
-    # Rest of the code remains the same
+    # Get files on disk for default save path
     files_on_disk = get_files_in_directory(default_save_path)
     for torrent in torrents:
         if not torrent.category and torrent.save_path == default_save_path:
@@ -24,10 +25,10 @@ def check_files_on_disk(client, torrents):
     # Get save paths for each category
     categories = client.torrents.categories()
     for category in categories:
-        save_path = category['savePath']
+        save_path = category.save_path
         files_on_disk = get_files_in_directory(save_path)
-        torrents = client.torrents.info(category=category['name'])
-        for torrent in torrents:
+        category_torrents = client.torrents.info(category=category.name)
+        for torrent in category_torrents:
             if torrent.save_path == save_path:
                 check_files_for_torrent(torrent, files_on_disk)
 
