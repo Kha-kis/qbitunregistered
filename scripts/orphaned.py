@@ -69,20 +69,18 @@ def check_files_on_disk(client):
 def check_files_for_torrent(torrent, files_on_disk):
     # Check if each file in the given list is in the torrent's files.
     torrent_files = set(os.path.join(torrent.save_path, file['name']) for file in torrent.files)
+    files_on_disk_set = set(files_on_disk)
 
     logging.info(f"Checking files for torrent '{torrent.name}' in save path '{torrent.save_path}'")
-    logging.info(f"Total files on disk: {len(files_on_disk)}")
+    logging.info(f"Total files on disk: {len(files_on_disk_set)}")
     logging.info(f"Total files associated with torrent: {len(torrent_files)}")
 
-    unregistered_files = []
-    for file in files_on_disk:
-        if file not in torrent_files:
-            unregistered_files.append(file)
-            logging.info(f'File "{file}" is on disk but not in the client for save path "{torrent.save_path}"')
+    unregistered_files = files_on_disk_set - torrent_files
 
     logging.info(f"Total unregistered files: {len(unregistered_files)}")
     logging.info("Unregistered Files:")
     for file in unregistered_files:
         logging.info(file)
     logging.info("End of Unregistered Files")
+
 
