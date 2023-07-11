@@ -41,9 +41,7 @@ def check_files_on_disk(client):
         orphaned_files = files_on_disk - torrent_files
 
         if orphaned_files:
-            logging.info(f"Orphaned Files in {save_path}:")
-            for file in orphaned_files:
-                logging.info(file)
+            logging.info(f"Orphaned Files Count: {len(orphaned_files)}")
 
 def get_files_in_directory(directory):
     # Get all files in a given directory.
@@ -52,4 +50,3 @@ def get_files_in_directory(directory):
         for filename in filenames:
             files.add(os.path.join(root, filename))
     return files
-
