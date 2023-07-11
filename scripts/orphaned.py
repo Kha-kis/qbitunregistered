@@ -82,7 +82,7 @@ def check_files_for_torrent(torrent, files_on_disk):
     if num_unregistered_files > 0:
         logging.info("Unregistered Files:")
         # Set the maximum number of unregistered files to display
-        max_display = 10
+        max_display = 1
         count = 0
         for file in unregistered_files:
             logging.info(file)
