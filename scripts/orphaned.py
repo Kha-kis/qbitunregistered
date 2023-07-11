@@ -9,13 +9,14 @@ def get_files_in_directory(directory):
             files.append(os.path.join(root, filename))
     return files
 
-def check_files_on_disk(client, config, torrents):
+def check_files_on_disk(client, torrents):
     # Check files on disk against torrents in each save path.
 
-    # Get default save path
-    default_save_path = config['default_save_path']
+    # Get default save path from qBittorrent API
+    default_save_path = client.app.default_save_path
+
+    # Rest of the code remains the same
     files_on_disk = get_files_in_directory(default_save_path)
-    torrents = client.torrents.info()
     for torrent in torrents:
         if not torrent.category and torrent.save_path == default_save_path:
             check_files_for_torrent(torrent, files_on_disk)
