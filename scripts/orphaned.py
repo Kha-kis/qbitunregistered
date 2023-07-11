@@ -27,6 +27,8 @@ def check_files_on_disk(client: Client):
     categories = client.application.torrent_categories()
     for category in categories:
         save_path = category["savePath"]
+        if save_path == default_save_path:
+            continue  # Skip checking default save path for torrents with categories
         files_on_disk = get_files_in_directory(save_path)
         torrents = client.torrents.info(category=category["name"], save_path=save_path)
         for torrent in torrents:
@@ -35,5 +37,9 @@ def check_files_on_disk(client: Client):
 def check_files_for_torrent(torrent, files_on_disk):
     # Check if each file in the given list is in the torrent's files.
     for file in files_on_disk:
-        if file not in torrent.files:
+        if (
+            file not in torrent.files
+            and not file.startswith(".!qB")
+            and not file.endswith(".fastresume")
+        ):
             logging.info(f'File "{file}" is on disk but not in the client for save path "{torrent.save_path}"')
