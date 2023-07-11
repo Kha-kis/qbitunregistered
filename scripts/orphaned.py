@@ -49,7 +49,7 @@ def check_files_on_disk(client):
         # Check for orphaned files
         orphaned_files = set()
         for file in files_on_disk:
-            if not any(os.path.join(save_path, torrent_file) == file for torrent_file in client.torrents.files):
+            if not any(os.path.join(save_path, torrent_file['name']) == file for torrent_file in client.torrents.info()):
                 orphaned_files.add(file)
 
         # Check for orphaned directories
