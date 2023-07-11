@@ -18,13 +18,20 @@ def check_files_on_disk(client):
             torrents_count_per_path[save_path] = 0
 
     # Get all torrents from qBittorrent
-    torrents = client.torrents_info()
-    
+    torrents = client.torrents.info()
+
     # Iterate over torrents and increment the count for each save path
     for torrent in torrents:
         save_path = torrent.save_path
         if save_path in torrents_count_per_path:
             torrents_count_per_path[save_path] += 1
+        else:
+            # Check if the torrent is not orphaned using content_path instead of save_path
+            content_path = torrent.content_path
+            if content_path in torrents_count_per_path:
+                torrents_count_per_path[content_path] += 1
+            else:
+                torrents_count_per_path[content_path] = 1
 
     # Iterate over save paths and log the count of torrents and orphaned files
     for save_path, count in torrents_count_per_path.items():
@@ -36,7 +43,7 @@ def check_files_on_disk(client):
         # Get all torrent files in the save path
         torrent_files = set()
         for torrent in torrents:
-            if torrent.save_path == save_path:
+            if torrent.save_path == save_path or torrent.content_path == save_path:
                 torrent_files.update([os.path.join(save_path, file['name']) for file in torrent.files])
 
         # Find orphaned files
@@ -44,8 +51,8 @@ def check_files_on_disk(client):
 
         if orphaned_files:
             logging.info(f"Orphaned Files Count: {len(orphaned_files)}")
-            #for file in orphaned_files:
-            #    logging.info(file)
+            for file in orphaned_files:
+                logging.info(file)
 
 def get_files_in_directory(directory):
     # Get all files in a given directory.
@@ -54,4 +61,3 @@ def get_files_in_directory(directory):
         for filename in filenames:
             files.add(os.path.join(root, filename))
     return files
-
