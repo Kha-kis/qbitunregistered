@@ -26,20 +26,21 @@ def check_files_on_disk(client):
         if category.savePath != '':
             save_paths.add(category.savePath)
 
+    # Get all torrents
+    torrents = client.torrents.info()
+
     # Iterate over unique save paths
     for save_path in save_paths:
         print(f"Checking save path: {save_path}")
 
         # Get files on disk for current save path
         files_on_disk = get_files_in_directory(save_path)
-
-        # Get torrents in current save path
-        torrents = client.torrents.info(save_path=save_path)
         
         # Check each torrent in current save path
         for torrent in torrents:
             if torrent.save_path == save_path:
                 check_files_for_torrent(torrent, files_on_disk)
+
 
 
     # Get save paths for each category
