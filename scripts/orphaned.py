@@ -2,7 +2,7 @@ import os
 
 def check_files_on_disk(client):
     # Retrieve the save paths from qBittorrent preferences
-    save_paths = client.preferences.save_path
+    save_paths = [save_path.path for save_path in client.app.preferences()]
 
     # Initialize the set to store orphaned files
     orphaned_files = set()
