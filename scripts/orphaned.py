@@ -42,9 +42,19 @@ def check_files_on_disk(client):
         # Get files and directories on disk for current save path
         files_on_disk = set()
         dirs_on_disk = set()
-        for root, dirs, filenames in os.walk(save_path):
-            files_on_disk.update([os.path.join(root, filename) for filename in filenames])
-            dirs_on_disk.update([os.path.join(root, directory) for directory in dirs])
+        
+        queue = deque()
+        queue.append(save_path)
+
+        while queue:
+            current_dir = queue.popleft()
+
+            for entry in os.scandir(current_dir):
+                if entry.is_file():
+                    files_on_disk.add(entry.path)
+                elif entry.is_dir():
+                    dirs_on_disk.add(entry.path)
+                    queue.append(entry.path)
 
         # Check for orphaned files
         orphaned_files = set()
