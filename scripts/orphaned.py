@@ -10,25 +10,29 @@ def get_files_in_directory(directory):
             files.append(os.path.join(root, filename))
     return files
 
-def check_files_for_save_path(client, save_path):
-    # Check files on disk against torrents in the specified save path.
-    files_on_disk = get_files_in_directory(save_path)
-    torrents = client.torrents.info(save_path=save_path)
-    
-    for torrent in torrents:
-        for file in files_on_disk:
-            if file not in torrent.files:
-                logging.info(f'File "{file}" is on disk but not in the client for save path "{save_path}"')
+def check_files_for_torrent(torrent, files_on_disk):
+    # Check if each file in the given list is in the torrent's files.
+    for file in files_on_disk:
+        if file not in torrent.files:
+            logging.info(f'File "{file}" is on disk but not in the client for save path "{torrent.save_path}"')
 
 def check_files_on_disk(client):
     # Check files on disk against torrents in each save path.
 
     # Check default save path
     default_save_path = client.app.default_save_path
-    check_files_for_save_path(client, default_save_path)
+    files_on_disk = get_files_in_directory(default_save_path)
+    torrents = client.torrents.info()
+    for torrent in torrents:
+        if torrent.save_path == default_save_path:
+            check_files_for_torrent(torrent, files_on_disk)
 
     # Check save path for each category
     categories = client.torrents.categories()
     for category in categories:
         save_path = category.savePath
-        check_files_for_save_path(client, save_path)
+        files_on_disk = get_files_in_directory(save_path)
+        torrents = client.torrents.info(category=category.name)
+        for torrent in torrents:
+            if torrent.save_path == save_path:
+                check_files_for_torrent(torrent, files_on_disk)
