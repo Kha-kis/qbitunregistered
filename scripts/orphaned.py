@@ -24,9 +24,9 @@ def check_files_on_disk(client):
             check_files_for_torrent(torrent, files_on_disk)
 
     # Get save paths for each category
-    categories = client.torrents.categories()
-    for category in categories:
-        save_path = category.save_path
+    categories = client.torrents_categories.info()
+    client.torrents_categories.info()
+        save_path = category['save_path']
         files_on_disk = get_files_in_directory(save_path)
         category_torrents = client.torrents.info(category=category.name)
         for torrent in category_torrents:
