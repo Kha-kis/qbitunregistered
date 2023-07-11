@@ -1,40 +1,38 @@
 import os
 import logging
 
-def check_files_on_disk(client):
-    # Get the default save path from qBittorrent API
-    default_save_path = client.app.default_save_path
-
-    # Get all torrents from qBittorrent
-    torrents = client.torrents.info()
-
-    # Collect all files and directories within the default save path
-    files_on_disk = get_files_in_directory(default_save_path)
-
-    # Check if files on disk have corresponding torrents
-    orphaned_files = []
-    for file_path in files_on_disk:
-        found = False
-        for torrent in torrents:
-            content_path = torrent.content_path
-            if content_path and file_path.startswith(content_path):
-                found = True
-                break
-        if not found:
-            orphaned_files.append(file_path)
-
-    # Log the orphaned file paths
-    if orphaned_files:
-        logging.info("Orphaned files:")
-        for file_path in orphaned_files:
-            logging.info(file_path)
-    else:
-        logging.info("No orphaned files found.")
-
 def get_files_in_directory(directory):
-    # Get all files and directories in a given directory
+    # Get all files in a given directory.
     files = set()
     for root, _, filenames in os.walk(directory):
         for filename in filenames:
             files.add(os.path.join(root, filename))
     return files
+
+def find_orphaned_files(client):
+    # Get default save path from qBittorrent API
+    default_save_path = client.app.default_save_path
+
+    # Get files on disk for default save path
+    files_on_disk = get_files_in_directory(default_save_path)
+
+    # Check files on disk against torrents in each save path
+    torrents = client.torrents.info()
+    orphaned_files = []
+    for torrent in torrents:
+        if torrent.save_path == default_save_path:
+            check_files_for_torrent(torrent, files_on_disk)
+
+    return orphaned_files
+
+def check_files_for_torrent(torrent, files_on_disk):
+    # Check if each file in the given list is in the torrent's files.
+    for file in files_on_disk:
+        if file not in torrent.files:
+            logging.info(f'File "{file}" is orphaned')
+
+# Find orphaned files
+orphaned_files = find_orphaned_files(client)
+
+# Display the count of orphaned files
+logging.info(f"Total orphaned files: {len(orphaned_files)}")
