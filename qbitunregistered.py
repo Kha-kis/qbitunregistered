@@ -4,7 +4,7 @@ import argparse
 import os
 import logging
 from qbittorrentapi import Client
-from scripts.orphaned import find_orphaned_files
+from scripts.orphaned import check_files_on_disk
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
@@ -41,7 +41,7 @@ logging.info("Total torrents found: %d", len(torrents))
 
 # Call the find_orphaned_files function if --orphaned argument is passed
 if args.orphaned:
-    orphaned_files = find_orphaned_files(client)
+    orphaned_files = check_files_on_disk(client)
     logging.info("Total orphaned files: %d", len(orphaned_files))
 
 # Log script end
