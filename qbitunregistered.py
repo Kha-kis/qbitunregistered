@@ -20,18 +20,16 @@ parser.add_argument('--password', type=str, help='The password for logging into 
 # Parse command-line arguments
 args = parser.parse_args()
 
-# Override configuration with command-line arguments if provided
-config['host'] = args.host if args.host else config.get('host')
-config['username'] = args.username if args.username else config.get('username')
-config['password'] = args.password if args.password else config.get('password')
-dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', False)
-
-# Resolve the absolute path to the config.json file
-config_file_path = os.path.abspath(args.config)
-
 # Load configuration from config.json
+config_file_path = os.path.abspath(args.config)
 with open(config_file_path, 'r') as config_file:
     config = json.load(config_file)
+
+# Override configuration with command-line arguments if provided
+config['host'] = args.host or config.get('host')
+config['username'] = args.username or config.get('username')
+config['password'] = args.password or config.get('password')
+dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', False)
 
 # Connect to qBittorrent client
 client = Client(host=config['host'], username=config['username'], password=config['password'])
@@ -58,12 +56,12 @@ if args.orphaned:
 if args.unregistered:
     # Call the unregistered_checks function
     file_paths, unregistered_counts = unregistered_checks(
-        client,
-        config,
-        config.get('unregistered'),
-        config.get('use_delete_tags', False),
-        config.get('delete_tags', []),
-        config.get('delete_files', {}),
+        client=client,
+        config=config,
+        unregistered=config.get('unregistered'),
+        use_delete_tags=config.get('use_delete_tags', False),
+        delete_tags=config.get('delete_tags', []),
+        delete_files=config.get('delete_files', {}),
         dry_run=dry_run
     )
 
