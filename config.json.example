@@ -6,22 +6,22 @@
   "username": "admin",
 
   "//": "The password for logging into qbittorrent's web UI.",
-  "password": "adminadmin",
+  "password": "password",
 
   "//": "A flag for dry run mode. If set to true, the script will print what it would do but won't actually execute actions like adding tags or deleting torrents/files. Set to false to actually execute actions.",
   "dry_run": true,
 
   "//": "The tag to be used for torrents that have issues other than being unregistered.",
-  "other_issues_tag": "custom_tag",
+  "other_issues_tag": "issue",
 
   "//": "Flag for using delete_tags in the script.",
-  "use_delete_tags": true,
+  "use_delete_tags": false,
+
+  "//": "Flag for using delete_files in the script.",
+  "use_delete_files": false,
 
   "//": "A list of tags that should trigger the deletion of torrents and/or files (files are only removed if delete_files is set).",
   "delete_tags": ["unregistered", "unregistered:crossseeding"],
-
-  "//": "Flag for using delete_files in the script.",
-  "use_delete_files": true,
 
   "//": "A dictionary specifying whether to delete files for each tag. The keys represent the tags, and the values represent whether to delete files (true) or not (false) for each tag.",
   "delete_files": {
