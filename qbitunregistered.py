@@ -52,9 +52,9 @@ if args.unregistered:
         client,
         config.get('unregistered'),
         config,
-        use_delete_tags=config.get('use_delete_tags', False),
-        delete_tags=config.get('delete_tags', []),
-        delete_files=config.get('delete_files', {}),
+        config.get('use_delete_tags', False),
+        config.get('delete_tags', []),
+        config.get('delete_files', {}),
         dry_run=args.dry_run
     )
 

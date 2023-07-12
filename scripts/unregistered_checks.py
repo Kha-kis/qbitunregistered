@@ -51,7 +51,7 @@ def delete_torrents_and_files(client, config, use_delete_tags, dry_run):
                             logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
                     break  # Exit the inner loop after deleting the torrent
 
-def unregistered_checks(client, unregistered, config, use_delete_tags, dry_run):
+def unregistered_checks(client, unregistered, config, use_delete_tags, delete_tags, delete_files, dry_run):
     torrent_file_paths = {}
     unregistered_counts_per_path = {}
     tag_counts = {}
@@ -82,7 +82,7 @@ def unregistered_checks(client, unregistered, config, use_delete_tags, dry_run):
                 for tag in tags_to_add:
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
-    delete_torrents_and_files(client, config, use_delete_tags, dry_run)
+    delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run)
 
     for tag, count in tag_counts.items():
         logging.info("Tag: %s, Count: %d", tag, count)
