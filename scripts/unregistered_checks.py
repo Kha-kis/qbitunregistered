@@ -40,7 +40,7 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
                         logging.info(f"{action} torrent '{torrent.name}' with hash {torrent.hash}.")
                     break  # Exit the inner loop after deleting the torrent
 
-def unregistered_checks(client, unregistered, config, torrents, use_delete_tags, delete_tags, delete_files, dry_run):
+def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run):
     torrent_file_paths = {}
     unregistered_counts_per_path = {}
     tag_counts = {}

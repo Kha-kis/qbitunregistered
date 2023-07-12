@@ -57,17 +57,9 @@ if args.orphaned:
 
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
-    # Call the unregistered_checks function
-    file_paths, unregistered_counts = unregistered_checks(
-        client,
-        config,
-        torrents,
-        unregistered=config.get('unregistered'),
-        use_delete_tags=config.get('use_delete_tags', False),
-        delete_tags=config.get('delete_tags', []),
-        delete_files=config.get('delete_files', {}),
-        dry_run=dry_run
-    )
+    # Call the unregistered_checks function and pass the torrents list
+    file_paths, unregistered_counts = unregistered_checks(client, torrents, config, use_delete_tags=config.get('use_delete_tags', False), delete_tags=config.get('delete_tags', []), delete_files=config.get('delete_files', {}), dry_run=dry_run)
+
 
     # Log the total counts
     total_unregistered_count = sum(unregistered_counts.values())
