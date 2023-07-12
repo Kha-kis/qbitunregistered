@@ -29,11 +29,11 @@ def update_torrent_file_paths(torrent_file_paths, torrent):
     torrent_file_paths.setdefault(torrent.save_path, []).append(torrent.hash)
 
 def delete_torrents_and_files(client, config, dry_run):
-    if config.use_delete_tags:
+    if config['use_delete_tags']:
         for torrent in client.torrents.info():
-            for tag in config.delete_tags:
+            for tag in config['delete_tags']:
                 if tag in torrent.tags:
-                    if config.use_delete_files and config.delete_files.get(tag, False):
+                    if config['use_delete_files'] and config['delete_files'].get(tag, False):
                         if not dry_run:
                             # Delete files
                             client.torrents.delete(torrent.hash, delete_files=True)
