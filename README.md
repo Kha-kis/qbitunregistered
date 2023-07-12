@@ -41,7 +41,7 @@ Below are the options you can set in `config.json`:
 
 ## Usage
 
-1. Make sure you've configured the script correctly via the `config.py` file.
+1. Make sure you've configured the script correctly via the `config.json` file.
 2. Run the script by executing: `python qbitunregistered.py`.
 
 You can also override configuration settings with command-line arguments:
