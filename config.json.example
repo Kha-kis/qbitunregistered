@@ -42,5 +42,12 @@
     "unregistered torrent",
     "unregistered",
     "starts_with:Trump"
-  ]
+  ],
+
+  "//": "Mapping of terms or patterns associated with trackers and the corresponding tags.",
+  "tracker_tags": {
+    "aither": "AITHER",
+    "blutopia": "BLU",
+    "beyond-hd": "BHD"
+  }  
 }
