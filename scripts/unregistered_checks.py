@@ -66,3 +66,5 @@ def unregistered_checks(client, unregistered, config, dry_run):
 
     total_unregistered_count = sum(unregistered_counts_per_path.values())
     logging.info("Total unregistered torrents: %d", total_unregistered_count)
+
+    return torrent_file_paths, unregistered_counts_per_path
