@@ -6,6 +6,7 @@ import logging
 from qbittorrentapi import Client
 from scripts.orphaned import check_files_on_disk
 from scripts.unregistered_checks import unregistered_checks
+from scripts.tag_by_tracker import tag_by_tracker
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
@@ -16,6 +17,7 @@ parser.add_argument('--dry-run', action='store_true', help='If set, the script w
 parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
 parser.add_argument('--username', type=str, help='The username for logging into qBittorrent Web UI.')
 parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
+parser.add_argument('--tag-by-tracker', action='store_true', help='If set, perform tagging based on the associated tracker.')
 parser.add_argument('--exclude-paths', nargs='+', type=str, help='Paths to exclude from orphaned file check.')
 
 
@@ -69,6 +71,10 @@ if args.unregistered:
     # Log the total counts
     total_unregistered_count = sum(unregistered_counts.values())
     logging.info("Total unregistered count: %d", total_unregistered_count)
+
+# Run the tag_by_tracker function if desired
+if args.tag_by_tracker:
+    tag_by_tracker(client, config)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
