@@ -34,6 +34,9 @@ dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', Fa
 # Connect to qBittorrent client
 client = Client(host=config['host'], username=config['username'], password=config['password'])
 
+#define torrents
+torrents = client.torrents.info()
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -47,7 +50,7 @@ logging.info("Starting qbitunregistered script...")
 # Run orphaned check if --orphaned argument is passed
 if args.orphaned:
     # Call the check_files_on_disk function
-    orphaned_files = check_files_on_disk(client)
+    orphaned_files = check_files_on_disk(client, torrents)
 
     # Log the total number of orphaned files
     logging.info("Total orphaned files: %d", len(orphaned_files))
@@ -56,8 +59,9 @@ if args.orphaned:
 if args.unregistered:
     # Call the unregistered_checks function
     file_paths, unregistered_counts = unregistered_checks(
-        client=client,
-        config=config,
+        client,
+        config,
+        torrents,
         unregistered=config.get('unregistered'),
         use_delete_tags=config.get('use_delete_tags', False),
         delete_tags=config.get('delete_tags', []),
