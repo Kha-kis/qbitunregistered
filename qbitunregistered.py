@@ -51,7 +51,7 @@ if args.unregistered:
 
     # Log the file paths and unregistered counts
     for path, count in unregistered_counts.items():
-        logging.info("Path: %s, Unregistered Count: %d", path, count)
+        logging.info(Unregistered Count: %d", count)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
