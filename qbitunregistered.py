@@ -49,12 +49,5 @@ if args.unregistered:
     # Call the unregistered_checks function
     file_paths, unregistered_counts = unregistered_checks(client, config.get('unregistered'), config, dry_run=config.get('dry_run', False))
 
-
-   # Calculate the total count of unregistered torrents
-    total_unregistered_count = sum(unregistered_counts.values())
-
-   # Log the total count of unregistered torrents
-    logging.info("Total unregistered torrents: %d", total_unregistered_count)
-
 # Log script end
 logging.info("qbitunregistered script completed.")
