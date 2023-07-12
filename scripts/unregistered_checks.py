@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 import logging
 from urllib.parse import urlsplit
 
@@ -63,4 +64,5 @@ def unregistered_checks(client, unregistered, config, dry_run):
 
     delete_torrents_and_files(client, config, dry_run)
 
-    return torrent_file_paths, unregistered_counts_per_path
+    total_unregistered_count = sum(unregistered_counts_per_path.values())
+    logging.info("Total unregistered torrents: %d", total_unregistered_count)
