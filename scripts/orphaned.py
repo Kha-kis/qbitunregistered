@@ -49,6 +49,8 @@ def check_files_on_disk(client, torrents: List) -> List[str]:
 
     # Identify orphaned files: those that exist in the file system but not in the list of torrent-associated files
     orphaned_files = [f for f in all_files if f not in torrent_files]
-    logging.debug(f"Orphaned files: {orphaned_files}")
+    logging.info("Orphaned files:")
+    for file_path in orphaned_files:
+        logging.info(file_path)
 
     return orphaned_files
