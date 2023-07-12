@@ -54,6 +54,7 @@ def delete_torrents_and_files(client, config, dry_run):
 def unregistered_checks(client, unregistered, config, dry_run):
     torrent_file_paths = {}
     unregistered_counts_per_path = {}
+    tag_counts = {}
 
     for torrent in client.torrents.info():
         update_torrent_file_paths(torrent_file_paths, torrent)
@@ -73,13 +74,17 @@ def unregistered_checks(client, unregistered, config, dry_run):
                 # Add tags to the torrent
                 client.torrents_add_tags(torrent_hashes=[torrent.hash], tags=tags_to_add)
                 logging.info("Adding tags %s to torrent with name '%s'", tags_to_add, torrent.name)
+                for tag in tags_to_add:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
             else:
                 # Dry run, only print what would be done
                 logging.info("[Dry Run] Would add tags %s to torrent with name '%s'", tags_to_add, torrent.name)
+                for tag in tags_to_add:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
     delete_torrents_and_files(client, config, dry_run)
 
-    total_unregistered_count = sum(unregistered_counts_per_path.values())
-    logging.info("Total unregistered torrents: %d", total_unregistered_count)
+    for tag, count in tag_counts.items():
+        logging.info("Tag: %s, Count: %d", tag, count)
 
     return torrent_file_paths, unregistered_counts_per_path
