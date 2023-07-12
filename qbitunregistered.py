@@ -47,7 +47,8 @@ if args.orphaned:
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
     # Call the unregistered_checks function
-    file_paths, unregistered_counts = unregistered_checks(client, config['unregistered'], config, dry_run=False)
+    file_paths, unregistered_counts = unregistered_checks(client, config['unregistered'], config, dry_run=config.get('dry_run', False) if config.get('unregistered') else (None, None)
+
 
    # Calculate the total count of unregistered torrents
     total_unregistered_count = sum(unregistered_counts.values())
