@@ -41,7 +41,7 @@ logging.info("Total torrents found: %d", len(torrents))
 
 # Call the find_orphaned_files function if --orphaned argument is passed
 if args.orphaned:
-    orphaned_files = check_files_on_disk(client)
+    orphaned_files = check_files_on_disk(client, torrents)
     # Log the total number of orphaned files
     logging.info("Total orphaned files: %d", len(orphaned_files))
 

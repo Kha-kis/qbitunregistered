@@ -1,39 +1,36 @@
+#!/usr/bin/python3
 import os
+from typing import List
+from qbittorrentapi import TorrentInfo
 
-def check_files_on_disk(client):
-    # Retrieve the save paths for each category
-    categories = client.torrents_categories()
+def list_directory_files(path: str) -> List[str]:
+    """Function to return list of all files in a directory and its subdirectories"""
+    file_list = []
+    for root, dirs, files in os.walk(path):
+        for file in files:
+            file_list.append(os.path.join(root, file))
+    return file_list
 
-    if not isinstance(categories, list):
-        # Handle case where only a single category is returned as a string
-        categories = [categories]
+def check_files_on_disk(client, torrents):
+    """Check for orphaned files on disk"""
+    # Fetch all categories
+    categories = client.torrents.categories()
 
-    # Filter out categories without savePath
-    category_save_paths = [category["savePath"] for category in categories if category.get("savePath")]
+    # Identify all save paths
+    save_paths = set([client.app.default_save_path()])
+    for category in categories.values():
+        save_paths.add(category['savePath'])
 
-    # Iterate over the save paths and check for orphaned files
-    orphaned_files = []
-    for save_path in category_save_paths:
-        files_on_disk = os.listdir(save_path)
-        torrents = client.torrents.info()
-        for file in files_on_disk:
-            if is_orphaned(file, torrents):
-                orphaned_files.append(os.path.join(save_path, file))
+    # Identify all torrent associated files
+    torrent_files = [file['content_path'] for torrent in torrents for file in torrent.files()]
 
-    # Return the list of orphaned files
+    # Identify all files in the save paths
+    all_files = []
+    for path in save_paths:
+        all_files += list_directory_files(path)
+
+    # Identify orphaned files
+    orphaned_files = set(all_files) - set(torrent_files)
+
     return orphaned_files
 
-def is_orphaned(file, torrents):
-    # Check if the file is orphaned based on the list of torrents
-    for torrent in torrents:
-        if torrent.content_path == file:
-            # File is associated with a torrent, not orphaned
-            return False
-    
-    # File is orphaned
-    return True
-
-def process_orphaned_file(save_path, file):
-    # Perform actions for orphaned file
-    # For example, you can print the file path
-    print(f"Orphaned file: {os.path.join(save_path, file)}")
