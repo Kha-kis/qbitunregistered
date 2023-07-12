@@ -13,7 +13,7 @@ def list_directory_files(path: str) -> List[str]:
 def check_files_on_disk(client, torrents):
     """Check for orphaned files on disk"""
     # Get default save path
-    default_save_path = client.application.default_save_path()
+    default_save_path = client.application.default_save_path
 
     # Identify all save paths
     save_paths = set([default_save_path])
@@ -33,4 +33,3 @@ def check_files_on_disk(client, torrents):
     orphaned_files = set(all_files) - set(torrent_files)
 
     return orphaned_files
-
