@@ -25,7 +25,7 @@ This is a Python script that helps manage torrents in qBittorrent by checking to
 Before running the script, you must create a configuration file by copying the provided example configuration file and editing it.
 
 1. Copy the example configuration file: `cp config.json.example config.json`.
-2. Edit `config.py` with your own settings.
+2. Edit `config.json` with your own settings.
 
 Below are the options you can set in `config.json`:
 
