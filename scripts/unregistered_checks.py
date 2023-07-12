@@ -62,6 +62,21 @@ def unregistered_checks(client, unregistered, config, dry_run):
 
         unregistered_counts_per_path[torrent.save_path] = unregistered_counts_per_path.get(torrent.save_path, 0) + unregistered_count
 
+        # Add tags based on unregistered_count
+        if unregistered_count > 0:
+            # Check if all torrents in the same save path are unregistered
+            if unregistered_counts_per_path[torrent.save_path] == len(torrent_file_paths[torrent.save_path]):
+                tags_to_add = ["unregistered"]
+            else:
+                tags_to_add = ["unregistered:crossseeding"]
+            if not dry_run:
+                # Add tags to the torrent
+                client.torrents_add_tags(torrent_hashes=[torrent.hash], tags=tags_to_add)
+                logging.info("Adding tags %s to torrent with name '%s'", tags_to_add, torrent.name)
+            else:
+                # Dry run, only print what would be done
+                logging.info("[Dry Run] Would add tags %s to torrent with name '%s'", tags_to_add, torrent.name)
+
     delete_torrents_and_files(client, config, dry_run)
 
     total_unregistered_count = sum(unregistered_counts_per_path.values())
