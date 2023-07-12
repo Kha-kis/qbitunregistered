@@ -47,15 +47,18 @@ if args.orphaned:
 
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
+    # Get the dry_run setting from the config or command-line argument
+    dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', False)
+
     # Call the unregistered_checks function
     file_paths, unregistered_counts = unregistered_checks(
         client,
         config.get('unregistered'),
         config,
-        config.get('use_delete_tags', False),
-        config.get('delete_tags', []),
-        config.get('delete_files', {}),
-        dry_run=args.dry_run
+        use_delete_tags=config.get('use_delete_tags', False),
+        delete_tags=config.get('delete_tags', []),
+        delete_files=config.get('delete_files', {}),
+        dry_run=dry_run
     )
 
     # Log the total counts
