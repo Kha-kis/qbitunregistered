@@ -56,8 +56,7 @@ if args.orphaned:
 # Call the unregistered_checks function if --unregistered argument is passed
 if args.unregistered:
     # Call the unregistered_checks function
-    file_paths, unregistered_counts = unregistered_checks(client, config['unregistered'], config, dry_run=False)
-
+file_paths, unregistered_counts = unregistered_checks(client, config['unregistered'], config, dry_run=config['dry_run'])
     # Log the file paths and unregistered counts
     logging.info("Torrent file paths:")
     for path, torrents in file_paths.items():
