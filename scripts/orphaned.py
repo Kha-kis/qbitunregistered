@@ -23,7 +23,7 @@ def check_files_on_disk(client, torrents: List) -> List[str]:
         save_paths.add(category['savePath'])
 
     # Identify all torrent-associated files
-    torrent_files = [f['content_path'] for torrent in torrents for f in torrent.files()]
+    torrent_files = [os.path.join(torrent.save_path, f.name) for torrent in torrents for f in torrent.files]
 
     # Find all files and folders in each save path
     all_files = []
