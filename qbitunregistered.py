@@ -5,7 +5,7 @@ import os
 import logging
 from qbittorrentapi import Client
 from scripts.orphaned import check_files_on_disk
-from scripts.unregistered_checks import unregistered_checks
+from scripts.unregistered_checks import unregistered_checks, delete_torrents_and_files
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
