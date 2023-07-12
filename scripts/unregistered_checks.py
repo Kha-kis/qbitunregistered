@@ -14,15 +14,12 @@ def check_unregistered_message(tracker, unregistered):
     return False
 
 def process_torrent(torrent, unregistered):
-    unregistered_count = 0
     lower_unregistered = {pattern.lower() for pattern in unregistered}
-
-    for tracker in torrent.trackers:
-        if check_unregistered_message(tracker, lower_unregistered) and tracker.status == 4:
-            unregistered_count += 1
-            tracker_short = urlsplit(tracker.url)
-            logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
-
+    unregistered_count = sum(
+        1
+        for tracker in torrent.trackers
+        if check_unregistered_message(tracker, lower_unregistered) and tracker.status == 4
+    )
     return unregistered_count
 
 def update_torrent_file_paths(torrent_file_paths, torrent):
@@ -34,21 +31,13 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
             for tag in delete_tags:
                 if tag in torrent.tags:
                     if delete_files.get(tag, False):
-                        if not dry_run:
-                            # Delete files
-                            client.torrents.delete(torrent.hash, delete_files=True)
-                            logging.info("Deleted torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
-                        else:
-                            # Dry run, only print what would be done
-                            logging.info("[Dry Run] Would delete torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
+                        action = "Deleted" if not dry_run else "[Dry Run] Would delete"
+                        client.torrents.delete(torrent.hash, delete_files=True)
+                        logging.info(f"{action} torrent '{torrent.name}' with hash {torrent.hash} and its files.")
                     else:
-                        if not dry_run:
-                            # Delete torrent without files
-                            client.torrents.delete(torrent.hash, delete_files=False)
-                            logging.info("Deleted torrent '%s' with hash %s.", torrent.name, torrent.hash)
-                        else:
-                            # Dry run, only print what would be done
-                            logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
+                        action = "Deleted" if not dry_run else "[Dry Run] Would delete"
+                        client.torrents.delete(torrent.hash, delete_files=False)
+                        logging.info(f"{action} torrent '{torrent.name}' with hash {torrent.hash}.")
                     break  # Exit the inner loop after deleting the torrent
 
 def unregistered_checks(client, unregistered, config, use_delete_tags, delete_tags, delete_files, dry_run):
@@ -65,20 +54,15 @@ def unregistered_checks(client, unregistered, config, use_delete_tags, delete_ta
 
         # Add tags based on unregistered_count
         if unregistered_count > 0:
-            # Check if all torrents in the same save path are unregistered
-            if unregistered_counts_per_path[torrent.save_path] == len(torrent_file_paths[torrent.save_path]):
-                tags_to_add = ["unregistered"]
-            else:
-                tags_to_add = ["unregistered:crossseeding"]
+            is_all_unregistered = unregistered_counts_per_path[torrent.save_path] == len(torrent_file_paths[torrent.save_path])
+            tags_to_add = ["unregistered"] if is_all_unregistered else ["unregistered:crossseeding"]
             if not dry_run:
-                # Add tags to the torrent
                 client.torrents_add_tags(torrent_hashes=[torrent.hash], tags=tags_to_add)
-                logging.info("Adding tags %s to torrent with name '%s'", tags_to_add, torrent.name)
+                logging.info(f"Adding tags {tags_to_add} to torrent with name '{torrent.name}'")
                 for tag in tags_to_add:
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
             else:
-                # Dry run, only print what would be done
-                logging.info("[Dry Run] Would add tags %s to torrent with name '%s'", tags_to_add, torrent.name)
+                logging.info(f"[Dry Run] Would add tags {tags_to_add} to torrent with name '{torrent.name}'")
                 for tag in tags_to_add:
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
