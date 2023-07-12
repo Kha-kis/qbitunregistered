@@ -1,7 +1,6 @@
 #!/usr/bin/python3
 import os
 from typing import List
-from qbittorrentapi import TorrentInfo
 
 def list_directory_files(path: str) -> List[str]:
     """Function to return list of all files in a directory and its subdirectories"""
