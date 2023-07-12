@@ -45,10 +45,11 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
     unregistered_counts_per_path = {}
     tag_counts = {}
 
-    for torrent in client.torrents.info():
+    for torrent in torrents:
         update_torrent_file_paths(torrent_file_paths, torrent)
 
-        unregistered_count = process_torrent(torrent, unregistered)
+        # Pass the 'unregistered' argument to the process_torrent function
+        unregistered_count = process_torrent(torrent, config.get('unregistered'))
 
         unregistered_counts_per_path[torrent.save_path] = unregistered_counts_per_path.get(torrent.save_path, 0) + unregistered_count
 
