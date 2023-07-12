@@ -48,7 +48,7 @@ if args.orphaned:
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
     # Call the unregistered_checks function
-    file_paths, unregistered_counts = unregistered_checks(client, config.get('unregistered'), config, dry_run=args.dry_run)
+    file_paths, unregistered_counts = unregistered_checks(client, config.get('unregistered'), config, use_delete_tags=config.get('use_delete_tags', False), dry_run=args.dry_run)
 
     # Log the total counts
     total_unregistered_count = sum(unregistered_counts.values())
