@@ -12,11 +12,12 @@ def list_directory_files(path: str) -> List[str]:
 
 def check_files_on_disk(client, torrents):
     """Check for orphaned files on disk"""
-    # Fetch all categories
-    categories = client.torrents.categories()
+    # Get default save path
+    default_save_path = client.application.default_save_path()
 
     # Identify all save paths
-    save_paths = set([client.app.default_save_path()])
+    save_paths = set([default_save_path])
+    categories = client.categories.info()
     for category in categories.values():
         save_paths.add(category['savePath'])
 
