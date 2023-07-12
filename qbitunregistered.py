@@ -12,6 +12,7 @@ parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by 
 parser.add_argument('--config', type=str, default='config.json', help='Path to the config.json file.')
 parser.add_argument('--orphaned', action='store_true', help='If set, check for orphaned files on disk.')
 parser.add_argument('--unregistered', action='store_true', help='If set, perform unregistered checks.')
+parser.add_argument('--dry-run', action='store_true', help='If set, the script will only print actions without executing them.')
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -47,7 +48,11 @@ if args.orphaned:
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
     # Call the unregistered_checks function
-    file_paths, unregistered_counts = unregistered_checks(client, config.get('unregistered'), config, dry_run=config.get('dry_run', False))
+    file_paths, unregistered_counts = unregistered_checks(client, config.get('unregistered'), config, dry_run=args.dry_run)
+
+    # Log the total counts
+    total_unregistered_count = sum(unregistered_counts.values())
+    logging.info("Total unregistered count: %d", total_unregistered_count)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
