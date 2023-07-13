@@ -21,6 +21,8 @@ parser.add_argument('--username', type=str, help='The username for logging into 
 parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
 parser.add_argument('--tag-by-tracker', action='store_true', help='If set, perform tagging based on the associated tracker.')
 parser.add_argument('--seeding-management', action='store_true', help='If set, apply seed time and seed ratio limits based on tracker tags.')
+parser.add_argument('--auto-tmm', action='store_true', help='If set, enable Automatic Torrent Management (auto TMM).')
+parser.add_argument('--disable-tmm', action='store_true', help='If set, disable Torrent Management (TMM).')
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -79,5 +81,13 @@ if args.seeding_management:
     apply_seed_time(client, config, torrents)
     apply_seed_ratio(client, config, torrents)
 
+# Enable auto TMM if --auto-tmm argument is passed
+if args.auto_tmm:
+    apply_auto_tmm(client, config)
+
+# Disable TMM if --disable-tmm argument is passed
+if args.disable_tmm:
+    disable_tmm(client)
+    
 # Log script end
 logging.info("qbitunregistered script completed.")
