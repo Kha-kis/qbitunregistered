@@ -45,9 +45,22 @@
   ],
 
   "//": "Mapping of terms or patterns associated with trackers and the corresponding tags.",
+{
   "tracker_tags": {
-    "aither": "AITHER",
-    "blutopia": "BLU",
-    "beyond-hd": "BHD"
-  }  
+    "aither": {
+      "tag": "AITHER",
+      "seed_time_limit": 100,
+      "seed_ratio_limit": 1
+    },
+    "blutopia": {
+      "tag": "BLU",
+      "seed_time_limit": 150,
+      "seed_ratio_limit": 1.5
+    },
+    "beyond-hd": {
+      "tag": "BHD",
+      "seed_time_limit": 200,
+      "seed_ratio_limit": 2
+    }
+  }
 }

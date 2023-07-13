@@ -7,6 +7,8 @@ from qbittorrentapi import Client
 from scripts.orphaned import check_files_on_disk
 from scripts.unregistered_checks import unregistered_checks
 from scripts.tag_by_tracker import tag_by_tracker
+from scripts.seed_management import apply_seed_time, apply_seed_ratio
+
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
@@ -18,6 +20,7 @@ parser.add_argument('--host', type=str, help='The host and port where qBittorren
 parser.add_argument('--username', type=str, help='The username for logging into qBittorrent Web UI.')
 parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
 parser.add_argument('--tag-by-tracker', action='store_true', help='If set, perform tagging based on the associated tracker.')
+parser.add_argument('--seeding-management', action='store_true', help='If set, apply seed time and seed ratio limits based on tracker tags.')
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -69,7 +72,12 @@ if args.unregistered:
 
 # Run the tag_by_tracker function if desired
 if args.tag_by_tracker:
-    tag_by_tracker(client, config)
+    tag_by_tracker(client, torrents, config)
+
+# Apply seed time and seed ratio limits if --seeding-management argument is passed
+if args.seeding_management:
+    apply_seed_time(client, config, torrents)
+    apply_seed_ratio(client, config, torrents)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
