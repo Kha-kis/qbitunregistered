@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 import json
 import argparse
 import os
@@ -7,7 +6,7 @@ from qbittorrentapi import Client
 from scripts.orphaned import check_files_on_disk
 from scripts.unregistered_checks import unregistered_checks
 from scripts.tag_by_tracker import tag_by_tracker
-from scripts.seeding_management import apply_seed_time, apply_seed_ratio
+from scripts.seed_management import apply_seed_time, apply_seed_ratio
 from scripts.torrent_management import pause_torrents, resume_torrents
 
 # Set up command-line argument parsing
@@ -98,7 +97,6 @@ if args.pause_torrents:
 # Resume all torrents if --resume-torrents argument is passed
 if args.resume_torrents:
     resume_torrents(client, torrents)
-
 
 # Log script end
 logging.info("qbitunregistered script completed.")
