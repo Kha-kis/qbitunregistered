@@ -84,5 +84,13 @@ if args.seeding_management:
     apply_seed_time(client, config, torrents)
     apply_seed_ratio(client, config, torrents)
 
+# Enable auto TMM if --auto-tmm argument is passed
+if args.auto_tmm:
+    apply_auto_tmm(client, config)
+
+# Disable TMM if --disable-tmm argument is passed
+if args.disable_tmm:
+    disable_tmm(client)
+    
 # Log script end
 logging.info("qbitunregistered script completed.")

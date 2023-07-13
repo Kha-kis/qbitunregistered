@@ -50,8 +50,21 @@
     "starts_with:Trump"
   ],
 
+  "//": "Automatic Torrent Management (auto TMM) configuration options",
+
+  "//": "Flag to enable Automatic Torrent Management (auto TMM) globally.",
+  "auto_tmm_enabled": true,
+
+  "//": "Flag to enable Automatic Torrent Management (auto TMM) for torrents whose contents change.",
+  "torrent_changed_tmm_enabled": true,
+
+  "//": "Flag to enable Automatic Torrent Management (auto TMM) when the save path of a torrent changes.",
+  "save_path_changed_tmm_enabled": true,
+
+  "//": "Flag to enable Automatic Torrent Management (auto TMM) when the category of a torrent changes.",
+  "category_changed_tmm_enabled": true,
+
   "//": "Mapping of terms or patterns associated with trackers and the corresponding tags.",
-{
   "tracker_tags": {
     "aither": {
       "tag": "AITHER",
