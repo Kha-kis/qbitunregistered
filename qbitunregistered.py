@@ -10,7 +10,7 @@ from scripts.seeding_management import apply_seed_time, apply_seed_ratio
 from scripts.torrent_management import pause_torrents, resume_torrents
 from scripts.auto_remove import auto_remove
 from scripts.auto_tmm import apply_auto_tmm_per_torrent
-
+from scripts.create_hardlinks import create_hard_links
 
 
 # Set up command-line argument parsing
@@ -101,6 +101,9 @@ if args.resume_torrents:
 # Check if --auto-remove argument is passed
 if args.auto_remove:
     auto_remove(client, torrents, dry_run)
+
+# Call the create_hard_links() function with the target directory argument
+create_hard_links(client, config['target_dir'], torrents)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
