@@ -8,6 +8,8 @@ from scripts.unregistered_checks import unregistered_checks
 from scripts.tag_by_tracker import tag_by_tracker
 from scripts.seeding_management import apply_seed_time, apply_seed_ratio
 from scripts.torrent_management import pause_torrents, resume_torrents
+from scripts.auto_remove import auto_remove
+
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
@@ -23,6 +25,7 @@ parser.add_argument('--seeding-management', action='store_true', help='If set, a
 parser.add_argument('--auto-tmm', action='store_true', help='If set, enable Automatic Torrent Management (auto TMM).')
 parser.add_argument('--pause-torrents', action='store_true', help='If set, pause all torrents.')
 parser.add_argument('--resume-torrents', action='store_true', help='If set, resume all torrents.')
+parser.add_argument('--auto-remove', action='store_true', help='If set, automatically remove completed torrents.')
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -92,6 +95,10 @@ if args.pause_torrents:
 # Resume all torrents if --resume-torrents argument is passed
 if args.resume_torrents:
     resume_torrents(client, torrents)
+
+# Check if --auto-remove argument is passed
+if args.auto_remove:
+    auto_remove(client, torrents, dry_run)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
