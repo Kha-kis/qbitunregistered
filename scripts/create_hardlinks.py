@@ -2,7 +2,7 @@ import os
 
 def create_hard_links(target_dir, torrents):
     for torrent in torrents:
-        if torrent.state_enum.is_completed:
+        if torrent.state_enum.is_complete:
             content_path = os.path.join(torrent.save_path, torrent.name)
 
             if os.path.isdir(content_path):
