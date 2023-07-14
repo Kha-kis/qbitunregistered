@@ -28,6 +28,8 @@ parser.add_argument('--auto-tmm', action='store_true', help='If set, enable Auto
 parser.add_argument('--pause-torrents', action='store_true', help='If set, pause all torrents.')
 parser.add_argument('--resume-torrents', action='store_true', help='If set, resume all torrents.')
 parser.add_argument('--auto-remove', action='store_true', help='If set, automatically remove completed torrents.')
+parser.add_argument('--create-hard-links', action='store_true', help='If set, create hard links for completed torrents in target directory.')
+parser.add_argument('--target-dir', help='Specify the target directory for organizing completed torrents when hardlinks are created')
 parser.add_argument('--exclude-paths', nargs='+', type=str, help='Paths to exclude from orphaned file check.')
 
 
@@ -43,6 +45,7 @@ with open(config_file_path, 'r') as config_file:
 config['host'] = args.host or config.get('host')
 config['username'] = args.username or config.get('username')
 config['password'] = args.password or config.get('password')
+target_dir = args.target_dir or config['target_dir']
 dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', False)
 
 # Connect to qBittorrent client
@@ -107,8 +110,9 @@ if args.resume_torrents:
 if args.auto_remove:
     auto_remove(client, torrents, dry_run)
 
-# Call the create_hard_links() function with the target directory argument
-create_hard_links(client, config['target_dir'], torrents)
+# Run the create_hard_links function if --create-hard-links argument is passed
+if args.create_hard_links:
+    create_hard_links(args.target_dir, torrents)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
