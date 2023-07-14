@@ -9,6 +9,8 @@ from scripts.tag_by_tracker import tag_by_tracker
 from scripts.seeding_management import apply_seed_time, apply_seed_ratio
 from scripts.torrent_management import pause_torrents, resume_torrents
 from scripts.auto_remove import auto_remove
+from scripts.auto_tmm import apply_auto_tmm_per_torrent
+
 
 
 # Set up command-line argument parsing
