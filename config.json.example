@@ -49,6 +49,9 @@
     "unregistered",
     "starts_with:Trump"
   ],
+  
+  "//": "The target directory for organizing completed torrents that will be hardlinked.",
+  "target_dir": "/path/to/target/dir"
 
   "//": "Automatic Torrent Management (auto TMM) configuration options",
 
