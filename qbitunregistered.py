@@ -29,7 +29,7 @@ parser.add_argument('--pause-torrents', action='store_true', help='If set, pause
 parser.add_argument('--resume-torrents', action='store_true', help='If set, resume all torrents.')
 parser.add_argument('--auto-remove', action='store_true', help='If set, automatically remove completed torrents.')
 parser.add_argument('--create-hard-links', action='store_true', help='If set, create hard links for completed torrents in target directory.')
-parser.add_argument('--target-dir', help='Specify the target directory for organizing completed torrents when hardlinks are created')
+parser.add_argument('--target-dir', default=None, help='Specify the target directory for organizing completed torrents')
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -107,7 +107,7 @@ if args.auto_remove:
 
 # Run the create_hard_links function if --create-hard-links argument is passed
 if args.create_hard_links:
-    create_hard_links(args.target_dir, torrents)
+    create_hard_links(target_dir, torrents)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
