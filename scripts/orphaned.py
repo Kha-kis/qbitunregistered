@@ -12,8 +12,7 @@ def list_directory_files(path: str) -> List[str]:
             file_list.append(os.path.join(root, file))
     return file_list
 
-
-def check_files_on_disk(client, torrents: List) -> List[str]:
+def check_files_on_disk(client, torrents: List, exclude_paths: List[str] = []) -> List[str]:
     logging.debug("Entering check_files_on_disk function...")
 
     # Get the save paths to check
@@ -31,8 +30,15 @@ def check_files_on_disk(client, torrents: List) -> List[str]:
     torrent_files = [os.path.join(torrent.save_path, file.name) for torrent in torrents for file in torrent.files]
     logging.debug(f"Torrent files: {torrent_files}")
 
-    # Find all files and folders in each save path
-    all_files = [os.path.join(root, file) for path in save_paths for root, _, files in os.walk(path) for file in files]
+    # Find all files and folders in each save path, excluding specified paths
+    all_files = []
+    for path in save_paths:
+        for root, _, files in os.walk(path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                if not any(excluded_path in file_path for excluded_path in exclude_paths):
+                    all_files.append(file_path)
+
     logging.debug(f"All files: {all_files}")
 
     # Identify orphaned files: those that exist in the file system but not in the list of torrent-associated files

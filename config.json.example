@@ -29,6 +29,12 @@
     "unregistered:crossseeding": false
   },
 
+  "//": "A list of paths to exclude from the orphaned file check.",
+  "exclude_paths": [
+    "/path/to/exclude1",
+    "/path/to/exclude2"
+  ],
+  
   "//": "A list of messages or patterns to match for unregistered torrents. Each entry in this list can be a full message (e.g., 'This torrent does not exist') or a pattern to match messages that start with specific text (e.g., 'starts_with:Trump').",
   "unregistered": [
     "This torrent does not exist",

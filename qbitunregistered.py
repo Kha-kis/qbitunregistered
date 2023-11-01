@@ -16,6 +16,8 @@ parser.add_argument('--dry-run', action='store_true', help='If set, the script w
 parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
 parser.add_argument('--username', type=str, help='The username for logging into qBittorrent Web UI.')
 parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
+parser.add_argument('--exclude-paths', nargs='+', type=str, help='Paths to exclude from orphaned file check.')
+
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -49,11 +51,14 @@ logging.info("Starting qbitunregistered script...")
 
 # Run orphaned check if --orphaned argument is passed
 if args.orphaned:
-    # Call the check_files_on_disk function
-    orphaned_files = check_files_on_disk(client, torrents)
+    # Get the exclude_paths from the configuration or from the command line (if provided)
+    exclude_paths = args.exclude_paths or config.get('exclude_paths', [])
+    
+    # Call the check_files_on_disk function with exclude_paths
+    orphaned_files = check_files_on_disk(client, torrents, exclude_paths)
 
     # Log the total number of orphaned files
-    logging.info("Total orphaned files: %d", len(orphaned_files))
+    logging.info("Total orphaned files: %d", len(orphaned_files))    
 
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
