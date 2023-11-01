@@ -11,7 +11,7 @@ from scripts.torrent_management import pause_torrents, resume_torrents
 from scripts.auto_remove import auto_remove
 from scripts.auto_tmm import apply_auto_tmm_per_torrent
 from scripts.create_hardlinks import create_hard_links
-
+from scripts.tag_by_age import tag_by_age
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
@@ -30,6 +30,7 @@ parser.add_argument('--resume-torrents', action='store_true', help='If set, resu
 parser.add_argument('--auto-remove', action='store_true', help='If set, automatically remove completed torrents.')
 parser.add_argument('--create-hard-links', action='store_true', help='If set, create hard links for completed torrents in target directory.')
 parser.add_argument('--target-dir', default=None, help='Specify the target directory for organizing completed torrents')
+parser.add_argument('--tag-by-age', action='store_true', help='If set, perform tagging based on torrent age in months.')
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -83,6 +84,10 @@ if args.unregistered:
 # Run the tag_by_tracker function if desired
 if args.tag_by_tracker:
     tag_by_tracker(client, torrents, config)
+
+# Run the tag_by_age_buckets_in_months function if --tag-by-age argument is passed
+if args.tag_by_age:
+    tag_by_age(client, torrents, config)
 
 # Apply seed time and seed ratio limits if --seeding-management argument is passed
 if args.seeding_management:
