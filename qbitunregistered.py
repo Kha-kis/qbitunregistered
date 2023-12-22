@@ -44,9 +44,16 @@ parser.add_argument('--exclude_paths', type=str, nargs='*', help='List of paths 
 args = parser.parse_args()
 
 # Load configuration from config.json
-config_file_path = os.path.abspath(args.config)
-with open(config_file_path, 'r') as config_file:
-    config = json.load(config_file)
+try:
+    with open(config_file_path, 'r') as config_file:
+        config = json.load(config_file)
+except FileNotFoundError:
+    logging.error(f"The configuration file {config_file_path} was not found.")
+    sys.exit(1)
+except json.JSONDecodeError:
+    logging.error(f"The configuration file {config_file_path} contains invalid JSON.")
+    sys.exit(1)
+
 
 # Override configuration with command-line arguments if provided
 config['host'] = args.host or config.get('host')
@@ -56,7 +63,11 @@ target_dir = args.target_dir or config['target_dir']
 dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', False)
 
 # Connect to qBittorrent client
-client = Client(host=config['host'], username=config['username'], password=config['password'])
+try:
+    client = Client(host=config['host'], username=config['username'], password=config['password'])
+except exceptions.APIConnectionError as e:
+    logging.error(f"Failed to connect to qBittorrent: {e}")
+    sys.exit(1)
 
 #define torrents
 torrents = client.torrents.info()
