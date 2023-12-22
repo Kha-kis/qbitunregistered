@@ -29,6 +29,16 @@ parser.add_argument('--dry-run', action='store_true', help='If set, the script w
 parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
 parser.add_argument('--username', type=str, help='The username for logging into qBittorrent Web UI.')
 parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
+parser.add_argument('--tag-by-tracker', action='store_true', help='If set, perform tagging based on the associated tracker.')
+parser.add_argument('--seeding-management', action='store_true', help='If set, apply seed time and seed ratio limits based on tracker tags.')
+parser.add_argument('--auto-tmm', action='store_true', help='If set, enable Automatic Torrent Management (auto TMM).')
+parser.add_argument('--pause-torrents', action='store_true', help='If set, pause all torrents.')
+parser.add_argument('--resume-torrents', action='store_true', help='If set, resume all torrents.')
+parser.add_argument('--auto-remove', action='store_true', help='If set, automatically remove completed torrents.')
+parser.add_argument('--create-hard-links', action='store_true', help='If set, create hard links for completed torrents in target directory.')
+parser.add_argument('--target-dir', default=None, help='Specify the target directory for organizing completed torrents')
+parser.add_argument('--tag-by-age', action='store_true', help='If set, perform tagging based on torrent age in months.')
+parser.add_argument('--exclude_paths', type=str, nargs='*', help='List of paths to exclude.')
 
 # Parse command-line arguments
 args = parser.parse_args()
@@ -65,12 +75,12 @@ logging.info("Starting qbitunregistered script...")
 if args.orphaned:
     # Get the exclude_paths from the configuration or from the command line (if provided)
     exclude_paths = args.exclude_paths or config.get('exclude_paths', [])
-    
+
     # Call the check_files_on_disk function with exclude_paths
     orphaned_files = check_files_on_disk(client, torrents, exclude_paths)
 
     # Log the total number of orphaned files
-    logging.info("Total orphaned files: %d", len(orphaned_files))    
+    logging.info("Total orphaned files: %d", len(orphaned_files))
 
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
