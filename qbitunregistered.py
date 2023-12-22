@@ -44,6 +44,7 @@ parser.add_argument('--exclude_paths', type=str, nargs='*', help='List of paths 
 args = parser.parse_args()
 
 # Load configuration from config.json
+config_file_path = os.path.abspath(args.config)
 try:
     with open(config_file_path, 'r') as config_file:
         config = json.load(config_file)
