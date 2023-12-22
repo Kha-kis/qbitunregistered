@@ -12,6 +12,13 @@ from scripts.auto_remove import auto_remove
 from scripts.auto_tmm import apply_auto_tmm_per_torrent
 from scripts.create_hardlinks import create_hard_links
 from scripts.tag_by_age import tag_by_age
+from scripts.tag_by_tracker import tag_by_tracker
+from scripts.seeding_management import apply_seed_time, apply_seed_ratio
+from scripts.torrent_management import pause_torrents, resume_torrents
+from scripts.auto_remove import auto_remove
+from scripts.auto_tmm import apply_auto_tmm_per_torrent
+from scripts.create_hardlinks import create_hard_links
+from scripts.tag_by_age import tag_by_age
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
@@ -22,17 +29,6 @@ parser.add_argument('--dry-run', action='store_true', help='If set, the script w
 parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
 parser.add_argument('--username', type=str, help='The username for logging into qBittorrent Web UI.')
 parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
-parser.add_argument('--tag-by-tracker', action='store_true', help='If set, perform tagging based on the associated tracker.')
-parser.add_argument('--seeding-management', action='store_true', help='If set, apply seed time and seed ratio limits based on tracker tags.')
-parser.add_argument('--auto-tmm', action='store_true', help='If set, enable Automatic Torrent Management (auto TMM).')
-parser.add_argument('--pause-torrents', action='store_true', help='If set, pause all torrents.')
-parser.add_argument('--resume-torrents', action='store_true', help='If set, resume all torrents.')
-parser.add_argument('--auto-remove', action='store_true', help='If set, automatically remove completed torrents.')
-parser.add_argument('--create-hard-links', action='store_true', help='If set, create hard links for completed torrents in target directory.')
-parser.add_argument('--target-dir', default=None, help='Specify the target directory for organizing completed torrents')
-parser.add_argument('--tag-by-age', action='store_true', help='If set, perform tagging based on torrent age in months.')
-parser.add_argument('--exclude-paths', nargs='+', type=str, help='Paths to exclude from orphaned file check.')
-
 
 # Parse command-line arguments
 args = parser.parse_args()
