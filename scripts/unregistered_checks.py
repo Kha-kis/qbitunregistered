@@ -44,7 +44,9 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
     torrent_file_paths = {}
     unregistered_counts_per_path = {}
     tag_counts = {}
-
+    default_tag = config['default_unregistered_tag']
+    cross_seeding_tag = config['cross_seeding_tag']
+    
     for torrent in torrents:
         update_torrent_file_paths(torrent_file_paths, torrent)
 
@@ -56,7 +58,7 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
         # Add tags based on unregistered_count
         if unregistered_count > 0:
             is_all_unregistered = unregistered_counts_per_path[torrent.save_path] == len(torrent_file_paths[torrent.save_path])
-            tags_to_add = ["unregistered"] if is_all_unregistered else ["unregistered:crossseeding"]
+            tags_to_add = [default_tag] if is_all_unregistered else [cross_seeding_tag]
             if not dry_run:
                 client.torrents_add_tags(torrent_hashes=[torrent.hash], tags=tags_to_add)
                 logging.info(f"Adding tags {tags_to_add} to torrent with name '{torrent.name}'")
