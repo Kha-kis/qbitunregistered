@@ -39,6 +39,15 @@ cp config.json.example config.json
 
 Edit `config.json` with your preferred text editor, and set your qBittorrent credentials, preferred behaviors, and other settings.
 
+### Customizable Tags for Unregistered Torrents
+
+The latest update introduces two new configurable tags in `config.json`:
+
+- `default_unregistered_tag`: The tag applied to torrents identified as unregistered. Default is "unregistered".
+- `cross_seeding_tag`: Used for torrents that are unregistered but cross-seeding. Default is "unregistered:crossseeding".
+
+These can be customized to align with your tagging strategy, providing enhanced flexibility in torrent management.
+
 ## Usage
 
 Execute the script with Python, appending any command-line arguments you wish to use:
