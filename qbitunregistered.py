@@ -36,15 +36,16 @@ parser.add_argument('--pause-torrents', action='store_true', help='If set, pause
 parser.add_argument('--resume-torrents', action='store_true', help='If set, resume all torrents.')
 parser.add_argument('--auto-remove', action='store_true', help='If set, automatically remove completed torrents.')
 parser.add_argument('--create-hard-links', action='store_true', help='If set, create hard links for completed torrents in target directory.')
-parser.add_argument('--target-dir', default=None, help='Specify the target directory for organizing completed torrents')
+parser.add_argument('--target-dir', default=None, help='Specify the target directory for organizing completed torrents. This is required if --create-hard-links is used and not specified in the config.json file.')
 parser.add_argument('--tag-by-age', action='store_true', help='If set, perform tagging based on torrent age in months.')
 parser.add_argument('--exclude_paths', type=str, nargs='*', help='List of paths to exclude.')
 
 # Parse command-line arguments
-args = parser.parse_args()
+pre_args, unknown = parser.parse_known_args()
 
 # Load configuration from config.json
-config_file_path = os.path.abspath(args.config)
+
+config_file_path = os.path.abspath(pre_args.config)
 try:
     with open(config_file_path, 'r') as config_file:
         config = json.load(config_file)
@@ -55,12 +56,19 @@ except json.JSONDecodeError:
     logging.error(f"The configuration file {config_file_path} contains invalid JSON.")
     sys.exit(1)
 
+# Ensure target_dir is provided if required
+if pre_args.create_hard_links and not pre_args.target_dir and not config.get('target_dir'):
+    logging.error("Error: --target-dir is required when --create-hard-links is specified and not present in config.json.")
+    sys.exit(1)
+
+# Re-parse arguments now that configuration has been loaded
+args = parser.parse_args()
 
 # Override configuration with command-line arguments if provided
 config['host'] = args.host or config.get('host')
 config['username'] = args.username or config.get('username')
 config['password'] = args.password or config.get('password')
-target_dir = args.target_dir or config['target_dir']
+target_dir = args.target_dir or config.get('target_dir', None)
 dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', False)
 
 # Connect to qBittorrent client
