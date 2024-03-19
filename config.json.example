@@ -11,6 +11,10 @@
   "//": "A flag for dry run mode. If set to true, the script will print what it would do but won't actually execute actions like adding tags or deleting torrents/files. Set to false to actually execute actions.",
   "dry_run": true,
 
+  "//": "Tags used for torrents found to be unregistered or for cross-seeding purposes.",
+  "default_unregistered_tag": "unregistered",
+  "cross_seeding_tag": "unregistered:crossseeding",
+  
   "//": "The tag to be used for torrents that have issues other than being unregistered.",
   "other_issues_tag": "issue",
 
