@@ -1,64 +1,111 @@
 # qbitunregistered
 
-This is a Python script that helps manage torrents in qBittorrent by checking torrent tracker messages. It can add specific tags to torrents based on tracker messages and status, particularly focusing on unregistered torrents.
+`qbitunregistered` is a powerful Python script for automating and managing a range of tasks in qBittorrent. It's designed to streamline the management of torrents with features for handling orphaned files, unregistered torrents, and more, all customizable through command-line arguments and a configuration file.
 
 ## Features
 
-- Checks all torrents in qBittorrent for tracker status messages.
-- Adds tags to torrents that have unregistered tracker messages.
-- Validates if unregistered torrents are cross-seeding tags and them separately.
-- Customizable through a config file.
-- Option for a dry run to see what actions the script will perform without making changes.
+- **Orphaned File Checks**: Detect and report orphaned files to maintain a clean storage environment.
+- **Unregistered Checks**: Identify and handle unregistered torrents based on user-defined configurations.
+- **Tagging System**: Apply tags to torrents based on tracker source, age, and other criteria for easy organization.
+- **Seeding Management**: Implement seed time and seed ratio limits to optimize seeding strategy.
+- **Torrent Management**: Control torrent activity with pause, resume, and auto-management functions.
+- **Automatic Removal**: Automatically remove torrents that meet specified conditions to manage space and ratio.
+- **Hard Link Creation**: Generate hard links for completed downloads for better file management.
+- **Dry Run Mode**: Test configurations and script behavior without making actual changes to your setup.
 
-## Requirements
+## Prerequisites
 
-- Python 3.x
-- qBittorrent with Web UI enabled
+- Python 3.6 or newer installed on your system.
+- qBittorrent with Web UI access.
+- Dependencies from `requirements.txt` installed.
 
 ## Installation
 
-1. Clone the repository or download the source code.
-2. Install the required Python libraries by running: `pip install -r requirements.txt`.
+Clone the repository and install the required Python packages:
+
+```bash
+git clone https://github.com/your-username/qbitunregistered.git
+cd qbitunregistered
+pip install -r requirements.txt
+```
 
 ## Configuration
 
-Before running the script, you must create a configuration file by copying the provided example configuration file and editing it.
+Start by copying the example configuration file and then modify it to suit your needs:
 
-1. Copy the example configuration file: `cp config.py.example config.py`.
-2. Edit `config.py` with your own settings.
+```bash
+cp config.json.example config.json
+```
 
-Below are the options you can set in `config.py`:
+Edit `config.json` with your preferred text editor, and set your qBittorrent credentials, preferred behaviors, and other settings.
 
-- `host`: The host and port where qBittorrent is running.
-- `username`: The username for logging into qBittorrent's Web UI.
-- `password`: The password for logging into qBittorrent's Web UI.
-- `unregistered`: A list of messages or patterns to identify unregistered torrents.
-- `dry_run`: A flag for dry run mode. If set to True, the script will only print actions without executing them.
-- `other_issues_tag`: The tag to be used for torrents that have issues other than being unregistered.
+### Customizable Tags for Unregistered Torrents
+
+The latest update introduces two new configurable tags in `config.json`:
+
+- `default_unregistered_tag`: The tag applied to torrents identified as unregistered. Default is "unregistered".
+- `cross_seeding_tag`: Used for torrents that are unregistered but cross-seeding. Default is "unregistered:crossseeding".
+
+These can be customized to align with your tagging strategy, providing enhanced flexibility in torrent management.
 
 ## Usage
 
-1. Make sure you've configured the script correctly via the `config.py` file.
-2. Run the script by executing: `python qbitunregistered.py`.
+Execute the script with Python, appending any command-line arguments you wish to use:
 
-You can also override configuration settings with command-line arguments:
-
-```sh
-python qbitunregistered.py --host "localhost:8080" --username "admin" --password "password" --dry-run --other-issues-tag "other_issues"
+```bash
+python qbitunregistered.py --option1 --option2
 ```
 
-Available command-line arguments:
+### Command-Line Arguments
 
-- `--host`: Override the host and port where qBittorrent is running.
-- `--username`: Override the username for logging into qBittorrent's Web UI.
-- `--password`: Override the password for logging into qBittorrent's Web UI.
-- `--dry-run`: If set, the script will only print actions without executing them.
-- `--other-issues-tag`: Override the tag to be used for torrents that have issues other than being unregistered.
+Here's what you can specify when running `qbitunregistered`:
+
+- `--config`: Custom path to your configuration file.
+- `--orphaned`: Activate orphaned file checking.
+- `--unregistered`: Enable checks for unregistered torrents.
+- `--dry-run`: Simulate script actions without making changes.
+- `--host`: Specify the host and port where qBittorrent is running.
+- `--username`: Your username for logging into the qBittorrent Web UI.
+- `--password`: Your password for logging into the qBittorrent Web UI.
+- `--tag-by-tracker`: Perform tagging based on the associated tracker.
+- `--seeding-management`: Apply seed time and seed ratio limits based on tracker tags.
+- `--auto-tmm`: Enable Automatic Torrent Management (auto TMM).
+- `--pause-torrents`: Pause all torrents.
+- `--resume-torrents`: Resume all torrents.
+- `--auto-remove`: Automatically remove completed torrents.
+- `--create-hard-links`: Create hard links for completed torrents in the target directory.
+- `--target-dir`: Specify the target directory for organizing completed torrents.
+- `--tag-by-age`: Perform tagging based on torrent age in months.
+- `--exclude_paths`: List of paths to exclude.
+
+## Troubleshooting
+
+If you encounter issues, check the following:
+
+- Ensure qBittorrent is running and accessible.
+- Verify that all required Python packages are installed.
+- Check the log output for errors and consult the FAQ.
+
+## Frequently Asked Questions
+
+**Q: How often should I run the script?**
+**A:** It depends on your needs. Some users run it daily, while others prefer multiple times a day for more active torrent management.
+
+**Q: Can I run this script on a schedule?**
+**A:** Yes, you can use cron jobs (Linux/Mac) or Task Scheduler (Windows) to run the script at regular intervals.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a pull request or create issues if you find any.
+Your contributions make this project better! Feel free to report bugs, suggest features, or submit pull requests. For major changes, please open an issue first to discuss what you'd like to change.
 
 ## License
 
-[MIT License](LICENSE)
+This project is released under the MIT License. See the LICENSE file for more details.
+
+## Acknowledgements
+
+Thanks to the qBittorrent team and all contributors to the `qbittorrent-api` and related libraries.
+
+## Contact
+
+For questions, suggestions, or collaboration, please open an issue in the GitHub repository.

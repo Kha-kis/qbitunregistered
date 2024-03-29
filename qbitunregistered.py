@@ -1,130 +1,149 @@
-#!/usr/bin/python3
-import config
+import json
 import argparse
-from urllib.parse import urlsplit
-from qbittorrentapi import Client
-import logging
 import os
+import logging
+from qbittorrentapi import Client
+from scripts.orphaned import check_files_on_disk
+from scripts.unregistered_checks import unregistered_checks
+from scripts.tag_by_tracker import tag_by_tracker
+from scripts.seeding_management import apply_seed_time, apply_seed_ratio
+from scripts.torrent_management import pause_torrents, resume_torrents
+from scripts.auto_remove import auto_remove
+from scripts.auto_tmm import apply_auto_tmm_per_torrent
+from scripts.create_hardlinks import create_hard_links
+from scripts.tag_by_age import tag_by_age
+from scripts.tag_by_tracker import tag_by_tracker
+from scripts.seeding_management import apply_seed_time, apply_seed_ratio
+from scripts.torrent_management import pause_torrents, resume_torrents
+from scripts.auto_remove import auto_remove
+from scripts.auto_tmm import apply_auto_tmm_per_torrent
+from scripts.create_hardlinks import create_hard_links
+from scripts.tag_by_age import tag_by_age
+
+# Set up command-line argument parsing
+parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
+parser.add_argument('--config', type=str, default='config.json', help='Path to the config.json file.')
+parser.add_argument('--orphaned', action='store_true', help='If set, check for orphaned files on disk.')
+parser.add_argument('--unregistered', action='store_true', help='If set, perform unregistered checks.')
+parser.add_argument('--dry-run', action='store_true', help='If set, the script will only print actions without executing them.')
+parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
+parser.add_argument('--username', type=str, help='The username for logging into qBittorrent Web UI.')
+parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
+parser.add_argument('--tag-by-tracker', action='store_true', help='If set, perform tagging based on the associated tracker.')
+parser.add_argument('--seeding-management', action='store_true', help='If set, apply seed time and seed ratio limits based on tracker tags.')
+parser.add_argument('--auto-tmm', action='store_true', help='If set, enable Automatic Torrent Management (auto TMM).')
+parser.add_argument('--pause-torrents', action='store_true', help='If set, pause all torrents.')
+parser.add_argument('--resume-torrents', action='store_true', help='If set, resume all torrents.')
+parser.add_argument('--auto-remove', action='store_true', help='If set, automatically remove completed torrents.')
+parser.add_argument('--create-hard-links', action='store_true', help='If set, create hard links for completed torrents in target directory.')
+parser.add_argument('--target-dir', default=None, help='Specify the target directory for organizing completed torrents. This is required if --create-hard-links is used and not specified in the config.json file.')
+parser.add_argument('--tag-by-age', action='store_true', help='If set, perform tagging based on torrent age in months.')
+parser.add_argument('--exclude_paths', type=str, nargs='*', help='List of paths to exclude.')
+
+# Parse command-line arguments
+pre_args, unknown = parser.parse_known_args()
+
+# Load configuration from config.json
+
+config_file_path = os.path.abspath(pre_args.config)
+try:
+    with open(config_file_path, 'r') as config_file:
+        config = json.load(config_file)
+except FileNotFoundError:
+    logging.error(f"The configuration file {config_file_path} was not found.")
+    sys.exit(1)
+except json.JSONDecodeError:
+    logging.error(f"The configuration file {config_file_path} contains invalid JSON.")
+    sys.exit(1)
+
+# Ensure target_dir is provided if required
+if pre_args.create_hard_links and not pre_args.target_dir and not config.get('target_dir'):
+    logging.error("Error: --target-dir is required when --create-hard-links is specified and not present in config.json.")
+    sys.exit(1)
+
+# Re-parse arguments now that configuration has been loaded
+args = parser.parse_args()
+
+# Override configuration with command-line arguments if provided
+config['host'] = args.host or config.get('host')
+config['username'] = args.username or config.get('username')
+config['password'] = args.password or config.get('password')
+target_dir = args.target_dir or config.get('target_dir', None)
+dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', False)
+
+# Connect to qBittorrent client
+try:
+    client = Client(host=config['host'], username=config['username'], password=config['password'])
+except exceptions.APIConnectionError as e:
+    logging.error(f"Failed to connect to qBittorrent: {e}")
+    sys.exit(1)
+
+#define torrents
+torrents = client.torrents.info()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,  # Set the desired logging level (e.g., INFO, DEBUG, WARNING)
+    level=logging.INFO,
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# Set up command-line argument parsing
-parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
-parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
-parser.add_argument('--username', type=str, help='The username for logging into qBittorrent Web UI.')
-parser.add_argument('--password', type=str, help='The password for logging into qBittorrent Web UI.')
-parser.add_argument('--dry-run', action='store_true', help='If set, the script will only print actions without executing them.')
-parser.add_argument('--other-issues-tag', type=str, help='The tag to be used for torrents that have issues other than being unregistered.')
-
-# Parse command-line arguments
-args = parser.parse_args()
-
-# Override configuration with command-line arguments if provided
-host = args.host if args.host else config.host
-username = args.username if args.username else config.username
-password = args.password if args.password else config.password
-dry_run = args.dry_run if args.dry_run else config.dry_run
-other_issues_tag = args.other_issues_tag if args.other_issues_tag else config.other_issues_tag
-unregistered = config.unregistered
-
-# Connect to qBittorrent client
-client = Client(host=config.host, username=config.username, password=config.password)
-
 # Log script start
 logging.info("Starting qbitunregistered script...")
 
-# List of unregistered tracker messages
-unregistered = config.unregistered
+# Run orphaned check if --orphaned argument is passed
+if args.orphaned:
+    # Get the exclude_paths from the configuration or from the command line (if provided)
+    exclude_paths = args.exclude_paths or config.get('exclude_paths', [])
 
-# Dictionary to store file paths and their associated hashes
-torrent_file_paths = {}
+    # Call the check_files_on_disk function with exclude_paths
+    orphaned_files = check_files_on_disk(client, torrents, exclude_paths)
 
-# Get all torrents from qBittorrent
-logging.info("Fetching torrent information from qBittorrent...")
-torrents = client.torrents.info()
-logging.info("Total torrents found: %d", len(torrents))
+    # Log the total number of orphaned files
+    logging.info("Total orphaned files: %d", len(orphaned_files))
 
-# Iterate through all the torrents
-for torrent in client.torrents.info():
-    
-    # Store the hashes in the torrent_file_paths dictionary
-    if torrent.save_path not in torrent_file_paths:
-        torrent_file_paths[torrent.save_path] = [torrent.hash]
-    else:
-        torrent_file_paths[torrent.save_path].append(torrent.hash)
+# Run unregistered checks if --unregistered argument is passed
+if args.unregistered:
+    # Call the unregistered_checks function and pass the torrents list
+    file_paths, unregistered_counts = unregistered_checks(client, torrents, config, use_delete_tags=config.get('use_delete_tags', False), delete_tags=config.get('delete_tags', []), delete_files=config.get('delete_files', {}), dry_run=dry_run)
 
-    # Initialize unregistered_count to 0
-    unregistered_count = 0
 
-    # Check trackers for unregistered messages
-    for tracker in torrent.trackers:
-        is_unregistered = False
-        # Check if the message matches any pattern in the unregistered list
-        for pattern in unregistered:
-            lower_pattern = pattern.lower()
-            lower_msg = tracker.msg.lower()
-            if lower_pattern.startswith("starts_with:") and lower_msg.startswith(lower_pattern.split("starts_with:")[1]):
-                is_unregistered = True
-                break
-            elif lower_msg == lower_pattern:
-                is_unregistered = True
-                break
-        # If the message is unregistered, increment the counter and print info
-        if is_unregistered and tracker.status == 4:
-            unregistered_count += 1
-            tracker_short = urlsplit(tracker.url)
-            logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
+    # Log the total counts
+    total_unregistered_count = sum(unregistered_counts.values())
+    logging.info("Total unregistered count: %d", total_unregistered_count)
 
-    # Add tags based on unregistered_count
-    if unregistered_count > 0:
-        tags_to_add = ["unregistered:crossseeding"] if len(torrent_file_paths[torrent.save_path]) > 1 else ["unregistered"]
-        if config.dry_run:
-            # Dry run, only print what would be done
-            print(f"[Dry Run] Would add tags {tags_to_add} to torrent with hash {torrent.hash}")
-        else:
-            # Not a dry run, execute the action
-            client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
-        continue
+# Run the tag_by_tracker function if desired
+if args.tag_by_tracker:
+    tag_by_tracker(client, torrents, config)
 
-    # Check trackers for other issues
-    for tracker in torrent.trackers:
-        if tracker.msg != 'This torrent is private' and tracker.status == 4 and tracker.msg.lower() not in [p.lower() for p in unregistered]:
-            tracker_short = urlsplit(tracker.url)
-            logging.info("%s %s %s", torrent.name, tracker.msg, tracker_short.netloc)
-            
-            # Add a tag to the torrent
-            tags_to_add = [config.other_issues_tag]
-            if config.dry_run:
-                # Dry run, only print what would be done
-                logging.info("[Dry Run] Would add tags %s to torrent with hash %s", tags_to_add, torrent.hash)
-            else:
-                # Not a dry run, execute the action
-                client.torrents_add_tags(tags=tags_to_add, torrent_hashes=[torrent.hash])
-                
-    # Delete torrents and files based on delete_tags and delete_files configuration
-    for tag in config.delete_tags:
-        if tag in torrent.tags:
-            if config.delete_files.get(tag, False):
-                if not config.dry_run:
-                    # Delete files
-                    client.torrents.delete(torrent.hash, delete_files=True)
-                    logging.info("Deleted torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
-                else:
-                    # Dry run, only print what would be done
-                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s and its files.", torrent.name, torrent.hash)
-            else:
-                if not config.dry_run:
-                    # Delete torrent without files
-                    client.torrents.delete(torrent.hash, delete_files=False)
-                    logging.info("Deleted torrent '%s' with hash %s.", torrent.name, torrent.hash)
-                else:
-                    # Dry run, only print what would be done
-                    logging.info("[Dry Run] Would delete torrent '%s' with hash %s.", torrent.name, torrent.hash)
+# Run the tag_by_age_buckets_in_months function if --tag-by-age argument is passed
+if args.tag_by_age:
+    tag_by_age(client, torrents, config)
+
+# Apply seed time and seed ratio limits if --seeding-management argument is passed
+if args.seeding_management:
+    apply_seed_time(client, config, torrents)
+    apply_seed_ratio(client, config, torrents)
+
+# Run the apply_auto_tmm_per_torrent function if --auto-tmm argument is passed
+if args.auto_tmm:
+    apply_auto_tmm_per_torrent(client, torrents)
+
+# Pause all torrents if --pause-torrents argument is passed
+if args.pause_torrents:
+    pause_torrents(client, torrents)
+
+# Resume all torrents if --resume-torrents argument is passed
+if args.resume_torrents:
+    resume_torrents(client, torrents)
+
+# Check if --auto-remove argument is passed
+if args.auto_remove:
+    auto_remove(client, torrents, dry_run)
+
+# Run the create_hard_links function if --create-hard-links argument is passed
+if args.create_hard_links:
+    create_hard_links(target_dir, torrents)
 
 # Log script end
 logging.info("qbitunregistered script completed.")
