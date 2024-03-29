@@ -5,6 +5,7 @@
 ## Features
 
 - **Orphaned File Checks**: Detect and report orphaned files to maintain a clean storage environment.
+
 - **Unregistered Checks**: Identify and handle unregistered torrents based on user-defined configurations.
 - **Tagging System**: Apply tags to torrents based on tracker source, age, and other criteria for easy organization.
 - **Seeding Management**: Implement seed time and seed ratio limits to optimize seeding strategy.
@@ -12,6 +13,7 @@
 - **Automatic Removal**: Automatically remove torrents that meet specified conditions to manage space and ratio.
 - **Hard Link Creation**: Generate hard links for completed downloads for better file management.
 - **Dry Run Mode**: Test configurations and script behavior without making actual changes to your setup.
+
 
 ## Prerequisites
 
@@ -76,7 +78,8 @@ Here's what you can specify when running `qbitunregistered`:
 - `--create-hard-links`: Create hard links for completed torrents in the target directory.
 - `--target-dir`: Specify the target directory for organizing completed torrents.
 - `--tag-by-age`: Perform tagging based on torrent age in months.
-- `--exclude_paths`: List of paths to exclude.
+- `--exclude-files`: Exclude files from being considered in operations based on glob patterns (e.g., `*.tmp`, `*.part`). Multiple patterns can be specified separated by spaces.
+- `--exclude-dirs`: Exclude directories from being scanned for orphaned files. Full paths should be specified, and wildcards can be used to match multiple directories (e.g., `/path/to/exclude/*`). Multiple paths can be specified separated by spaces.
 
 ## Troubleshooting
 

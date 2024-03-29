@@ -1,19 +1,13 @@
-#!/usr/bin/python3
 import os
+import fnmatch
 from typing import List
 import logging
 
-
-def list_directory_files(path: str) -> List[str]:
-    """Function to return a list of all files in a directory and its subdirectories"""
-    file_list = []
-    for root, dirs, files in os.walk(path):
-        for file in files:
-            file_list.append(os.path.join(root, file))
-    return file_list
-
-def check_files_on_disk(client, torrents: List, exclude_paths: List[str] = []) -> List[str]:
+def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str] = [], exclude_dirs: List[str] = []) -> List[str]:
     logging.debug("Entering check_files_on_disk function...")
+
+    def should_exclude_file(file: str) -> bool:
+        return any(fnmatch.fnmatch(file, pattern) for pattern in exclude_file_patterns)
 
     # Get the save paths to check
     save_paths = {client.application.defaultSavePath}
@@ -30,13 +24,15 @@ def check_files_on_disk(client, torrents: List, exclude_paths: List[str] = []) -
     torrent_files = [os.path.join(torrent.save_path, file.name) for torrent in torrents for file in torrent.files]
     logging.debug(f"Torrent files: {torrent_files}")
 
-    # Find all files and folders in each save path, excluding specified paths
+    # Find all files and folders in each save path, excluding specified paths, files, and directories
     all_files = []
     for path in save_paths:
-        for root, _, files in os.walk(path):
+        for root, dirs, files in os.walk(path, topdown=True):
+            dirs[:] = [d for d in dirs if not any(fnmatch.fnmatch(os.path.join(root, d), pattern) for pattern in exclude_dirs)]
+            
             for file in files:
                 file_path = os.path.join(root, file)
-                if not any(excluded_path in file_path for excluded_path in exclude_paths):
+                if not any(excluded_path in file_path for excluded_path in exclude_paths) and not should_exclude_file(file):
                     all_files.append(file_path)
 
     logging.debug(f"All files: {all_files}")

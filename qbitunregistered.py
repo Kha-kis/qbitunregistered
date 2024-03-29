@@ -38,7 +38,9 @@ parser.add_argument('--auto-remove', action='store_true', help='If set, automati
 parser.add_argument('--create-hard-links', action='store_true', help='If set, create hard links for completed torrents in target directory.')
 parser.add_argument('--target-dir', default=None, help='Specify the target directory for organizing completed torrents. This is required if --create-hard-links is used and not specified in the config.json file.')
 parser.add_argument('--tag-by-age', action='store_true', help='If set, perform tagging based on torrent age in months.')
-parser.add_argument('--exclude_paths', type=str, nargs='*', help='List of paths to exclude.')
+parser.add_argument("--exclude-files", nargs='+', default=[], help="List of file patterns to exclude.")
+parser.add_argument("--exclude-dirs", nargs='+', default=[], help="List of directories to exclude.")
+
 
 # Parse command-line arguments
 pre_args, unknown = parser.parse_known_args()
@@ -70,6 +72,8 @@ config['username'] = args.username or config.get('username')
 config['password'] = args.password or config.get('password')
 target_dir = args.target_dir or config.get('target_dir', None)
 dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', False)
+exclude_files = args.exclude_files if args.exclude_files else config.get('exclude_files', [])
+exclude_dirs = args.exclude_dirs if args.exclude_dirs else config.get('exclude_dirs', [])
 
 # Connect to qBittorrent client
 try:
@@ -93,22 +97,13 @@ logging.info("Starting qbitunregistered script...")
 
 # Run orphaned check if --orphaned argument is passed
 if args.orphaned:
-    # Get the exclude_paths from the configuration or from the command line (if provided)
-    exclude_paths = args.exclude_paths or config.get('exclude_paths', [])
+    orphaned_files = check_files_on_disk(client, torrents, exclude_file_patterns=exclude_files, exclude_dirs=exclude_dirs)
 
-    # Call the check_files_on_disk function with exclude_paths
-    orphaned_files = check_files_on_disk(client, torrents, exclude_paths)
-
-    # Log the total number of orphaned files
     logging.info("Total orphaned files: %d", len(orphaned_files))
 
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
-    # Call the unregistered_checks function and pass the torrents list
     file_paths, unregistered_counts = unregistered_checks(client, torrents, config, use_delete_tags=config.get('use_delete_tags', False), delete_tags=config.get('delete_tags', []), delete_files=config.get('delete_files', {}), dry_run=dry_run)
-
-
-    # Log the total counts
     total_unregistered_count = sum(unregistered_counts.values())
     logging.info("Total unregistered count: %d", total_unregistered_count)
 
