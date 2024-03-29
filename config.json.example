@@ -33,10 +33,16 @@
     "unregistered:crossseeding": false
   },
 
-  "//": "A list of paths to exclude from the orphaned file check.",
-  "exclude_paths": [
-    "/path/to/exclude1",
-    "/path/to/exclude2"
+  "//": "New: A list of file patterns to exclude. Use glob patterns like '*.tmp', '*.part', etc.",
+  "exclude_files": [
+    "*.!qB",
+    "*_unpackerred"
+  ],
+
+  "//": "New: A list of directory names to exclude. Specify the exact names, not paths.",
+  "exclude_dirs": [
+    "/path/to/exclude/*",
+    "/data/torrents/temp/"
   ],
   
   "//": "A list of messages or patterns to match for unregistered torrents. Each entry in this list can be a full message (e.g., 'This torrent does not exist') or a pattern to match messages that start with specific text (e.g., 'starts_with:Trump').",
