@@ -24,7 +24,6 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
     torrent_files = [os.path.join(torrent.save_path, file.name) for torrent in torrents for file in torrent.files]
     logging.debug(f"Torrent files: {torrent_files}")
 
-    # Find all files and folders in each save path, excluding specified paths, files, and directories
     all_files = []
     for path in save_paths:
         for root, dirs, files in os.walk(path, topdown=True):
@@ -32,7 +31,7 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
             
             for file in files:
                 file_path = os.path.join(root, file)
-                if not any(excluded_path in file_path for excluded_path in exclude_paths) and not should_exclude_file(file):
+                if not any(fnmatch.fnmatch(file, pattern) for pattern in exclude_files) and not should_exclude_file(file):
                     all_files.append(file_path)
 
     logging.debug(f"All files: {all_files}")
