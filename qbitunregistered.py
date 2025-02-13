@@ -12,6 +12,7 @@ from scripts.torrent_management import pause_torrents, resume_torrents
 from scripts.auto_remove import auto_remove
 from scripts.auto_tmm import apply_auto_tmm_per_torrent
 from scripts.create_hardlinks import create_hard_links
+from scripts.tag_cross_seed import tag_by_cross_seed
 from scripts.tag_by_age import tag_by_age
 
 # Set up command-line argument parsing
@@ -32,6 +33,7 @@ parser.add_argument('--auto-remove', action='store_true', help='If set, automati
 parser.add_argument('--create-hard-links', action='store_true', help='If set, create hard links for completed torrents in target directory.')
 parser.add_argument('--target-dir', default=None, help='Specify the target directory for organizing completed torrents. This is required if --create-hard-links is used and not specified in the config.json file.')
 parser.add_argument('--tag-by-age', action='store_true', help='If set, perform tagging based on torrent age in months.')
+parser.add_argument('--tag-by-cross-seed', action='store_true', help='If set, tag torrents based on cross-seeding status.')
 parser.add_argument("--exclude-files", nargs='+', default=[], help="List of file patterns to exclude.")
 parser.add_argument("--exclude-dirs", nargs='+', default=[], help="List of directories to exclude.")
 
@@ -105,6 +107,10 @@ if args.unregistered:
 # Run the tag_by_tracker function if desired
 if args.tag_by_tracker:
     tag_by_tracker(client, torrents, config)
+
+# Run the tag_by_cross_seed function if --tag-by-cross-seed argument is passed
+if args.tag_by_cross_seed:
+    tag_by_cross_seed(client, torrents, True)
 
 # Run the tag_by_age function if --tag-by-age argument is passed
 if args.tag_by_age:
