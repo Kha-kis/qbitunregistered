@@ -12,7 +12,7 @@ from scripts.torrent_management import pause_torrents, resume_torrents
 from scripts.auto_remove import auto_remove
 from scripts.auto_tmm import apply_auto_tmm_per_torrent
 from scripts.create_hardlinks import create_hard_links
-from scripts.tag_cross_seed import tag_by_cross_seed
+from scripts.tag_cross_seeding import tag_cross_seeds
 from scripts.tag_by_age import tag_by_age
 
 # Set up command-line argument parsing
@@ -110,7 +110,7 @@ if args.tag_by_tracker:
 
 # Run the tag_by_cross_seed function if --tag-by-cross-seed argument is passed
 if args.tag_by_cross_seed:
-    tag_by_cross_seed(client, torrents, True)
+    tag_cross_seeds(client, torrents)
 
 # Run the tag_by_age function if --tag-by-age argument is passed
 if args.tag_by_age:
