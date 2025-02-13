@@ -23,6 +23,14 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
     # Ensure paths exist before scanning
     valid_save_paths = {path for path in valid_save_paths if path.exists()}
 
+    # Remove redundant subdirectories (keep only the highest-level paths)
+    filtered_save_paths = set()
+    for path in sorted(valid_save_paths, key=lambda p: len(str(p))):
+        if not any(parent in filtered_save_paths for parent in path.parents):
+            filtered_save_paths.add(path)
+
+    valid_save_paths = filtered_save_paths
+
     logging.info(f"Scanning {len(valid_save_paths)} save paths for orphaned files...")
 
     # Track files used by torrents
