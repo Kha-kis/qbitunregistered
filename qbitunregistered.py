@@ -1,17 +1,11 @@
 import json
 import argparse
 import os
+import sys
 import logging
-from qbittorrentapi import Client
-from scripts.orphaned import check_files_on_disk
+from qbittorrentapi import Client, exceptions
+from scripts.orphaned import check_files_on_disk, delete_orphaned_files
 from scripts.unregistered_checks import unregistered_checks
-from scripts.tag_by_tracker import tag_by_tracker
-from scripts.seeding_management import apply_seed_time, apply_seed_ratio
-from scripts.torrent_management import pause_torrents, resume_torrents
-from scripts.auto_remove import auto_remove
-from scripts.auto_tmm import apply_auto_tmm_per_torrent
-from scripts.create_hardlinks import create_hard_links
-from scripts.tag_by_age import tag_by_age
 from scripts.tag_by_tracker import tag_by_tracker
 from scripts.seeding_management import apply_seed_time, apply_seed_ratio
 from scripts.torrent_management import pause_torrents, resume_torrents
@@ -23,7 +17,7 @@ from scripts.tag_by_age import tag_by_age
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
 parser.add_argument('--config', type=str, default='config.json', help='Path to the config.json file.')
-parser.add_argument('--orphaned', action='store_true', help='If set, check for orphaned files on disk.')
+parser.add_argument('--orphaned', action='store_true', help='If set, check for orphaned files on disk and delete them unless --dry-run is specified.')
 parser.add_argument('--unregistered', action='store_true', help='If set, perform unregistered checks.')
 parser.add_argument('--dry-run', action='store_true', help='If set, the script will only print actions without executing them.')
 parser.add_argument('--host', type=str, help='The host and port where qBittorrent is running.')
@@ -41,12 +35,10 @@ parser.add_argument('--tag-by-age', action='store_true', help='If set, perform t
 parser.add_argument("--exclude-files", nargs='+', default=[], help="List of file patterns to exclude.")
 parser.add_argument("--exclude-dirs", nargs='+', default=[], help="List of directories to exclude.")
 
-
 # Parse command-line arguments
 pre_args, unknown = parser.parse_known_args()
 
 # Load configuration from config.json
-
 config_file_path = os.path.abspath(pre_args.config)
 try:
     with open(config_file_path, 'r') as config_file:
@@ -82,7 +74,7 @@ except exceptions.APIConnectionError as e:
     logging.error(f"Failed to connect to qBittorrent: {e}")
     sys.exit(1)
 
-#define torrents
+# Define torrents
 torrents = client.torrents.info()
 
 # Configure logging
@@ -101,6 +93,9 @@ if args.orphaned:
 
     logging.info("Total orphaned files: %d", len(orphaned_files))
 
+    # Delete orphaned files unless dry-run is set
+    delete_orphaned_files(orphaned_files, dry_run, client)
+
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
     file_paths, unregistered_counts = unregistered_checks(client, torrents, config, use_delete_tags=config.get('use_delete_tags', False), delete_tags=config.get('delete_tags', []), delete_files=config.get('delete_files', {}), dry_run=dry_run)
@@ -111,7 +106,7 @@ if args.unregistered:
 if args.tag_by_tracker:
     tag_by_tracker(client, torrents, config)
 
-# Run the tag_by_age_buckets_in_months function if --tag-by-age argument is passed
+# Run the tag_by_age function if --tag-by-age argument is passed
 if args.tag_by_age:
     tag_by_age(client, torrents, config)
 

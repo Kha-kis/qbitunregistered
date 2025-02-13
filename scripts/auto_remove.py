@@ -1,17 +1,25 @@
 import logging
 
 def auto_remove(client, torrents, dry_run):
-    # Log script start
     logging.info("Starting auto_remove script...")
 
-    # Iterate over the torrents and remove completed ones
+    total_removed = 0
+    total_torrents = len(torrents)
+    logging.info(f"Total torrents found: {total_torrents}")
+
     for torrent in torrents:
         if torrent.state_enum.is_completed:
             if dry_run:
                 logging.info(f"Would remove completed torrent: {torrent.name}")
             else:
-                client.torrents_delete([torrent.hash])
-                logging.info(f"Removed completed torrent: {torrent.name}")
+                try:
+                    client.torrents_delete([torrent.hash])
+                    logging.info(f"Removed completed torrent: {torrent.name}")
+                    total_removed += 1
+                except Exception as e:
+                    logging.error(f"Error removing {torrent.name}: {e}")
 
-    # Log script end
-    logging.info("auto_remove script completed.")
+    if total_removed == 0:
+        logging.info("No completed torrents were removed.")
+
+    logging.info(f"auto_remove script completed. Removed {total_removed} torrents.")
