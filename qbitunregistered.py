@@ -139,14 +139,14 @@ if args.tag_by_tracker:
 # Run the tag_by_cross_seed function if --tag-by-cross-seed argument is passed
 if args.tag_by_cross_seed:
     try:
-        tag_cross_seeds(client, torrents)
+        tag_cross_seeds(client, torrents, dry_run=dry_run)
     except Exception as e:
         logging.error(f"Error during cross-seed tagging: {e}")
 
 # Run the tag_by_age function if --tag-by-age argument is passed
 if args.tag_by_age:
     try:
-        tag_by_age(client, torrents, config)
+        tag_by_age(client, torrents, config, dry_run=dry_run)
     except Exception as e:
         logging.error(f"Error during tag by age: {e}")
 
@@ -160,21 +160,21 @@ if args.seeding_management:
 # Run the apply_auto_tmm_per_torrent function if --auto-tmm argument is passed
 if args.auto_tmm:
     try:
-        apply_auto_tmm_per_torrent(client, torrents)
+        apply_auto_tmm_per_torrent(client, torrents, dry_run=dry_run)
     except Exception as e:
         logging.error(f"Error during auto TMM: {e}")
 
 # Pause all torrents if --pause-torrents argument is passed
 if args.pause_torrents:
     try:
-        pause_torrents(client, torrents)
+        pause_torrents(client, torrents, dry_run=dry_run)
     except Exception as e:
         logging.error(f"Error pausing torrents: {e}")
 
 # Resume all torrents if --resume-torrents argument is passed
 if args.resume_torrents:
     try:
-        resume_torrents(client, torrents)
+        resume_torrents(client, torrents, dry_run=dry_run)
     except Exception as e:
         logging.error(f"Error resuming torrents: {e}")
 
@@ -188,7 +188,7 @@ if args.auto_remove:
 # Run the create_hard_links function if --create-hard-links argument is passed
 if args.create_hard_links:
     try:
-        create_hard_links(target_dir, torrents)
+        create_hard_links(target_dir, torrents, dry_run=dry_run)
     except Exception as e:
         logging.error(f"Error creating hard links: {e}")
 
