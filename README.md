@@ -17,7 +17,7 @@
 
 ## Prerequisites
 
-- Python 3.6 or newer installed on your system.
+- Python 3.9 or newer installed on your system.
 - qBittorrent with Web UI access.
 - Dependencies from `requirements.txt` installed.
 
