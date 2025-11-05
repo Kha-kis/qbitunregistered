@@ -39,10 +39,14 @@ def _get_categories(client, *, cache_scope: Optional[int] = None) -> Dict[str, A
     return client.torrent_categories.categories
 
 
-def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str] = [], exclude_dirs: List[str] = []) -> List[str]:
+def check_files_on_disk(client, torrents: List, exclude_file_patterns: Optional[List[str]] = None, exclude_dirs: Optional[List[str]] = None) -> List[str]:
     """
     Identifies orphaned files on disk that are not associated with any active torrents in qBittorrent.
     """
+    # Avoid mutable default arguments - create fresh lists if None
+    exclude_file_patterns = exclude_file_patterns or []
+    exclude_dirs = exclude_dirs or []
+
     logging.debug("Entering check_files_on_disk function...")
 
     # Get the default save path (cached to reduce API calls)
