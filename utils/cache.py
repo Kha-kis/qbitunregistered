@@ -7,7 +7,7 @@ within a single script execution.
 
 import time
 import logging
-from typing import Any, Optional, Callable, Dict, Tuple
+from typing import Any, Optional, Callable, Dict, Tuple, Union
 from functools import wraps
 
 
@@ -97,12 +97,16 @@ class SimpleCache:
         self._cache.clear()
         logging.debug(f"Cache cleared: {count} entries removed")
 
-    def stats(self) -> Dict[str, int]:
+    def stats(self) -> Dict[str, Union[int, float]]:
         """
         Get cache statistics.
 
         Returns:
             Dictionary with cache stats (hits, misses, size, hit_rate)
+            - hits: int
+            - misses: int
+            - size: int
+            - hit_rate: float (percentage)
         """
         total = self._hits + self._misses
         hit_rate = (self._hits / total * 100) if total > 0 else 0
