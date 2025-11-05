@@ -29,8 +29,14 @@ class SimpleCache:
         Initialize the cache.
 
         Args:
-            default_ttl: Default time-to-live in seconds (default: 300 = 5 minutes)
+            default_ttl: Default time-to-live in seconds (default: 300 = 5 minutes, must be > 0)
+
+        Raises:
+            ValueError: If default_ttl is not a positive number
         """
+        if not isinstance(default_ttl, (int, float)) or default_ttl <= 0:
+            raise ValueError(f"default_ttl must be a positive number, got: {default_ttl}")
+
         self._cache: Dict[str, Tuple[Any, float]] = {}
         self._default_ttl = default_ttl
         self._hits = 0
@@ -72,10 +78,17 @@ class SimpleCache:
         Args:
             key: Cache key
             value: Value to cache
-            ttl: Time-to-live in seconds (uses default if not specified)
+            ttl: Time-to-live in seconds (uses default if not specified, must be > 0)
+
+        Raises:
+            ValueError: If ttl is not a positive integer
         """
         if ttl is None:
             ttl = self._default_ttl
+
+        # Validate TTL to prevent immediately expired entries
+        if not isinstance(ttl, (int, float)) or ttl <= 0:
+            raise ValueError(f"ttl must be a positive number, got: {ttl}")
 
         expiry = time.time() + ttl
         self._cache[key] = (value, expiry)
