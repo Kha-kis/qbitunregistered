@@ -27,10 +27,17 @@ def tag_by_age(client, torrents: List[Any], _config: Dict[str, Any], dry_run: bo
 
         for torrent in torrents:
             try:
-                # Calculate the age of the torrent in months
-                torrent_age_months = (current_time.year - torrent.creation_date.year) * 12 + (
+                # Calculate the age of the torrent in months (accounting for day-of-month)
+                months_diff = (current_time.year - torrent.creation_date.year) * 12 + (
                     current_time.month - torrent.creation_date.month
                 )
+
+                # Adjust if the day hasn't passed yet in the current month
+                # (e.g., created Jan 31, checked Feb 1 should be 0 months, not 1)
+                if current_time.day < torrent.creation_date.day:
+                    months_diff -= 1
+
+                torrent_age_months = months_diff
 
                 # Determine the appropriate tag based on age buckets in months
                 if torrent_age_months < 1:
