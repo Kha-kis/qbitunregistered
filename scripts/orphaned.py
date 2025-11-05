@@ -25,7 +25,7 @@ def _get_default_save_path(client, *, cache_scope: Optional[int] = None) -> str:
 @cached(ttl=300, key_prefix="torrent_categories")
 def _get_categories(client, *, cache_scope: Optional[int] = None) -> Dict[str, Any]:
     """
-    Cached wrapper for client.torrent_categories() method.
+    Cached wrapper for client.torrent_categories attribute.
     Reduces redundant API calls for category configuration.
     Returns TorrentCategoriesDictionary with all defined categories.
 
@@ -34,7 +34,7 @@ def _get_categories(client, *, cache_scope: Optional[int] = None) -> Dict[str, A
         cache_scope: Unique identifier to scope cache per client (use id(client))
                      to prevent cache contamination across different client instances
     """
-    return client.torrent_categories()
+    return client.torrent_categories
 
 
 def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str] = [], exclude_dirs: List[str] = []) -> List[str]:
