@@ -1,0 +1,101 @@
+{
+  "//": "The host and port where qbittorrent is running.",
+  "host": "localhost:8080",
+
+  "//": "The username for logging into qbittorrent's web UI.",
+  "username": "admin",
+
+  "//": "The password for logging into qbittorrent's web UI.",
+  "password": "password",
+
+  "//": "A flag for dry run mode. If set to true, the script will print what it would do but won't actually execute actions like adding tags or deleting torrents/files. Set to false to actually execute actions.",
+  "dry_run": true,
+
+  "//": "Tags used for torrents found to be unregistered or for cross-seeding purposes.",
+  "default_unregistered_tag": "unregistered",
+  "cross_seeding_tag": "unregistered:crossseeding",
+  
+  "//": "The tag to be used for torrents that have issues other than being unregistered.",
+  "other_issues_tag": "issue",
+
+  "//": "Flag for using delete_tags in the script.",
+  "use_delete_tags": false,
+
+  "//": "Flag for using delete_files in the script.",
+  "use_delete_files": false,
+
+  "//": "A list of tags that should trigger the deletion of torrents and/or files (files are only removed if delete_files is set).",
+  "delete_tags": ["unregistered", "unregistered:crossseeding"],
+
+  "//": "A dictionary specifying whether to delete files for each tag. The keys represent the tags, and the values represent whether to delete files (true) or not (false) for each tag.",
+  "delete_files": {
+    "unregistered": false,
+    "unregistered:crossseeding": false
+  },
+
+  "//": "New: A list of file patterns to exclude. Use glob patterns like '*.tmp', '*.part', etc.",
+  "exclude_files": [
+    "*.!qB",
+    "*_unpackerred"
+  ],
+
+  "//": "New: A list of directory names to exclude. Specify the exact names, not paths.",
+  "exclude_dirs": [
+    "/path/to/exclude/*",
+    "/data/torrents/temp/"
+  ],
+  
+  "//": "A list of messages or patterns to match for unregistered torrents. Each entry in this list can be a full message (e.g., 'This torrent does not exist') or a pattern to match messages that start with specific text (e.g., 'starts_with:Trump').",
+  "unregistered": [
+    "This torrent does not exist",
+    "Unregistered torrent",
+    "002: Invalid InfoHash, Torrent not found",
+    "Torrent is not authorized for use on this tracker",
+    "Torrent is not authorized for use on this tracker or Torrent Deleted",
+    "Torrent not found",
+    "Torrent not registered with this tracker.",
+    "Unregistered torrent",
+    "unregistered torrent",
+    "unregistered",
+    "starts_with:Trump"
+  ],
+  
+  "//": "The target directory for organizing completed torrents that will be hardlinked.",
+  "target_dir": "/path/to/target/dir",
+
+  "//": "Automatic Torrent Management (auto TMM) configuration options",
+
+  "//": "Flag to enable Automatic Torrent Management (auto TMM) globally.",
+  "auto_tmm_enabled": true,
+
+  "//": "Flag to enable Automatic Torrent Management (auto TMM) for torrents whose contents change.",
+  "torrent_changed_tmm_enabled": true,
+
+  "//": "Flag to enable Automatic Torrent Management (auto TMM) when the save path of a torrent changes.",
+  "save_path_changed_tmm_enabled": true,
+
+  "//": "Flag to enable Automatic Torrent Management (auto TMM) when the category of a torrent changes.",
+  "category_changed_tmm_enabled": true,
+
+  "//": "Mapping of terms or patterns associated with trackers and the corresponding tags.",
+  "tracker_tags": {
+    "aither": {
+      "tag": "AITHER",
+      "seed_time_limit": 100,
+      "seed_ratio_limit": 1
+    },
+    "blutopia": {
+      "tag": "BLU",
+      "seed_time_limit": 150,
+      "seed_ratio_limit": 1.5
+    },
+    "beyond-hd": {
+      "tag": "BHD",
+      "seed_time_limit": 200,
+      "seed_ratio_limit": 2
+    }
+  },
+
+  "//": "List of times (24-hour format) to schedule the script to run daily. Example: ['09:00', '15:00', '21:00']",
+  "scheduled_times": []
+}
