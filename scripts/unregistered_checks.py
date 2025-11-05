@@ -129,9 +129,9 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
     unregistered_patterns = config.get('unregistered', [])
     exact_matches, starts_with_patterns = compile_patterns(unregistered_patterns)
 
-    # Batch torrents by tag type for efficient API calls
-    default_tag_hashes = []
-    cross_seeding_tag_hashes = []
+    # First pass: Collect all torrent data and unregistered status
+    # Store per-path lists of unregistered torrent hashes for second pass
+    unregistered_hashes_per_path = {}
 
     for torrent in torrents:
         update_torrent_file_paths(torrent_file_paths, torrent)
@@ -141,22 +141,36 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
 
         unregistered_counts_per_path[torrent.save_path] = unregistered_counts_per_path.get(torrent.save_path, 0) + unregistered_count
 
-        # Group torrents by tag type for batching
+        # Track unregistered torrents per path (don't assign tags yet)
         if unregistered_count > 0:
             # Track number of torrents (not tracker hits) with any unregistered tracker
             unregistered_torrents_per_path[torrent.save_path] = (
                 unregistered_torrents_per_path.get(torrent.save_path, 0) + 1
             )
-            # Check if ALL torrents in this path have unregistered trackers
-            is_all_unregistered = unregistered_torrents_per_path[torrent.save_path] == len(
-                torrent_file_paths[torrent.save_path]
-            )
-            if is_all_unregistered:
-                default_tag_hashes.append(torrent.hash)
-                tag_counts[default_tag] = tag_counts.get(default_tag, 0) + 1
-            else:
-                cross_seeding_tag_hashes.append(torrent.hash)
-                tag_counts[cross_seeding_tag] = tag_counts.get(cross_seeding_tag, 0) + 1
+            # Store this torrent hash for the path
+            if torrent.save_path not in unregistered_hashes_per_path:
+                unregistered_hashes_per_path[torrent.save_path] = []
+            unregistered_hashes_per_path[torrent.save_path].append(torrent.hash)
+
+    # Second pass: Now that we have complete per-path counts, assign tags correctly
+    default_tag_hashes = []
+    cross_seeding_tag_hashes = []
+
+    for save_path, unregistered_hashes in unregistered_hashes_per_path.items():
+        # Now we can accurately check if ALL torrents in this path have unregistered trackers
+        total_torrents_in_path = len(torrent_file_paths[save_path])
+        unregistered_torrents_in_path = unregistered_torrents_per_path[save_path]
+
+        is_all_unregistered = (unregistered_torrents_in_path == total_torrents_in_path)
+
+        if is_all_unregistered:
+            # All torrents in this path have unregistered trackers
+            default_tag_hashes.extend(unregistered_hashes)
+            tag_counts[default_tag] = tag_counts.get(default_tag, 0) + len(unregistered_hashes)
+        else:
+            # Only some torrents have unregistered trackers (cross-seeding)
+            cross_seeding_tag_hashes.extend(unregistered_hashes)
+            tag_counts[cross_seeding_tag] = tag_counts.get(cross_seeding_tag, 0) + len(unregistered_hashes)
 
     # Apply tags in batches (2 API calls instead of N)
     if not dry_run:
