@@ -160,7 +160,9 @@ class TestExcludePatternValidation:
         validate_exclude_patterns(['*'], [])
         assert "will match ALL files" in caplog.text
 
-    def test_validate_relative_dir_path(self, caplog):
-        """Test that relative paths generate warnings."""
-        validate_exclude_patterns([], ['relative/path'])
-        assert "should be absolute" in caplog.text
+    def test_validate_relative_dir_path(self):
+        """Test that relative paths raise errors (security requirement)."""
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_exclude_patterns([], ['relative/path'])
+        assert "must be absolute" in str(exc_info.value)
+        assert "security requirement" in str(exc_info.value)
