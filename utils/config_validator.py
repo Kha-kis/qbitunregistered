@@ -32,30 +32,38 @@ def validate_config(config: Dict[str, Any]) -> None:
     if 'host' in config:
         host = config['host']
         if host:
-            # Parse as URL to support both 'hostname:port' and full URLs like 'https://example.com:8080/qbittorrent'
-            parsed = urlparse(host)
+            # Determine if this is a full URL (contains "://") or simple hostname:port format
+            if '://' in host:
+                # Parse as full URL (e.g., 'https://example.com:8080/qbittorrent')
+                parsed = urlparse(host)
 
-            # If scheme is present, it should be http or https
-            if parsed.scheme and parsed.scheme not in ['http', 'https']:
-                errors.append(f"Invalid host scheme: '{parsed.scheme}'. Use 'http' or 'https', or omit for 'hostname:port' format")
+                # Validate scheme
+                if parsed.scheme not in ['http', 'https']:
+                    errors.append(f"Invalid host scheme: '{parsed.scheme}'. Use 'http' or 'https'")
 
-            # If no scheme, treat as 'hostname:port' format (e.g., 'localhost:8080')
-            if not parsed.scheme:
+                # Validate netloc is present
+                if not parsed.netloc:
+                    errors.append(f"Invalid host URL: '{host}'. Missing hostname/netloc")
+            else:
+                # Treat as simple 'hostname:port' format (e.g., 'localhost:8080')
                 if ':' not in host:
                     errors.append(f"Invalid host format: '{host}'. Expected 'hostname:port' or full URL like 'http://hostname:port/path'")
                 else:
                     # Validate simple 'hostname:port' format
                     parts = host.split(':', 1)
+                    hostname = parts[0].strip()
+
+                    # Check hostname is not empty
+                    if not hostname:
+                        errors.append(f"Invalid host format: '{host}'. Hostname cannot be empty")
+
+                    # Validate port
                     try:
                         port = int(parts[1])
                         if not (1 <= port <= 65535):
                             errors.append(f"Invalid port number: {port}. Must be between 1 and 65535")
                     except ValueError:
                         errors.append(f"Invalid port in host: '{parts[1]}'. Must be a number")
-
-            # If scheme is present, netloc should be populated
-            elif not parsed.netloc:
-                errors.append(f"Invalid host URL: '{host}'. Missing hostname/netloc")
 
     # Validate dry_run is boolean
     if 'dry_run' in config and not isinstance(config['dry_run'], bool):

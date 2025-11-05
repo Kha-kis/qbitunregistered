@@ -60,6 +60,28 @@ class TestConfigValidation:
             validate_config(config)
         assert "Invalid host format" in str(exc_info.value)
 
+    def test_empty_hostname(self):
+        """Test that empty hostname raises error."""
+        config = {
+            'host': ':8080',  # Empty hostname
+            'username': 'admin',
+            'password': 'password',
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "Hostname cannot be empty" in str(exc_info.value)
+
+    def test_whitespace_hostname(self):
+        """Test that whitespace-only hostname raises error."""
+        config = {
+            'host': ' :8080',  # Whitespace hostname
+            'username': 'admin',
+            'password': 'password',
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "Hostname cannot be empty" in str(exc_info.value)
+
     def test_invalid_dry_run_type(self):
         """Test that non-boolean dry_run raises error."""
         config = {
@@ -95,6 +117,23 @@ class TestConfigValidation:
         # Should not raise any exception
         validate_config(config)
 
+    def test_valid_tracker_tags_with_limits(self):
+        """Test that valid tracker_tags with seed limits pass validation."""
+        config = {
+            'host': 'localhost:8080',
+            'username': 'admin',
+            'password': 'password',
+            'tracker_tags': {
+                'test_tracker': {
+                    'tag': 'TEST',
+                    'seed_time_limit': -2,  # Valid: -2 = no limit
+                    'seed_ratio_limit': -1,  # Valid: -1 = use global
+                }
+            }
+        }
+        # Should not raise any exception
+        validate_config(config)
+
     def test_invalid_tracker_tags(self):
         """Test that invalid tracker_tags structure raises error."""
         config = {
@@ -104,13 +143,13 @@ class TestConfigValidation:
             'tracker_tags': {
                 'test_tracker': {
                     'tag': 'TEST',
-                    'seed_time_limit': -2,  # Invalid negative value (only -1 is allowed for unlimited)
+                    'seed_time_limit': -3,  # Invalid: must be >= -2 (API: -2=no limit, -1=global, 0+=specific)
                 }
             }
         }
         with pytest.raises(ConfigValidationError) as exc_info:
             validate_config(config)
-        assert "must be a non-negative number or -1 for unlimited" in str(exc_info.value)
+        assert "must be >= -2" in str(exc_info.value)
 
 
 class TestExcludePatternValidation:
