@@ -57,13 +57,6 @@ except Exception as e:
     print(f"ERROR: Failed to read configuration file: {e}")
     sys.exit(1)
 
-# Validate configuration
-try:
-    validate_config(config)
-except ConfigValidationError as e:
-    print(f"ERROR: {e}")
-    sys.exit(1)
-
 # Ensure target_dir is provided if required
 if pre_args.create_hard_links and not pre_args.target_dir and not config.get('target_dir'):
     logging.error("Error: --target-dir is required when --create-hard-links is specified and not present in config.json.")
@@ -87,6 +80,13 @@ target_dir = args.target_dir or config.get('target_dir', None)
 dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', False)
 exclude_files = args.exclude_files if args.exclude_files else config.get('exclude_files', [])
 exclude_dirs = args.exclude_dirs if args.exclude_dirs else config.get('exclude_dirs', [])
+
+# Validate configuration after CLI overrides are applied
+try:
+    validate_config(config)
+except ConfigValidationError as e:
+    logging.error(f"Configuration validation failed: {e}")
+    sys.exit(1)
 
 # Validate exclude patterns
 validate_exclude_patterns(exclude_files, exclude_dirs)
