@@ -76,8 +76,9 @@ def validate_config(config: Dict[str, Any]) -> None:
                 for limit_field in ['seed_time_limit', 'seed_ratio_limit']:
                     if limit_field in tracker_config:
                         value = tracker_config[limit_field]
-                        if not isinstance(value, (int, float)) or value < 0:
-                            errors.append(f"tracker_tags['{tracker_name}']['{limit_field}'] must be a non-negative number")
+                        # Allow -1 for unlimited, otherwise must be non-negative
+                        if not isinstance(value, (int, float)) or (value < 0 and value != -1):
+                            errors.append(f"tracker_tags['{tracker_name}']['{limit_field}'] must be a non-negative number or -1 for unlimited")
 
     # Validate target_dir if present
     if 'target_dir' in config and config['target_dir']:

@@ -104,13 +104,13 @@ class TestConfigValidation:
             'tracker_tags': {
                 'test_tracker': {
                     'tag': 'TEST',
-                    'seed_time_limit': -1,  # Invalid negative value
+                    'seed_time_limit': -2,  # Invalid negative value (only -1 is allowed for unlimited)
                 }
             }
         }
         with pytest.raises(ConfigValidationError) as exc_info:
             validate_config(config)
-        assert "must be a non-negative number" in str(exc_info.value)
+        assert "must be a non-negative number or -1 for unlimited" in str(exc_info.value)
 
 
 class TestExcludePatternValidation:
