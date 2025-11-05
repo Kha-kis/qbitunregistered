@@ -1,5 +1,6 @@
 import logging
 from typing import List, Any
+from tqdm import tqdm
 
 
 def auto_remove(client, torrents: List[Any], dry_run: bool = False) -> None:
@@ -19,7 +20,7 @@ def auto_remove(client, torrents: List[Any], dry_run: bool = False) -> None:
 
     logging.info(f"Total torrents found: {total_torrents}")
 
-    for torrent in torrents:
+    for torrent in tqdm(torrents, desc="Checking torrents for removal", unit="torrent"):
         try:
             if torrent.state_enum.is_complete:
                 completed_count += 1

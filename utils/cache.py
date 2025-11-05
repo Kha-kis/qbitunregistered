@@ -3,6 +3,14 @@ Caching utilities for qBittorrent API responses.
 
 Provides in-memory caching with TTL (time-to-live) to reduce redundant API calls
 within a single script execution.
+
+Cache Design Notes:
+- In-memory only: Cache is cleared between script runs
+- Default TTL: 300 seconds (5 minutes) is sufficient for single-execution scripts
+- Configuration: TTL is currently hardcoded by design. The script typically runs once
+  and exits, so configurable TTLs add complexity without clear benefit. If you need
+  different TTLs for different environments (e.g., long-running daemon mode), the
+  decorator's ttl parameter can be modified or made configurable via config.json.
 """
 
 import time

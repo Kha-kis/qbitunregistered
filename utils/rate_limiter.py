@@ -2,6 +2,24 @@
 Rate limiting utilities for API calls.
 
 Provides simple rate limiting to avoid overwhelming the qBittorrent API.
+
+CURRENT STATUS: Not currently used in the codebase.
+
+RATIONALE: The codebase has been optimized to use batched API calls throughout
+(e.g., tag_by_tracker, auto_tmm, unregistered_checks all batch operations).
+Batching reduces API call volume from O(N) to O(1) or O(K) where K is number of
+unique tags/configurations, eliminating the need for rate limiting.
+
+FUTURE USE: This implementation is kept available for scenarios where:
+- Individual per-torrent API calls become necessary
+- Integration with rate-limited external services
+- Running in environments with strict API quotas
+- Long-running daemon mode with continuous API access
+
+To use, apply the @rate_limited decorator to any function making API calls:
+    @rate_limited(max_calls=10, time_window=60)
+    def my_api_call(client, ...):
+        ...
 """
 
 import time

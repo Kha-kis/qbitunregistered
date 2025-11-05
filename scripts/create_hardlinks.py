@@ -68,7 +68,10 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
         # pointing to existing inodes. No disk space check needed.
 
         # Pre-flight check: verify filesystem compatibility for hard links
-        # Check if first torrent's save path is on same filesystem as target
+        # Note: We only check the first torrent as an early warning. Per-torrent checks
+        # would be redundant since os.link() fails immediately with EXDEV (errno 18) for
+        # cross-filesystem operations anyway. The detailed EXDEV error handling below
+        # catches all actual issues.
         if not dry_run and completed_torrents:
             try:
                 first_torrent = completed_torrents[0]
@@ -133,7 +136,7 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
 
                                     # Create hard link
                                     os.link(source_path, target_file_path)
-                                    logging.info(f"Hard link created: {source_path} -> {target_file_path}")
+                                    logging.debug(f"Hard link created: {source_path} -> {target_file_path}")
                                     total_links += 1
 
                             except OSError as e:
@@ -176,7 +179,7 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
 
                             # Create hard link
                             os.link(content_path, target_file_path)
-                            logging.info(f"Hard link created: {content_path} -> {target_file_path}")
+                            logging.debug(f"Hard link created: {content_path} -> {target_file_path}")
                             total_links += 1
 
                     except OSError as e:

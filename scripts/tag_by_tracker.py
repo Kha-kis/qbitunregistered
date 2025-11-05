@@ -59,14 +59,19 @@ def tag_by_tracker(client, torrents: List[Any], config: Dict[str, Any]) -> None:
                     torrents_by_limits[limits_key].append(torrent.hash)
 
     # Apply tags in batches (one API call per unique tag)
+    # Note: If batch operation fails, all torrents in that batch are affected.
+    # This is by design for performance - manual intervention may be needed for failures.
     for tag, torrent_hashes in torrents_by_tag.items():
         try:
             client.torrents_add_tags(torrent_hashes=torrent_hashes, tags=[tag])
             logging.info(f"Added tag '{tag}' to {len(torrent_hashes)} torrents")
-        except Exception as e:
-            logging.error(f"Failed to add tag '{tag}' to batch of {len(torrent_hashes)} torrents: {e}")
+        except Exception:
+            logging.exception(f"Failed to add tag '{tag}' to batch of {len(torrent_hashes)} torrents. "
+                             f"Check qBittorrent connectivity and permissions. "
+                             f"Affected torrent hashes: {torrent_hashes[:3]}{'...' if len(torrent_hashes) > 3 else ''}")
 
     # Apply share limits in batches (one API call per unique configuration)
+    # Note: Batch operations are all-or-nothing for performance.
     for (time_limit, ratio_limit), torrent_hashes in torrents_by_limits.items():
         try:
             client.torrents_set_share_limits(
@@ -77,7 +82,10 @@ def tag_by_tracker(client, torrents: List[Any], config: Dict[str, Any]) -> None:
             )
             logging.info(f"Updated share limits for {len(torrent_hashes)} torrents "
                          f"(time: {time_limit}, ratio: {ratio_limit})")
-        except Exception as e:
-            logging.error(f"Failed to set share limits for batch of {len(torrent_hashes)} torrents: {e}")
+        except Exception:
+            logging.exception(f"Failed to set share limits for batch of {len(torrent_hashes)} torrents "
+                             f"(time: {time_limit}, ratio: {ratio_limit}). "
+                             f"Check qBittorrent API compatibility and values. "
+                             f"Affected torrent hashes: {torrent_hashes[:3]}{'...' if len(torrent_hashes) > 3 else ''}")
 
     logging.info("Tagging by tracker completed.")

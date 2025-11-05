@@ -1,6 +1,7 @@
 import logging
 from urllib.parse import urlsplit
 from typing import List, Set, Tuple
+from tqdm import tqdm
 
 
 def compile_patterns(unregistered: List[str]) -> Tuple[Set[str], Set[str]]:
@@ -133,7 +134,7 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
     # Store per-path lists of unregistered torrent hashes for second pass
     unregistered_hashes_per_path = {}
 
-    for torrent in torrents:
+    for torrent in tqdm(torrents, desc="Checking for unregistered torrents", unit="torrent"):
         update_torrent_file_paths(torrent_file_paths, torrent)
 
         # Use pre-compiled patterns for faster matching
