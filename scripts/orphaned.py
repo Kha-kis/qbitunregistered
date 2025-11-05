@@ -174,7 +174,7 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: Optional[
 
     return orphaned_files
 
-def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torrents: List = None):
+def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torrents: Optional[List] = None):
     """
     Deletes orphaned files and removes empty directories, while preserving active save paths.
     If dry-run is enabled, it logs what would be deleted without actually deleting files.
