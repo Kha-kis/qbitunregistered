@@ -118,13 +118,37 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
             logging.error(f"Target directory does not exist: {target_dir}")
             return
 
-        # Security: Ensure target_dir is an absolute path
+        # Security: Defensive check - resolve() should always return absolute path,
+        # but verify as safeguard against future code changes
         if not target_path.is_absolute():
             logging.error(f"Target directory must be an absolute path: {target_dir}")
             return
 
         completed_torrents = [t for t in torrents if t.state_enum.is_complete]
         logging.info(f"Processing {len(completed_torrents)} completed torrents out of {len(torrents)} total")
+
+        # Calculate total size required for hard links
+        if not dry_run:
+            logging.info("Calculating required disk space...")
+            total_size_required = 0
+            for torrent in completed_torrents:
+                content_path = Path(torrent.save_path) / torrent.name
+                if content_path.exists():
+                    if content_path.is_dir():
+                        total_size_required += _get_dir_size(content_path)
+                    else:
+                        try:
+                            total_size_required += content_path.stat().st_size
+                        except Exception as e:
+                            logging.warning(f"Could not get size for {content_path}: {e}")
+
+            # Check if there's enough disk space
+            if total_size_required > 0:
+                logging.info(f"Total space required: {total_size_required / (1024**3):.2f} GB")
+                if not _check_disk_space(target_path, total_size_required):
+                    logging.error("Insufficient disk space for hard link creation. Aborting.")
+                    return
+                logging.info("Disk space check passed")
 
         total_links = 0
         total_skipped = 0
@@ -138,7 +162,7 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                 # Handle both directories and single files
                 if content_path.is_dir():
                     # Process directory torrents
-                    for root, dirs, files in os.walk(content_path):
+                    for root, _dirs, files in os.walk(content_path):
                         for file in files:
                             try:
                                 source_path = Path(root) / file
