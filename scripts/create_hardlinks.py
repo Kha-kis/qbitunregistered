@@ -143,10 +143,10 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                                                   f"  Target: {target_file_path}\n"
                                                   f"  Hard links only work within the same filesystem.")
                                 else:
-                                    logging.error(f"Failed to create hard link for '{source_path}': {e}")
+                                    logging.exception(f"Failed to create hard link for '{source_path}'")
                                 total_errors += 1
-                            except Exception as e:
-                                logging.error(f"Unexpected error processing file '{source_path}': {e}")
+                            except Exception:
+                                logging.exception(f"Unexpected error processing file '{source_path}'")
                                 total_errors += 1
 
                 elif content_path.is_file():
@@ -186,18 +186,18 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                                           f"  Target: {target_file_path}\n"
                                           f"  Hard links only work within the same filesystem.")
                         else:
-                            logging.error(f"Failed to create hard link for single file '{content_path}': {e}")
+                            logging.exception(f"Failed to create hard link for single file '{content_path}'")
                         total_errors += 1
-                    except Exception as e:
-                        logging.error(f"Unexpected error processing single file '{content_path}': {e}")
+                    except Exception:
+                        logging.exception(f"Unexpected error processing single file '{content_path}'")
                         total_errors += 1
 
                 else:
                     logging.warning(f"Content path does not exist: {content_path}")
                     total_errors += 1
 
-            except Exception as e:
-                logging.error(f"Error processing torrent '{getattr(torrent, 'name', 'unknown')}': {e}")
+            except Exception:
+                logging.exception(f"Error processing torrent '{getattr(torrent, 'name', 'unknown')}'")
                 total_errors += 1
 
         # Summary
@@ -206,6 +206,6 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
         else:
             logging.info(f"Hard link summary: {total_links} created, {total_skipped} already exist, {total_errors} errors")
 
-    except Exception as e:
-        logging.error(f"Error in create_hard_links: {e}")
+    except Exception:
+        logging.exception("Error in create_hard_links")
         raise

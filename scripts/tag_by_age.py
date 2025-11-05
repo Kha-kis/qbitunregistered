@@ -88,10 +88,14 @@ def tag_by_age(client, torrents: List[Any], _config: Dict[str, Any], dry_run: bo
             except Exception:
                 logging.exception(f"Failed to add tag '{tag}' to batch of {len(torrent_hashes)} torrents")
 
-        # Summary
+        # Summary with age-based sort order (oldest to youngest)
+        bucket_order = ['6_months_plus', '>5_months', '>4_months', '>3_months', '>2_months', '>1_month']
+
         logging.info(f"Tagging by age completed: {total_tagged}/{len(torrents)} torrents tagged")
-        for tag, count in sorted(tag_counts.items()):
-            logging.info(f"  - {tag}: {count} torrents")
+        for tag in bucket_order:
+            if tag in tag_counts:
+                count = tag_counts[tag]
+                logging.info(f"  - {tag}: {count} torrents")
 
     except Exception:
         logging.exception("Error in tag_by_age")
