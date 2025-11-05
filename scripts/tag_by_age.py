@@ -33,20 +33,21 @@ def tag_by_age(client, torrents: List[Any], config: Dict[str, Any], dry_run: boo
                 )
 
                 # Determine the appropriate tag based on age buckets in months
-                if torrent_age_months <= 1:
-                    tag = '>1_month'
-                elif torrent_age_months <= 2:
-                    tag = '>2_months'
-                elif torrent_age_months <= 3:
-                    tag = '>3_months'
-                elif torrent_age_months <= 4:
-                    tag = '>4_months'
-                elif torrent_age_months <= 5:
-                    tag = '>5_months'
-                elif torrent_age_months <= 6:
-                    tag = '>6_months'
-                else:
+                if torrent_age_months < 1:
+                    logging.debug(f"Skipping torrent '{torrent.name}': under one month old")
+                    continue
+                if torrent_age_months >= 6:
                     tag = '6_months_plus'
+                elif torrent_age_months >= 5:
+                    tag = '>5_months'
+                elif torrent_age_months >= 4:
+                    tag = '>4_months'
+                elif torrent_age_months >= 3:
+                    tag = '>3_months'
+                elif torrent_age_months >= 2:
+                    tag = '>2_months'
+                else:
+                    tag = '>1_month'
 
                 # Group torrents by tag for batch processing
                 tag_groups[tag].append(torrent.hash)
