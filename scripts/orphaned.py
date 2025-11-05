@@ -11,19 +11,20 @@ from utils.cache import cached
 @cached(ttl=300, key_prefix="app_default_save_path")
 def _get_default_save_path(client) -> str:
     """
-    Cached wrapper for client.application.defaultSavePath.
+    Cached wrapper for client.application.default_save_path.
     Reduces redundant API calls for read-only application settings.
     """
-    return client.application.defaultSavePath
+    return client.application.default_save_path
 
 
 @cached(ttl=300, key_prefix="torrent_categories")
 def _get_categories(client) -> Dict[str, Any]:
     """
-    Cached wrapper for client.torrent_categories.categories.
+    Cached wrapper for client.torrent_categories() method.
     Reduces redundant API calls for category configuration.
+    Returns TorrentCategoriesDictionary with all defined categories.
     """
-    return client.torrent_categories.categories
+    return client.torrent_categories()
 
 
 def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str] = [], exclude_dirs: List[str] = []) -> List[str]:
