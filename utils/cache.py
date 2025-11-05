@@ -161,28 +161,36 @@ def get_cache() -> SimpleCache:
     return _global_cache
 
 
-def cached(ttl: int = 300, key_prefix: str = ""):
+def cached(ttl: int = 300, key_prefix: str = "", skip_first_arg: bool = True):
     """
     Decorator to cache function results.
 
     Args:
         ttl: Time-to-live in seconds
         key_prefix: Prefix for cache keys
+        skip_first_arg: If True, skip the first positional argument (e.g., 'self' or 'client')
+                        when generating cache keys. Set to False for standalone functions
+                        where all arguments should be included in the cache key.
 
     Example:
         @cached(ttl=60, key_prefix="tracker_config")
         def get_tracker_config(client, torrent_hash):
             return client.torrents_trackers(torrent_hash)
+
+        @cached(ttl=60, key_prefix="config", skip_first_arg=False)
+        def get_system_config(config_name):
+            return load_config(config_name)
     """
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
             # Generate cache key from function name and arguments
             # Build tuple of key components for unambiguous serialization
+            cache_args = args[1:] if skip_first_arg else args
             key_components = (
                 key_prefix,
                 func.__qualname__,  # Use __qualname__ for better identification
-                args[1:],  # Skip 'self' or 'client'
+                cache_args,
                 tuple(sorted(kwargs.items()))
             )
 

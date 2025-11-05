@@ -80,6 +80,62 @@ The latest update introduces two new configurable tags in `config.json`:
 
 These can be customized to align with your tagging strategy, providing enhanced flexibility in torrent management.
 
+### Logging Configuration
+
+Control logging behavior through `config.json` or command-line arguments:
+
+- **`log_level`**: Set logging verbosity (DEBUG, INFO, WARNING, ERROR). Default: INFO
+  ```json
+  {
+    "log_level": "DEBUG"
+  }
+  ```
+  CLI override: `--log-level DEBUG`
+
+- **`log_file`**: Write logs to a file (useful for scheduled/cron runs)
+  ```json
+  {
+    "log_file": "/var/log/qbitunregistered.log"
+  }
+  ```
+  CLI override: `--log-file /path/to/logfile.log`
+
+## Security
+
+### Config File Permissions
+
+Your `config.json` contains sensitive credentials (qBittorrent username and password). Follow these security best practices:
+
+**Linux/macOS:**
+```bash
+# Set restrictive permissions (owner read/write only)
+chmod 600 config.json
+
+# Verify permissions
+ls -l config.json
+# Should show: -rw------- (only owner can read/write)
+```
+
+**Scheduled/Cron Jobs:**
+
+If running via cron, ensure the cron user has appropriate access:
+```bash
+# Set ownership to the cron user
+sudo chown cronuser:cronuser config.json
+
+# Set restrictive permissions
+chmod 600 config.json
+
+# Example cron entry (runs daily at 2 AM)
+0 2 * * * cd /path/to/qbitunregistered && /usr/bin/python3 qbitunregistered.py --unregistered --log-file /var/log/qbitunregistered.log
+```
+
+**Best Practices:**
+- Never commit `config.json` to version control (already in `.gitignore`)
+- Use environment variables for credentials in CI/CD environments
+- Rotate passwords periodically
+- Consider using qBittorrent's IP whitelist feature to restrict Web API access
+
 ## Usage
 
 Execute the script with Python, appending any command-line arguments you wish to use:
@@ -110,6 +166,8 @@ Here's what you can specify when running `qbitunregistered`:
 - `--tag-by-age`: Perform tagging based on torrent age in months.
 - `--exclude-files`: Exclude files from being considered in operations based on glob patterns (e.g., `*.tmp`, `*.part`). Multiple patterns can be specified separated by spaces.
 - `--exclude-dirs`: Exclude directories from being scanned for orphaned files. Full paths should be specified, and wildcards can be used to match multiple directories (e.g., `/path/to/exclude/*`). Multiple paths can be specified separated by spaces.
+- `--log-level`: Set logging verbosity (DEBUG, INFO, WARNING, ERROR). Overrides config.json setting.
+- `--log-file`: Write logs to specified file in addition to console. Useful for scheduled/cron runs.
 
 ## Troubleshooting
 

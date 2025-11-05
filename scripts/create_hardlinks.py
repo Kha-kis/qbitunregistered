@@ -67,27 +67,41 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
         # Note: Hard links don't consume additional disk space - they're directory entries
         # pointing to existing inodes. No disk space check needed.
 
-        # Pre-flight check: verify filesystem compatibility for hard links
-        # Note: We only check the first torrent as an early warning. Per-torrent checks
-        # would be redundant since os.link() fails immediately with EXDEV (errno 18) for
-        # cross-filesystem operations anyway. The detailed EXDEV error handling below
-        # catches all actual issues.
+        # Pre-flight check: verify filesystem compatibility for hard links across all unique source devices
+        # Track each unique device ID to warn about cross-filesystem issues upfront
         if not dry_run and completed_torrents:
             try:
-                first_torrent = completed_torrents[0]
-                source_stat = os.stat(first_torrent.save_path)
                 target_stat = os.stat(target_path)
+                target_device = target_stat.st_dev
+                checked_devices = {}  # Maps device ID to example save path for reporting
+                incompatible_devices = []
 
-                if source_stat.st_dev != target_stat.st_dev:
-                    logging.warning(
-                        f"WARNING: Source and target appear to be on different filesystems.\n"
-                        f"  Source filesystem: {first_torrent.save_path} (device {source_stat.st_dev})\n"
-                        f"  Target filesystem: {target_path} (device {target_stat.st_dev})\n"
-                        f"  Hard links only work within the same filesystem.\n"
-                        f"  This operation will likely fail. Consider using symlinks or copying instead."
-                    )
-                else:
-                    logging.debug("Filesystem check passed: source and target on same device")
+                # Collect unique source device IDs from all torrents
+                for torrent in completed_torrents:
+                    try:
+                        source_stat = os.stat(torrent.save_path)
+                        source_device = source_stat.st_dev
+
+                        # Track this device if not seen before
+                        if source_device not in checked_devices:
+                            checked_devices[source_device] = torrent.save_path
+
+                            # Check compatibility with target
+                            if source_device != target_device:
+                                incompatible_devices.append((torrent.save_path, source_device))
+                    except Exception as e:
+                        logging.debug(f"Could not check filesystem for {torrent.save_path}: {e}")
+
+                # Report findings
+                if incompatible_devices:
+                    logging.warning(f"WARNING: Found {len(incompatible_devices)} source filesystem(s) incompatible with target:")
+                    for save_path, device_id in incompatible_devices:
+                        logging.warning(f"  - {save_path} (device {device_id})")
+                    logging.warning(f"  Target: {target_path} (device {target_device})")
+                    logging.warning("  Hard links only work within the same filesystem.")
+                    logging.warning("  Operations on incompatible paths will fail. Consider using symlinks or copying instead.")
+                elif checked_devices:
+                    logging.debug(f"Filesystem check passed: {len(checked_devices)} unique source device(s) compatible with target")
             except Exception as e:
                 logging.debug(f"Could not verify filesystem compatibility: {e}")
 

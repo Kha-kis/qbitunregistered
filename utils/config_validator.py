@@ -2,6 +2,7 @@
 import logging
 from typing import Dict, List, Any
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 class ConfigValidationError(Exception):
@@ -30,12 +31,49 @@ def validate_config(config: Dict[str, Any]) -> None:
     # Validate host format
     if 'host' in config:
         host = config['host']
-        if host and ':' not in host:
-            errors.append(f"Invalid host format: '{host}'. Expected format: 'hostname:port'")
+        if host:
+            # Parse as URL to support both 'hostname:port' and full URLs like 'https://example.com:8080/qbittorrent'
+            parsed = urlparse(host)
+
+            # If scheme is present, it should be http or https
+            if parsed.scheme and parsed.scheme not in ['http', 'https']:
+                errors.append(f"Invalid host scheme: '{parsed.scheme}'. Use 'http' or 'https', or omit for 'hostname:port' format")
+
+            # If no scheme, treat as 'hostname:port' format (e.g., 'localhost:8080')
+            if not parsed.scheme:
+                if ':' not in host:
+                    errors.append(f"Invalid host format: '{host}'. Expected 'hostname:port' or full URL like 'http://hostname:port/path'")
+                else:
+                    # Validate simple 'hostname:port' format
+                    parts = host.split(':', 1)
+                    try:
+                        port = int(parts[1])
+                        if not (1 <= port <= 65535):
+                            errors.append(f"Invalid port number: {port}. Must be between 1 and 65535")
+                    except ValueError:
+                        errors.append(f"Invalid port in host: '{parts[1]}'. Must be a number")
+
+            # If scheme is present, netloc should be populated
+            elif not parsed.netloc:
+                errors.append(f"Invalid host URL: '{host}'. Missing hostname/netloc")
 
     # Validate dry_run is boolean
     if 'dry_run' in config and not isinstance(config['dry_run'], bool):
         errors.append(f"'dry_run' must be a boolean, got: {type(config['dry_run']).__name__}")
+
+    # Validate log_level
+    if 'log_level' in config:
+        valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+        log_level = config['log_level']
+        if not isinstance(log_level, str):
+            errors.append(f"'log_level' must be a string, got: {type(log_level).__name__}")
+        elif log_level.upper() not in valid_levels:
+            errors.append(f"'log_level' must be one of {valid_levels}, got: '{log_level}'")
+
+    # Validate log_file is a string if provided
+    if 'log_file' in config and config['log_file']:
+        if not isinstance(config['log_file'], str):
+            errors.append(f"'log_file' must be a string path, got: {type(config['log_file']).__name__}")
 
     # Validate tags are strings
     for tag_field in ['default_unregistered_tag', 'cross_seeding_tag', 'other_issues_tag']:

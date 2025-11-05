@@ -38,6 +38,8 @@ parser.add_argument('--tag-by-age', action='store_true', help='If set, perform t
 parser.add_argument('--tag-by-cross-seed', action='store_true', help='If set, tag torrents based on cross-seeding status.')
 parser.add_argument("--exclude-files", nargs='+', default=[], help="List of file patterns to exclude.")
 parser.add_argument("--exclude-dirs", nargs='+', default=[], help="List of directories to exclude.")
+parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], help='Set logging level (default: INFO)')
+parser.add_argument('--log-file', type=str, help='Write logs to specified file in addition to console')
 
 # Parse command-line arguments
 pre_args, unknown = parser.parse_known_args()
@@ -65,13 +67,6 @@ if pre_args.create_hard_links and not pre_args.target_dir and not config.get('ta
 # Re-parse arguments now that configuration has been loaded
 args = parser.parse_args()
 
-# Configure logging BEFORE any operations
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
 # Override configuration with command-line arguments if provided
 config['host'] = args.host or config.get('host')
 config['username'] = args.username or config.get('username')
@@ -80,6 +75,43 @@ target_dir = args.target_dir or config.get('target_dir', None)
 dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', False)
 exclude_files = args.exclude_files if args.exclude_files else config.get('exclude_files', [])
 exclude_dirs = args.exclude_dirs if args.exclude_dirs else config.get('exclude_dirs', [])
+
+# Determine log level (CLI arg > config.json > default INFO)
+log_level_str = args.log_level or config.get('log_level', 'INFO')
+log_level = getattr(logging, log_level_str.upper())
+
+# Determine log file (CLI arg > config.json > None)
+log_file = args.log_file or config.get('log_file', None)
+
+# Configure logging BEFORE any operations
+log_handlers = []
+
+# Console handler (always present)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter(
+    '%(asctime)s %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+))
+log_handlers.append(console_handler)
+
+# File handler (optional, for scheduled runs)
+if log_file:
+    try:
+        file_handler = logging.FileHandler(log_file, mode='a')
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)s: %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        ))
+        log_handlers.append(file_handler)
+    except Exception as e:
+        print(f"WARNING: Could not create log file {log_file}: {e}")
+
+# Apply logging configuration
+logging.basicConfig(
+    level=log_level,
+    handlers=log_handlers,
+    force=True  # Override any existing config
+)
 
 # Validate configuration after CLI overrides are applied
 try:
@@ -111,6 +143,12 @@ logging.info("Starting qbitunregistered script...")
 # Note: Cache is in-memory and automatically cleared between script runs.
 # No manual clearing needed on startup.
 
+# Track operation results for summary
+operation_results = {
+    'succeeded': [],
+    'failed': []
+}
+
 # Run orphaned check if --orphaned argument is passed
 if args.orphaned:
     try:
@@ -119,9 +157,11 @@ if args.orphaned:
 
         # Delete orphaned files unless dry-run is set (pass torrents to avoid redundant API call)
         delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents)
+        operation_results['succeeded'].append('Orphaned file check')
     except Exception:
         logging.exception("Error during orphaned file check")
         logging.error("Orphaned file check failed, continuing with other operations...")
+        operation_results['failed'].append('Orphaned file check')
 
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
@@ -129,74 +169,115 @@ if args.unregistered:
         file_paths, unregistered_counts = unregistered_checks(client, torrents, config, use_delete_tags=config.get('use_delete_tags', False), delete_tags=config.get('delete_tags', []), delete_files=config.get('delete_files', {}), dry_run=dry_run)
         total_unregistered_count = sum(unregistered_counts.values())
         logging.info("Total unregistered count: %d", total_unregistered_count)
+        operation_results['succeeded'].append('Unregistered checks')
     except Exception:
         logging.exception("Error during unregistered checks")
+        operation_results['failed'].append('Unregistered checks')
 
 # Run the tag_by_tracker function if desired
 if args.tag_by_tracker:
     try:
         tag_by_tracker(client, torrents, config)
+        operation_results['succeeded'].append('Tag by tracker')
     except Exception:
         logging.exception("Error during tag by tracker")
+        operation_results['failed'].append('Tag by tracker')
 
 # Run the tag_by_cross_seed function if --tag-by-cross-seed argument is passed
 if args.tag_by_cross_seed:
     try:
         tag_cross_seeds(client, torrents, dry_run=dry_run)
+        operation_results['succeeded'].append('Tag cross-seeds')
     except Exception:
         logging.exception("Error during cross-seed tagging")
+        operation_results['failed'].append('Tag cross-seeds')
 
 # Run the tag_by_age function if --tag-by-age argument is passed
 if args.tag_by_age:
     try:
         tag_by_age(client, torrents, config, dry_run=dry_run)
+        operation_results['succeeded'].append('Tag by age')
     except Exception:
         logging.exception("Error during tag by age")
+        operation_results['failed'].append('Tag by age')
 
 # Apply seed time and seed ratio limits if --seeding-management argument is passed
 if args.seeding_management:
     try:
         apply_seed_limits(client, config, torrents=torrents)
+        operation_results['succeeded'].append('Seeding management')
     except Exception:
         logging.exception("Error during seeding management")
+        operation_results['failed'].append('Seeding management')
 
 # Run the apply_auto_tmm_per_torrent function if --auto-tmm argument is passed
 if args.auto_tmm:
     try:
         apply_auto_tmm_per_torrent(client, torrents, dry_run=dry_run)
+        operation_results['succeeded'].append('Auto TMM')
     except Exception:
         logging.exception("Error during auto TMM")
+        operation_results['failed'].append('Auto TMM')
 
 # Pause all torrents if --pause-torrents argument is passed
 if args.pause_torrents:
     try:
         pause_torrents(client, torrents, dry_run=dry_run)
+        operation_results['succeeded'].append('Pause torrents')
     except Exception:
         logging.exception("Error pausing torrents")
+        operation_results['failed'].append('Pause torrents')
 
 # Resume all torrents if --resume-torrents argument is passed
 if args.resume_torrents:
     try:
         resume_torrents(client, torrents, dry_run=dry_run)
+        operation_results['succeeded'].append('Resume torrents')
     except Exception:
         logging.exception("Error resuming torrents")
+        operation_results['failed'].append('Resume torrents')
 
 # Check if --auto-remove argument is passed
 if args.auto_remove:
     try:
         auto_remove(client, torrents, dry_run)
+        operation_results['succeeded'].append('Auto remove')
     except Exception:
         logging.exception("Error during auto remove")
+        operation_results['failed'].append('Auto remove')
 
 # Run the create_hard_links function if --create-hard-links argument is passed
 if args.create_hard_links:
     try:
         create_hard_links(target_dir, torrents, dry_run=dry_run)
+        operation_results['succeeded'].append('Create hard links')
     except Exception:
         logging.exception("Error creating hard links")
+        operation_results['failed'].append('Create hard links')
 
 # Log cache statistics
 log_cache_stats()
+
+# Print operation summary
+logging.info("=" * 60)
+logging.info("OPERATION SUMMARY")
+logging.info("=" * 60)
+
+if operation_results['succeeded']:
+    logging.info("✓ Succeeded (%d):", len(operation_results['succeeded']))
+    for op in operation_results['succeeded']:
+        logging.info("  - %s", op)
+else:
+    logging.info("✓ Succeeded: None")
+
+if operation_results['failed']:
+    logging.warning("✗ Failed (%d):", len(operation_results['failed']))
+    for op in operation_results['failed']:
+        logging.warning("  - %s", op)
+else:
+    logging.info("✗ Failed: None")
+
+logging.info("=" * 60)
 
 # Clean up client connection
 try:
