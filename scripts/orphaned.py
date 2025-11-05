@@ -92,8 +92,18 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: Optional[
 
     logging.debug(f"Tracking {len(torrent_files)} files from {len(torrents)} torrents (using {len(resolved_save_paths)} unique save paths)")
 
-    # Convert exclude_dirs to Path objects for comparison (only once)
-    exclude_dir_paths = {Path(d).resolve() for d in exclude_dirs} if exclude_dirs else set()
+    # Separate literal paths from patterns for efficient handling
+    # Patterns (with wildcards) are compiled to regex, literals are resolved for exact matching
+    exclude_dir_paths = set()
+    exclude_dir_patterns_raw = []
+
+    for d in (exclude_dirs or []):
+        if '*' in d or '?' in d:
+            # This is a pattern - keep for regex compilation
+            exclude_dir_patterns_raw.append(d)
+        else:
+            # This is a literal path - resolve for exact matching
+            exclude_dir_paths.add(Path(d).resolve())
 
     # Pre-compile file patterns to regex for performance (O(1) matching vs O(n) fnmatch)
     compiled_file_patterns = []
@@ -107,17 +117,12 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: Optional[
 
     # Pre-compile directory patterns to regex for performance
     compiled_dir_patterns = []
-    if exclude_dir_paths:
-        # Extract any patterns from exclude_dir_paths (convert back from resolved paths if needed)
-        for excluded_path in list(exclude_dir_paths):
-            path_str = str(excluded_path)
-            # Check if this looks like a pattern (contains * or ?)
-            if '*' in path_str or '?' in path_str:
-                try:
-                    regex_pattern = translate(path_str)
-                    compiled_dir_patterns.append(re.compile(regex_pattern))
-                except re.error as e:
-                    logging.warning(f"Invalid directory pattern '{path_str}': {e}")
+    for pattern in exclude_dir_patterns_raw:
+        try:
+            regex_pattern = translate(pattern)
+            compiled_dir_patterns.append(re.compile(regex_pattern))
+        except re.error as e:
+            logging.warning(f"Invalid directory pattern '{pattern}': {e}")
 
     orphaned_files = []
     files_checked = 0
