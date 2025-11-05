@@ -85,6 +85,7 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
             torrents = client.torrents.info()
 
         for torrent in torrents:
+            torrent_deleted = False
             for tag in delete_tags:
                 if tag in torrent.tags:
                     if delete_files.get(tag, False):
@@ -99,7 +100,12 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
                             logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash}.")
                         else:
                             logging.info(f"[Dry Run] Would delete torrent '{torrent.name}' with hash {torrent.hash}.")
+                    torrent_deleted = True
                     break  # Exit the inner loop after deleting the torrent
+
+            # Skip to next torrent if this one was deleted (object is now stale)
+            if torrent_deleted:
+                continue
 
 def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run):
     """

@@ -77,11 +77,20 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: Optional[
     logging.info(f"Scanning {len(valid_save_paths)} save paths for orphaned files...")
 
     # Track files used by torrents - use resolved paths for accurate comparison
-    # Note: resolve() performs one stat call per file for canonical path resolution.
-    # For very large torrent counts (10K+ torrents with many files each), consider
-    # implementing a caching layer or lazy resolution if performance becomes an issue.
-    torrent_files = {(Path(torrent.save_path) / file.name).resolve() for torrent in torrents for file in torrent.files}
-    logging.debug(f"Tracking {len(torrent_files)} files from {len(torrents)} torrents")
+    # Cache resolved save paths to avoid redundant syscalls (1M+ syscalls → ~1K for 1K torrents)
+    resolved_save_paths = {}
+    torrent_files = set()
+
+    for torrent in torrents:
+        # Cache resolve() result per unique save_path
+        if torrent.save_path not in resolved_save_paths:
+            resolved_save_paths[torrent.save_path] = Path(torrent.save_path).resolve()
+
+        base_path = resolved_save_paths[torrent.save_path]
+        # Add all files for this torrent
+        torrent_files.update((base_path / file.name).resolve() for file in torrent.files)
+
+    logging.debug(f"Tracking {len(torrent_files)} files from {len(torrents)} torrents (using {len(resolved_save_paths)} unique save paths)")
 
     # Convert exclude_dirs to Path objects for comparison (only once)
     exclude_dir_paths = {Path(d).resolve() for d in exclude_dirs} if exclude_dirs else set()

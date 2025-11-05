@@ -185,7 +185,7 @@ def validate_exclude_patterns(exclude_files: List[str], exclude_dirs: List[str])
         if pattern in dangerous_file_patterns:
             logging.warning(f"Exclude file pattern '{pattern}' will match ALL files - this may not be intended")
 
-    # Check directory paths
+    # Check directory paths - must be absolute for security
     for dir_path in exclude_dirs:
         if not Path(dir_path).is_absolute():
-            logging.warning(f"Exclude directory path should be absolute: '{dir_path}'")
+            raise ConfigValidationError(f"Exclude directory path must be absolute (security requirement): '{dir_path}'")

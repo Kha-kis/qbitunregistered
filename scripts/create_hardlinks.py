@@ -23,7 +23,8 @@ def _is_safe_path(base_path: Path, target_path: Path) -> bool:
 
         # Check if target is within base
         return target_resolved.is_relative_to(base_resolved)
-    except (ValueError, RuntimeError):
+    except (ValueError, RuntimeError) as e:
+        logging.warning(f"Path validation failed for base='{base_path}', target='{target_path}': {e}")
         return False
 
 
@@ -124,12 +125,17 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
 
                                 # Preserve relative directory structure
                                 rel_path = source_path.relative_to(content_path)
-                                category_dir = torrent.category or ''
-                                target_file_path = target_path / category_dir / rel_path
 
-                                # Security: Check for path traversal
+                                # Security: Sanitize category name to prevent path traversal
+                                category_dir = torrent.category or ''
+                                category_dir = category_dir.replace('..', '').replace('/', '_').replace('\\', '_').strip()
+
+                                # Construct target path and resolve to absolute path
+                                target_file_path = (target_path / category_dir / rel_path).resolve()
+
+                                # Security: Check for path traversal after resolution
                                 if not _is_safe_path(target_path, target_file_path):
-                                    logging.error(f"Security: Path traversal detected, skipping: {target_file_path}")
+                                    logging.error(f"Security: Path traversal detected for torrent '{torrent.name}', category '{torrent.category}', skipping: {target_file_path}")
                                     total_errors += 1
                                     continue
 
@@ -149,9 +155,14 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                                         created_dirs.add(parent_dir)
 
                                     # Create hard link
-                                    os.link(source_path, target_file_path)
-                                    logging.debug(f"Hard link created: {source_path} -> {target_file_path}")
-                                    total_links += 1
+                                    try:
+                                        os.link(source_path, target_file_path)
+                                        logging.debug(f"Hard link created: {source_path} -> {target_file_path}")
+                                        total_links += 1
+                                    except FileExistsError:
+                                        # TOCTOU: File created between existence check and link creation
+                                        logging.debug(f"Hard link already exists (race condition): {target_file_path}")
+                                        total_skipped += 1
 
                             except OSError as e:
                                 if e.errno == 18:  # EXDEV - Cross-device link
@@ -169,12 +180,16 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                 elif content_path.is_file():
                     # Handle single-file torrents
                     try:
+                        # Security: Sanitize category name to prevent path traversal
                         category_dir = torrent.category or ''
-                        target_file_path = target_path / category_dir / content_path.name
+                        category_dir = category_dir.replace('..', '').replace('/', '_').replace('\\', '_').strip()
 
-                        # Security: Check for path traversal
+                        # Construct target path and resolve to absolute path
+                        target_file_path = (target_path / category_dir / content_path.name).resolve()
+
+                        # Security: Check for path traversal after resolution
                         if not _is_safe_path(target_path, target_file_path):
-                            logging.error(f"Security: Path traversal detected, skipping: {target_file_path}")
+                            logging.error(f"Security: Path traversal detected for torrent '{torrent.name}', category '{torrent.category}', skipping: {target_file_path}")
                             total_errors += 1
                             continue
 
@@ -192,9 +207,14 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                                 created_dirs.add(parent_dir)
 
                             # Create hard link
-                            os.link(content_path, target_file_path)
-                            logging.debug(f"Hard link created: {content_path} -> {target_file_path}")
-                            total_links += 1
+                            try:
+                                os.link(content_path, target_file_path)
+                                logging.debug(f"Hard link created: {content_path} -> {target_file_path}")
+                                total_links += 1
+                            except FileExistsError:
+                                # TOCTOU: File created between existence check and link creation
+                                logging.debug(f"Hard link already exists (race condition): {target_file_path}")
+                                total_skipped += 1
 
                     except OSError as e:
                         if e.errno == 18:  # EXDEV - Cross-device link

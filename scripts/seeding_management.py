@@ -66,6 +66,10 @@ def apply_seed_limits(client, config, torrents=None):
     This function consolidates apply_seed_time and apply_seed_ratio to reduce
     API calls and iterations. It applies both limits together when configured.
 
+    Note: Tracker fetching uses per-torrent API calls with 5-minute caching.
+    qBittorrent API doesn't support batch tracker fetching, so we rely on
+    the @cached decorator to minimize redundant calls across script runs.
+
     Args:
         client: qBittorrent client instance
         config: Configuration dictionary with tracker_tags
@@ -77,6 +81,8 @@ def apply_seed_limits(client, config, torrents=None):
         except Exception:
             logging.exception(f"Failed to fetch torrent list")
             return
+
+    logging.debug(f"Applying seed limits to {len(torrents)} torrents")
 
     for torrent in torrents:
         tracker_tag_config = find_tracker_config(client, torrent, config)
