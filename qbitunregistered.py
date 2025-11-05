@@ -118,8 +118,8 @@ if args.orphaned:
         orphaned_files = check_files_on_disk(client, torrents, exclude_file_patterns=exclude_files, exclude_dirs=exclude_dirs)
         logging.info("Total orphaned files: %d", len(orphaned_files))
 
-        # Delete orphaned files unless dry-run is set
-        delete_orphaned_files(orphaned_files, dry_run, client)
+        # Delete orphaned files unless dry-run is set (pass torrents to avoid redundant API call)
+        delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents)
     except Exception as e:
         logging.error(f"Error during orphaned file check: {e}")
         if not dry_run:
@@ -158,7 +158,7 @@ if args.tag_by_age:
 # Apply seed time and seed ratio limits if --seeding-management argument is passed
 if args.seeding_management:
     try:
-        apply_seed_limits(client, config)
+        apply_seed_limits(client, config, torrents=torrents)
     except Exception as e:
         logging.error(f"Error during seeding management: {e}")
 
@@ -199,6 +199,13 @@ if args.create_hard_links:
 
 # Log cache statistics
 log_cache_stats()
+
+# Clean up client connection
+try:
+    client.auth_log_out()
+    logging.debug("Logged out from qBittorrent")
+except Exception:
+    pass  # Ignore logout errors - not critical
 
 # Log script end
 logging.info("qbitunregistered script completed.")

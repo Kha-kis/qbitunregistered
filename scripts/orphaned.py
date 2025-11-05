@@ -1,8 +1,30 @@
 import logging
 import re
 from pathlib import Path
-from typing import List, Pattern
+from typing import List, Pattern, Dict, Any
 from fnmatch import translate
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.cache import cached
+
+
+@cached(ttl=300, key_prefix="app_default_save_path")
+def _get_default_save_path(client) -> str:
+    """
+    Cached wrapper for client.application.defaultSavePath.
+    Reduces redundant API calls for read-only application settings.
+    """
+    return client.application.defaultSavePath
+
+
+@cached(ttl=300, key_prefix="torrent_categories")
+def _get_categories(client) -> Dict[str, Any]:
+    """
+    Cached wrapper for client.torrent_categories.categories.
+    Reduces redundant API calls for category configuration.
+    """
+    return client.torrent_categories.categories
+
 
 def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str] = [], exclude_dirs: List[str] = []) -> List[str]:
     """
@@ -10,13 +32,14 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
     """
     logging.debug("Entering check_files_on_disk function...")
 
-    # Get the default save path
-    default_save_path = Path(client.application.defaultSavePath)
+    # Get the default save path (cached to reduce API calls)
+    default_save_path = Path(_get_default_save_path(client))
 
-    # Get explicitly defined category save paths
+    # Get explicitly defined category save paths (cached to reduce API calls)
+    categories = _get_categories(client)
     category_paths = {
         Path(category.get('savePath', '')).resolve() if category.get('savePath') else default_save_path / category_name
-        for category_name, category in client.torrent_categories.categories.items()
+        for category_name, category in categories.items()
     }
 
     # Only scan the default save path and category save paths
@@ -80,14 +103,23 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
             entry_resolved = entry.resolve()
 
             # Check if entry is in an excluded directory (early exit for better performance)
-            if exclude_dir_paths:
+            if exclude_dir_paths or compiled_dir_patterns:
                 entry_str = str(entry_resolved)
-                is_excluded_dir = (
-                    entry_resolved in exclude_dir_paths or
-                    any(excluded_path in entry_resolved.parents for excluded_path in exclude_dir_paths) or
-                    any(pattern.match(entry_str) for pattern in compiled_dir_patterns)
-                )
-                if is_excluded_dir:
+
+                # Check direct match first (O(1) lookup)
+                if entry_resolved in exclude_dir_paths:
+                    files_excluded_by_dir += 1
+                    continue
+
+                # Check if any parent is in excluded paths (optimized: O(p) where p = parent count)
+                # Instead of O(e*p) where e = excluded path count
+                is_parent_excluded = any(parent in exclude_dir_paths for parent in entry_resolved.parents)
+                if is_parent_excluded:
+                    files_excluded_by_dir += 1
+                    continue
+
+                # Check pattern matching last (most expensive)
+                if compiled_dir_patterns and any(pattern.match(entry_str) for pattern in compiled_dir_patterns):
                     files_excluded_by_dir += 1
                     continue
 
@@ -112,25 +144,32 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
 
     return orphaned_files
 
-def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client):
+def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torrents: List = None):
     """
     Deletes orphaned files and removes empty directories, while preserving active save paths.
     If dry-run is enabled, it logs what would be deleted without actually deleting files.
+
+    Args:
+        orphaned_files: List of orphaned file paths to delete
+        dry_run: If True, only log actions without deleting
+        client: qBittorrent client instance
+        torrents: Optional list of torrents (avoids redundant API call if provided)
     """
     deleted_files_count = 0
     skipped_files = []
     orphaned_files_set = {Path(file) for file in orphaned_files}  # Convert to Path objects for easier comparison
 
-    # Get active save paths to prevent accidental deletion
-    active_save_paths = {Path(client.application.defaultSavePath)}
+    # Get active save paths to prevent accidental deletion (cached to reduce API calls)
+    default_save_path = Path(_get_default_save_path(client))
+    active_save_paths = {default_save_path}
 
-    # Get save paths from all torrents
-    torrents = client.torrents.info()
+    # Get save paths from all torrents (reuse provided list to avoid redundant API call)
+    if torrents is None:
+        torrents = client.torrents.info()
     active_save_paths.update(Path(torrent.save_path) for torrent in torrents)
 
-    # Get save paths from categories
-    categories = client.torrent_categories.categories
-    default_save_path = Path(client.application.defaultSavePath)
+    # Get save paths from categories (cached to reduce API calls)
+    categories = _get_categories(client)
     for category_name, category in categories.items():
         category_save_path = Path(category.get('savePath', '')).resolve() if category.get('savePath') else default_save_path / category_name
         active_save_paths.add(category_save_path)
@@ -165,7 +204,15 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client):
 
     for dir_path in sorted(potential_empty_dirs, key=lambda p: len(str(p)), reverse=True):
         while dir_path not in active_save_paths and dir_path not in empty_dirs_to_delete:
-            existing_files = set(dir_path.iterdir())  # Check existing files in the directory
+            try:
+                existing_files = set(dir_path.iterdir())  # Check existing files in the directory
+            except (PermissionError, FileNotFoundError) as e:
+                logging.warning(f"Cannot access directory {dir_path}: {e}")
+                break  # Stop checking this path and its parents
+            except Exception as e:
+                logging.error(f"Unexpected error accessing directory {dir_path}: {e}")
+                break
+
             remaining_files = existing_files - orphaned_files_set  # What's left after simulated deletion
 
             if not remaining_files:  # If directory would be empty

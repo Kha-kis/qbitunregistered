@@ -59,7 +59,7 @@ def find_tracker_config(client, torrent, config: Dict[str, Any]) -> Optional[Dic
 
     return None
 
-def apply_seed_limits(client, config):
+def apply_seed_limits(client, config, torrents=None):
     """
     Apply both seeding time and ratio limits in a single pass.
 
@@ -69,12 +69,14 @@ def apply_seed_limits(client, config):
     Args:
         client: qBittorrent client instance
         config: Configuration dictionary with tracker_tags
+        torrents: Optional list of torrents (avoids redundant API call if provided)
     """
-    try:
-        torrents = client.torrents.info()
-    except Exception:
-        logging.exception(f"Failed to fetch torrent list")
-        return
+    if torrents is None:
+        try:
+            torrents = client.torrents.info()
+        except Exception:
+            logging.exception(f"Failed to fetch torrent list")
+            return
 
     for torrent in torrents:
         tracker_tag_config = find_tracker_config(client, torrent, config)
