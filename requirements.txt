@@ -1,7 +1,9 @@
 # Core dependencies
 # Using >= constraints to allow bug fixes and security updates while enforcing minimum versions
 # For reproducible builds, consider using pip freeze or a lock file (requirements.lock)
-qbittorrent-api>=2024.1.59
+qbittorrent-api>=2024.11.69  # v2024.11.69 dropped Python 3.8 (aligns with our 3.9+ requirement)
+                              # Tested with v2025.7.0 (latest as of July 2025)
+                              # Supports qBittorrent v5.1.2 (Web API v2.11.4)
 schedule>=1.2.0
 tqdm>=4.66.3  # Minimum version required for CVE fix
 

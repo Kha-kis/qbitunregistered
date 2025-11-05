@@ -4,9 +4,9 @@ version = "1.0.0"
 description = "Automated qBittorrent management tool for handling orphaned files, unregistered torrents, and more"
 requires-python = ">=3.9"
 dependencies = [
-    "qbittorrent-api>=2024.1.59",
+    "qbittorrent-api>=2024.11.69",  # Aligns with Python 3.9+ requirement
     "schedule>=1.2.0",
-    "tqdm>=4.66.3",
+    "tqdm>=4.66.3",  # Security fix for CLI injection vulnerability
 ]
 
 [project.optional-dependencies]
