@@ -120,6 +120,7 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
     """
     torrent_file_paths = {}
     unregistered_counts_per_path = {}
+    unregistered_torrents_per_path = {}  # Track number of torrents (not tracker hits) with unregistered trackers
     tag_counts = {}
     default_tag = config['default_unregistered_tag']
     cross_seeding_tag = config['cross_seeding_tag']
@@ -142,7 +143,14 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
 
         # Group torrents by tag type for batching
         if unregistered_count > 0:
-            is_all_unregistered = unregistered_counts_per_path[torrent.save_path] == len(torrent_file_paths[torrent.save_path])
+            # Track number of torrents (not tracker hits) with any unregistered tracker
+            unregistered_torrents_per_path[torrent.save_path] = (
+                unregistered_torrents_per_path.get(torrent.save_path, 0) + 1
+            )
+            # Check if ALL torrents in this path have unregistered trackers
+            is_all_unregistered = unregistered_torrents_per_path[torrent.save_path] == len(
+                torrent_file_paths[torrent.save_path]
+            )
             if is_all_unregistered:
                 default_tag_hashes.append(torrent.hash)
                 tag_counts[default_tag] = tag_counts.get(default_tag, 0) + 1
