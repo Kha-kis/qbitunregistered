@@ -1,24 +1,75 @@
 import logging
 from urllib.parse import urlsplit
+from typing import List, Set, Tuple
 
-def check_unregistered_message(tracker, unregistered):
-    lower_unregistered = {pattern.lower() for pattern in unregistered}
+
+def compile_patterns(unregistered: List[str]) -> Tuple[Set[str], Set[str]]:
+    """
+    Pre-compile patterns into two sets for efficient matching.
+
+    Args:
+        unregistered: List of unregistered patterns from config
+
+    Returns:
+        Tuple of (exact_match_set, starts_with_set)
+    """
+    exact_matches = set()
+    starts_with_patterns = set()
+
+    for pattern in unregistered:
+        lower_pattern = pattern.lower()
+        if lower_pattern.startswith("starts_with:"):
+            # Extract the prefix after "starts_with:"
+            prefix = lower_pattern.split("starts_with:", 1)[1]
+            starts_with_patterns.add(prefix)
+        else:
+            exact_matches.add(lower_pattern)
+
+    return exact_matches, starts_with_patterns
+
+
+def check_unregistered_message(tracker, exact_matches: Set[str], starts_with_patterns: Set[str]) -> bool:
+    """
+    Check if tracker message matches any unregistered pattern.
+
+    Args:
+        tracker: Tracker object with msg attribute
+        exact_matches: Set of exact match patterns (pre-compiled, lowercase)
+        starts_with_patterns: Set of starts_with patterns (pre-compiled, lowercase)
+
+    Returns:
+        True if message matches any pattern
+    """
     lower_msg = tracker.msg.lower()
 
-    for pattern in lower_unregistered:
-        if pattern.startswith("starts_with:") and lower_msg.startswith(pattern.split("starts_with:")[1]):
-            return True
-        elif lower_msg == pattern:
+    # Check exact matches first (O(1) lookup)
+    if lower_msg in exact_matches:
+        return True
+
+    # Check starts_with patterns (O(n) where n is number of starts_with patterns)
+    for prefix in starts_with_patterns:
+        if lower_msg.startswith(prefix):
             return True
 
     return False
 
-def process_torrent(torrent, unregistered):
-    lower_unregistered = {pattern.lower() for pattern in unregistered}
+
+def process_torrent(torrent, exact_matches: Set[str], starts_with_patterns: Set[str]) -> int:
+    """
+    Count unregistered trackers for a torrent.
+
+    Args:
+        torrent: Torrent object
+        exact_matches: Pre-compiled exact match patterns
+        starts_with_patterns: Pre-compiled starts_with patterns
+
+    Returns:
+        Count of unregistered trackers
+    """
     unregistered_count = sum(
         1
         for tracker in torrent.trackers
-        if check_unregistered_message(tracker, lower_unregistered) and tracker.status == 4
+        if check_unregistered_message(tracker, exact_matches, starts_with_patterns) and tracker.status == 4
     )
     return unregistered_count
 
@@ -45,17 +96,36 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
                     break  # Exit the inner loop after deleting the torrent
 
 def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run):
+    """
+    Check torrents for unregistered status and apply appropriate tags.
+
+    Args:
+        client: qBittorrent client
+        torrents: List of torrents to check
+        config: Configuration dictionary
+        use_delete_tags: Whether to use delete tags
+        delete_tags: List of tags that trigger deletion
+        delete_files: Dictionary mapping tags to delete_files boolean
+        dry_run: If True, don't make actual changes
+
+    Returns:
+        Tuple of (torrent_file_paths, unregistered_counts_per_path)
+    """
     torrent_file_paths = {}
     unregistered_counts_per_path = {}
     tag_counts = {}
     default_tag = config['default_unregistered_tag']
     cross_seeding_tag = config['cross_seeding_tag']
-    
+
+    # Pre-compile patterns for efficient matching
+    unregistered_patterns = config.get('unregistered', [])
+    exact_matches, starts_with_patterns = compile_patterns(unregistered_patterns)
+
     for torrent in torrents:
         update_torrent_file_paths(torrent_file_paths, torrent)
 
-        # Pass the 'unregistered' argument to the process_torrent function
-        unregistered_count = process_torrent(torrent, config.get('unregistered'))
+        # Use pre-compiled patterns for faster matching
+        unregistered_count = process_torrent(torrent, exact_matches, starts_with_patterns)
 
         unregistered_counts_per_path[torrent.save_path] = unregistered_counts_per_path.get(torrent.save_path, 0) + unregistered_count
 

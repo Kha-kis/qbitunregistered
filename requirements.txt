@@ -1,2 +1,7 @@
-qbittorrent-api
-schedule
+# Core dependencies
+qbittorrent-api>=2024.1.59
+schedule>=1.2.0
+
+# Testing dependencies
+pytest>=7.4.0
+pytest-cov>=4.1.0

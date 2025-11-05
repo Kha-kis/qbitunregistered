@@ -14,6 +14,7 @@ from scripts.auto_tmm import apply_auto_tmm_per_torrent
 from scripts.create_hardlinks import create_hard_links
 from scripts.tag_cross_seeding import tag_cross_seeds
 from scripts.tag_by_age import tag_by_age
+from utils.config_validator import validate_config, validate_exclude_patterns, ConfigValidationError
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
@@ -46,10 +47,20 @@ try:
     with open(config_file_path, 'r') as config_file:
         config = json.load(config_file)
 except FileNotFoundError:
-    logging.error(f"The configuration file {config_file_path} was not found.")
+    print(f"ERROR: The configuration file {config_file_path} was not found.")
     sys.exit(1)
-except json.JSONDecodeError:
-    logging.error(f"The configuration file {config_file_path} contains invalid JSON.")
+except json.JSONDecodeError as e:
+    print(f"ERROR: The configuration file {config_file_path} contains invalid JSON: {e}")
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR: Failed to read configuration file: {e}")
+    sys.exit(1)
+
+# Validate configuration
+try:
+    validate_config(config)
+except ConfigValidationError as e:
+    print(f"ERROR: {e}")
     sys.exit(1)
 
 # Ensure target_dir is provided if required
@@ -60,6 +71,13 @@ if pre_args.create_hard_links and not pre_args.target_dir and not config.get('ta
 # Re-parse arguments now that configuration has been loaded
 args = parser.parse_args()
 
+# Configure logging BEFORE any operations
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
 # Override configuration with command-line arguments if provided
 config['host'] = args.host or config.get('host')
 config['username'] = args.username or config.get('username')
@@ -69,6 +87,9 @@ dry_run = args.dry_run if args.dry_run is not None else config.get('dry_run', Fa
 exclude_files = args.exclude_files if args.exclude_files else config.get('exclude_files', [])
 exclude_dirs = args.exclude_dirs if args.exclude_dirs else config.get('exclude_dirs', [])
 
+# Validate exclude patterns
+validate_exclude_patterns(exclude_files, exclude_dirs)
+
 # Connect to qBittorrent client
 try:
     client = Client(host=config['host'], username=config['username'], password=config['password'])
@@ -77,68 +98,99 @@ except exceptions.APIConnectionError as e:
     sys.exit(1)
 
 # Define torrents
-torrents = client.torrents.info()
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+try:
+    torrents = client.torrents.info()
+except Exception as e:
+    logging.error(f"Failed to retrieve torrent list from qBittorrent: {e}")
+    sys.exit(1)
 
 # Log script start
 logging.info("Starting qbitunregistered script...")
 
 # Run orphaned check if --orphaned argument is passed
 if args.orphaned:
-    orphaned_files = check_files_on_disk(client, torrents, exclude_file_patterns=exclude_files, exclude_dirs=exclude_dirs)
+    try:
+        orphaned_files = check_files_on_disk(client, torrents, exclude_file_patterns=exclude_files, exclude_dirs=exclude_dirs)
+        logging.info("Total orphaned files: %d", len(orphaned_files))
 
-    logging.info("Total orphaned files: %d", len(orphaned_files))
-
-    # Delete orphaned files unless dry-run is set
-    delete_orphaned_files(orphaned_files, dry_run, client)
+        # Delete orphaned files unless dry-run is set
+        delete_orphaned_files(orphaned_files, dry_run, client)
+    except Exception as e:
+        logging.error(f"Error during orphaned file check: {e}")
+        if not dry_run:
+            logging.error("Orphaned file check failed, continuing with other operations...")
 
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
-    file_paths, unregistered_counts = unregistered_checks(client, torrents, config, use_delete_tags=config.get('use_delete_tags', False), delete_tags=config.get('delete_tags', []), delete_files=config.get('delete_files', {}), dry_run=dry_run)
-    total_unregistered_count = sum(unregistered_counts.values())
-    logging.info("Total unregistered count: %d", total_unregistered_count)
+    try:
+        file_paths, unregistered_counts = unregistered_checks(client, torrents, config, use_delete_tags=config.get('use_delete_tags', False), delete_tags=config.get('delete_tags', []), delete_files=config.get('delete_files', {}), dry_run=dry_run)
+        total_unregistered_count = sum(unregistered_counts.values())
+        logging.info("Total unregistered count: %d", total_unregistered_count)
+    except Exception as e:
+        logging.error(f"Error during unregistered checks: {e}")
 
 # Run the tag_by_tracker function if desired
 if args.tag_by_tracker:
-    tag_by_tracker(client, torrents, config)
+    try:
+        tag_by_tracker(client, torrents, config)
+    except Exception as e:
+        logging.error(f"Error during tag by tracker: {e}")
 
 # Run the tag_by_cross_seed function if --tag-by-cross-seed argument is passed
 if args.tag_by_cross_seed:
-    tag_cross_seeds(client, torrents)
+    try:
+        tag_cross_seeds(client, torrents)
+    except Exception as e:
+        logging.error(f"Error during cross-seed tagging: {e}")
 
 # Run the tag_by_age function if --tag-by-age argument is passed
 if args.tag_by_age:
-    tag_by_age(client, torrents, config)
+    try:
+        tag_by_age(client, torrents, config)
+    except Exception as e:
+        logging.error(f"Error during tag by age: {e}")
 
 # Apply seed time and seed ratio limits if --seeding-management argument is passed
 if args.seeding_management:
-    apply_seed_limits(client, config)
+    try:
+        apply_seed_limits(client, config)
+    except Exception as e:
+        logging.error(f"Error during seeding management: {e}")
 
 # Run the apply_auto_tmm_per_torrent function if --auto-tmm argument is passed
 if args.auto_tmm:
-    apply_auto_tmm_per_torrent(client, torrents)
+    try:
+        apply_auto_tmm_per_torrent(client, torrents)
+    except Exception as e:
+        logging.error(f"Error during auto TMM: {e}")
 
 # Pause all torrents if --pause-torrents argument is passed
 if args.pause_torrents:
-    pause_torrents(client, torrents)
+    try:
+        pause_torrents(client, torrents)
+    except Exception as e:
+        logging.error(f"Error pausing torrents: {e}")
 
 # Resume all torrents if --resume-torrents argument is passed
 if args.resume_torrents:
-    resume_torrents(client, torrents)
+    try:
+        resume_torrents(client, torrents)
+    except Exception as e:
+        logging.error(f"Error resuming torrents: {e}")
 
 # Check if --auto-remove argument is passed
 if args.auto_remove:
-    auto_remove(client, torrents, dry_run)
+    try:
+        auto_remove(client, torrents, dry_run)
+    except Exception as e:
+        logging.error(f"Error during auto remove: {e}")
 
 # Run the create_hard_links function if --create-hard-links argument is passed
 if args.create_hard_links:
-    create_hard_links(target_dir, torrents)
+    try:
+        create_hard_links(target_dir, torrents)
+    except Exception as e:
+        logging.error(f"Error creating hard links: {e}")
 
 # Log script end
 logging.info("qbitunregistered script completed.")

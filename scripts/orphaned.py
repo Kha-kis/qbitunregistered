@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 from typing import List
+from fnmatch import fnmatch
 
 def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str] = [], exclude_dirs: List[str] = []) -> List[str]:
     """
@@ -33,20 +34,54 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
 
     logging.info(f"Scanning {len(valid_save_paths)} save paths for orphaned files...")
 
-    # Track files used by torrents
-    torrent_files = {Path(torrent.save_path) / file.name for torrent in torrents for file in torrent.files}
+    # Track files used by torrents - use resolved paths for accurate comparison
+    torrent_files = {(Path(torrent.save_path) / file.name).resolve() for torrent in torrents for file in torrent.files}
+    logging.debug(f"Tracking {len(torrent_files)} files from {len(torrents)} torrents")
+
+    # Convert exclude_dirs to Path objects for comparison (only once)
+    exclude_dir_paths = {Path(d).resolve() for d in exclude_dirs} if exclude_dirs else set()
 
     orphaned_files = []
+    files_checked = 0
+    files_excluded_by_pattern = 0
+    files_excluded_by_dir = 0
 
     # Scan category paths recursively
     for save_path in sorted(valid_save_paths, key=lambda p: len(str(p))):  # Sort by shortest path first
         logging.info(f"Checking files in: {save_path}")
 
         for entry in save_path.rglob("*"):  # Recursive check inside category paths
+            # Check if entry is in an excluded directory (early exit for better performance)
+            if exclude_dir_paths:
+                entry_resolved = entry.resolve()
+                is_excluded_dir = (
+                    entry_resolved in exclude_dir_paths or
+                    any(excluded_path in entry_resolved.parents for excluded_path in exclude_dir_paths) or
+                    any(fnmatch(str(entry_resolved), str(excluded_path)) for excluded_path in exclude_dir_paths)
+                )
+                if is_excluded_dir:
+                    files_excluded_by_dir += 1
+                    continue
+
             if entry.is_file():
-                if entry in torrent_files:
+                files_checked += 1
+
+                # Check if file matches any exclude patterns
+                if exclude_file_patterns:
+                    if any(fnmatch(entry.name, pattern) for pattern in exclude_file_patterns):
+                        logging.debug(f"Excluding file matching pattern: {entry}")
+                        files_excluded_by_pattern += 1
+                        continue
+
+                # Use resolved path for comparison
+                entry_resolved = entry.resolve()
+                if entry_resolved in torrent_files:
                     continue  # Skip files that are tracked by torrents
+
                 orphaned_files.append(str(entry))
+
+    logging.info(f"Scanned {files_checked} files, excluded {files_excluded_by_pattern} by pattern, "
+                 f"excluded {files_excluded_by_dir} by directory")
 
     return orphaned_files
 
