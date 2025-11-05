@@ -26,7 +26,8 @@ def _get_dir_size(path: Path) -> int:
     return total
 
 
-def _check_disk_space(target_path: Path, required_bytes: int, safety_margin: float = 0.1) -> bool:
+def _check_disk_space(target_path: Path, required_bytes: int, safety_margin: float = 0.1,
+                      allow_proceed_on_check_failure: bool = False) -> bool:
     """
     Check if there's enough disk space.
 
@@ -34,9 +35,19 @@ def _check_disk_space(target_path: Path, required_bytes: int, safety_margin: flo
         target_path: Target directory path
         required_bytes: Required space in bytes
         safety_margin: Safety margin (0.1 = 10% extra space required)
+        allow_proceed_on_check_failure: If True, return True when disk check fails;
+                                       if False (default), fail-safe by returning False
+                                       when the check cannot be performed
 
     Returns:
-        True if enough space available
+        True if enough space available (or if check fails and allow_proceed_on_check_failure=True)
+        False if not enough space or if check fails (fail-safe default behavior)
+
+    Note:
+        The default behavior is fail-safe: if we cannot verify sufficient disk space
+        (e.g., due to permission errors or invalid paths), we return False to prevent
+        potentially dangerous operations. Set allow_proceed_on_check_failure=True to
+        override this behavior and proceed despite check failures.
     """
     try:
         stat = shutil.disk_usage(target_path)
@@ -49,7 +60,12 @@ def _check_disk_space(target_path: Path, required_bytes: int, safety_margin: flo
         return True
     except Exception as e:
         logging.error(f"Error checking disk space: {e}")
-        return True  # Proceed anyway if we can't check
+        if allow_proceed_on_check_failure:
+            logging.warning("Proceeding despite disk space check failure (allow_proceed_on_check_failure=True)")
+            return True
+        else:
+            logging.warning("Failing safely due to disk space check failure (allow_proceed_on_check_failure=False)")
+            return False
 
 
 def _is_safe_path(base_path: Path, target_path: Path) -> bool:
