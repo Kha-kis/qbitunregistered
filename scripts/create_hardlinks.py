@@ -1,71 +1,8 @@
 import os
 import logging
-import shutil
 from typing import List, Any
 from pathlib import Path
 from tqdm import tqdm
-
-
-def _get_dir_size(path: Path) -> int:
-    """
-    Get total size of files in a directory.
-
-    Args:
-        path: Path to directory
-
-    Returns:
-        Total size in bytes
-    """
-    total = 0
-    try:
-        for entry in path.rglob('*'):
-            if entry.is_file():
-                total += entry.stat().st_size
-    except Exception as e:
-        logging.warning(f"Error calculating size for {path}: {e}")
-    return total
-
-
-def _check_disk_space(target_path: Path, required_bytes: int, safety_margin: float = 0.1,
-                      allow_proceed_on_check_failure: bool = False) -> bool:
-    """
-    Check if there's enough disk space.
-
-    Args:
-        target_path: Target directory path
-        required_bytes: Required space in bytes
-        safety_margin: Safety margin (0.1 = 10% extra space required)
-        allow_proceed_on_check_failure: If True, return True when disk check fails;
-                                       if False (default), fail-safe by returning False
-                                       when the check cannot be performed
-
-    Returns:
-        True if enough space available (or if check fails and allow_proceed_on_check_failure=True)
-        False if not enough space or if check fails (fail-safe default behavior)
-
-    Note:
-        The default behavior is fail-safe: if we cannot verify sufficient disk space
-        (e.g., due to permission errors or invalid paths), we return False to prevent
-        potentially dangerous operations. Set allow_proceed_on_check_failure=True to
-        override this behavior and proceed despite check failures.
-    """
-    try:
-        stat = shutil.disk_usage(target_path)
-        required_with_margin = required_bytes * (1 + safety_margin)
-
-        if stat.free < required_with_margin:
-            logging.warning(f"Low disk space: {stat.free / (1024**3):.2f} GB available, "
-                            f"{required_with_margin / (1024**3):.2f} GB required (with margin)")
-            return False
-        return True
-    except Exception as e:
-        logging.error(f"Error checking disk space: {e}")
-        if allow_proceed_on_check_failure:
-            logging.warning("Proceeding despite disk space check failure (allow_proceed_on_check_failure=True)")
-            return True
-        else:
-            logging.warning("Failing safely due to disk space check failure (allow_proceed_on_check_failure=False)")
-            return False
 
 
 def _is_safe_path(base_path: Path, target_path: Path) -> bool:
@@ -127,28 +64,8 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
         completed_torrents = [t for t in torrents if t.state_enum.is_complete]
         logging.info(f"Processing {len(completed_torrents)} completed torrents out of {len(torrents)} total")
 
-        # Calculate total size required for hard links
-        if not dry_run:
-            logging.info("Calculating required disk space...")
-            total_size_required = 0
-            for torrent in completed_torrents:
-                content_path = Path(torrent.save_path) / torrent.name
-                if content_path.exists():
-                    if content_path.is_dir():
-                        total_size_required += _get_dir_size(content_path)
-                    else:
-                        try:
-                            total_size_required += content_path.stat().st_size
-                        except Exception as e:
-                            logging.warning(f"Could not get size for {content_path}: {e}")
-
-            # Check if there's enough disk space
-            if total_size_required > 0:
-                logging.info(f"Total space required: {total_size_required / (1024**3):.2f} GB")
-                if not _check_disk_space(target_path, total_size_required):
-                    logging.error("Insufficient disk space for hard link creation. Aborting.")
-                    return
-                logging.info("Disk space check passed")
+        # Note: Hard links don't consume additional disk space - they're directory entries
+        # pointing to existing inodes. No disk space check needed.
 
         total_links = 0
         total_skipped = 0
