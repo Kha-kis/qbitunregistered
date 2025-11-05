@@ -1,12 +1,84 @@
 import os
 import logging
+import shutil
 from typing import List, Any
 from pathlib import Path
+from tqdm import tqdm
+
+
+def _get_dir_size(path: Path) -> int:
+    """
+    Get total size of files in a directory.
+
+    Args:
+        path: Path to directory
+
+    Returns:
+        Total size in bytes
+    """
+    total = 0
+    try:
+        for entry in path.rglob('*'):
+            if entry.is_file():
+                total += entry.stat().st_size
+    except Exception as e:
+        logging.warning(f"Error calculating size for {path}: {e}")
+    return total
+
+
+def _check_disk_space(target_path: Path, required_bytes: int, safety_margin: float = 0.1) -> bool:
+    """
+    Check if there's enough disk space.
+
+    Args:
+        target_path: Target directory path
+        required_bytes: Required space in bytes
+        safety_margin: Safety margin (0.1 = 10% extra space required)
+
+    Returns:
+        True if enough space available
+    """
+    try:
+        stat = shutil.disk_usage(target_path)
+        required_with_margin = required_bytes * (1 + safety_margin)
+
+        if stat.free < required_with_margin:
+            logging.warning(f"Low disk space: {stat.free / (1024**3):.2f} GB available, "
+                            f"{required_with_margin / (1024**3):.2f} GB required (with margin)")
+            return False
+        return True
+    except Exception as e:
+        logging.error(f"Error checking disk space: {e}")
+        return True  # Proceed anyway if we can't check
+
+
+def _is_safe_path(base_path: Path, target_path: Path) -> bool:
+    """
+    Check if target_path is safely within base_path (no path traversal).
+
+    Args:
+        base_path: The base directory that should contain the target
+        target_path: The path to validate
+
+    Returns:
+        True if safe, False if path traversal detected
+    """
+    try:
+        # Resolve both paths to absolute, canonical paths
+        base_resolved = base_path.resolve()
+        target_resolved = target_path.resolve()
+
+        # Check if target is within base
+        return target_resolved.is_relative_to(base_resolved)
+    except (ValueError, RuntimeError):
+        return False
 
 
 def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = False) -> None:
     """
     Create hard links for completed torrents in the target directory.
+
+    Includes security checks to prevent path traversal attacks.
 
     Args:
         target_dir: Target directory where hard links will be created
@@ -15,17 +87,24 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
 
     Note: Hard links only work within the same filesystem. Cross-filesystem
           linking will fail.
+
+    Security: Validates all paths to prevent directory traversal attacks.
     """
     try:
         if not target_dir:
             logging.error("No target directory specified for hard link creation")
             return
 
-        target_path = Path(target_dir)
+        target_path = Path(target_dir).resolve()  # Resolve to absolute path
 
         # Validate target directory
         if not dry_run and not target_path.exists():
             logging.error(f"Target directory does not exist: {target_dir}")
+            return
+
+        # Security: Ensure target_dir is an absolute path
+        if not target_path.is_absolute():
+            logging.error(f"Target directory must be an absolute path: {target_dir}")
             return
 
         completed_torrents = [t for t in torrents if t.state_enum.is_complete]
@@ -35,7 +114,7 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
         total_skipped = 0
         total_errors = 0
 
-        for torrent in completed_torrents:
+        for torrent in tqdm(completed_torrents, desc="Creating hard links", unit="torrent"):
             try:
                 content_path = Path(torrent.save_path) / torrent.name
 
@@ -51,6 +130,12 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                                 rel_path = source_path.relative_to(content_path)
                                 category_dir = torrent.category or ''
                                 target_file_path = target_path / category_dir / rel_path
+
+                                # Security: Check for path traversal
+                                if not _is_safe_path(target_path, target_file_path):
+                                    logging.error(f"Security: Path traversal detected, skipping: {target_file_path}")
+                                    total_errors += 1
+                                    continue
 
                                 if target_file_path.exists():
                                     logging.debug(f"Hard link already exists: {target_file_path}")
@@ -81,6 +166,12 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                     try:
                         category_dir = torrent.category or ''
                         target_file_path = target_path / category_dir / content_path.name
+
+                        # Security: Check for path traversal
+                        if not _is_safe_path(target_path, target_file_path):
+                            logging.error(f"Security: Path traversal detected, skipping: {target_file_path}")
+                            total_errors += 1
+                            continue
 
                         if target_file_path.exists():
                             logging.debug(f"Hard link already exists: {target_file_path}")

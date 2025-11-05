@@ -1,6 +1,7 @@
 import logging
 from collections import defaultdict
 from typing import List, Dict, Any
+from tqdm import tqdm
 from utils.cache import cached
 
 
@@ -42,7 +43,7 @@ def tag_cross_seeds(client, torrents: List[Any], dry_run: bool = False) -> None:
         logging.info(f"Analyzing file structures for {len(torrents)} torrents...")
 
         # Collect torrents by their file structure
-        for torrent in torrents:
+        for torrent in tqdm(torrents, desc="Analyzing file structures", unit="torrent", disable=dry_run):
             try:
                 torrent_path = getattr(torrent, 'save_path', None)
                 if not torrent_path:
