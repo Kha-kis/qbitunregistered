@@ -122,8 +122,7 @@ if args.orphaned:
         delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents)
     except Exception:
         logging.exception("Error during orphaned file check")
-        if not dry_run:
-            logging.error("Orphaned file check failed, continuing with other operations...")
+        logging.error("Orphaned file check failed, continuing with other operations...")
 
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
