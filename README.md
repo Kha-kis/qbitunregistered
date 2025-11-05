@@ -31,6 +31,36 @@ cd qbitunregistered
 pip install -r requirements.txt
 ```
 
+## Upgrading
+
+### From Pre-3.9 Python Versions
+
+**Important**: This version requires Python 3.9 or newer due to the use of `Path.is_relative_to()` and other modern Python features.
+
+If you're upgrading from an older version:
+
+1. **Check your Python version:**
+   ```bash
+   python3 --version
+   ```
+
+2. **If you're on Python 3.8 or older, upgrade Python first:**
+   - Ubuntu/Debian: `sudo apt update && sudo apt install python3.9`
+   - macOS (Homebrew): `brew install python@3.9`
+   - Windows: Download from [python.org](https://www.python.org/downloads/)
+
+3. **Update dependencies:**
+   ```bash
+   pip install -r requirements.txt --upgrade
+   ```
+
+4. **Key Changes in This Version:**
+   - **Minimum Python**: 3.9+ (was 3.6+)
+   - **New dependency**: tqdm >=4.66.3 (for progress bars and security fix)
+   - **Breaking change**: Path handling now uses Python 3.9+ features
+   - **Performance**: Major improvements through API call batching (4000+ → 15-20 calls)
+   - **New features**: Caching layer, progress bars, improved error handling
+
 ## Configuration
 
 Start by copying the example configuration file and then modify it to suit your needs:

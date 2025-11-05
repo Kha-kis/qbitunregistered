@@ -76,9 +76,10 @@ def validate_config(config: Dict[str, Any]) -> None:
                 for limit_field in ['seed_time_limit', 'seed_ratio_limit']:
                     if limit_field in tracker_config:
                         value = tracker_config[limit_field]
-                        # Allow -1 for unlimited, otherwise must be non-negative
-                        if not isinstance(value, (int, float)) or (value < 0 and value != -1):
-                            errors.append(f"tracker_tags['{tracker_name}']['{limit_field}'] must be a non-negative number or -1 for unlimited")
+                        # qBittorrent API: -2 = no limit, -1 = use global settings, >=0 = specific limit
+                        if not isinstance(value, (int, float)) or (value < -2):
+                            errors.append(f"tracker_tags['{tracker_name}']['{limit_field}'] must be >= -2 "
+                                         f"(-2 = no limit, -1 = use global, 0+ = specific limit)")
 
     # Validate target_dir if present
     if 'target_dir' in config and config['target_dir']:

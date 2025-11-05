@@ -15,7 +15,7 @@ from scripts.create_hardlinks import create_hard_links
 from scripts.tag_cross_seeding import tag_cross_seeds
 from scripts.tag_by_age import tag_by_age
 from utils.config_validator import validate_config, validate_exclude_patterns, ConfigValidationError
-from utils.cache import clear_cache, log_cache_stats
+from utils.cache import log_cache_stats
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
@@ -108,9 +108,8 @@ except Exception:
 # Log script start
 logging.info("Starting qbitunregistered script...")
 
-# Clear cache at script start for fresh run
-clear_cache()
-logging.debug("Cache cleared for fresh script run")
+# Note: Cache is in-memory and automatically cleared between script runs.
+# No manual clearing needed on startup.
 
 # Run orphaned check if --orphaned argument is passed
 if args.orphaned:
