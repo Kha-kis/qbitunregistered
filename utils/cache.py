@@ -7,6 +7,7 @@ within a single script execution.
 
 import time
 import logging
+import json
 from typing import Any, Optional, Callable, Dict, Tuple, Union
 from functools import wraps
 
@@ -156,10 +157,20 @@ def cached(ttl: int = 300, key_prefix: str = ""):
         @wraps(func)
         def wrapper(*args, **kwargs):
             # Generate cache key from function name and arguments
-            # Convert args/kwargs to string for key (simple approach)
-            args_str = "_".join(str(arg) for arg in args[1:])  # Skip 'self' or 'client'
-            kwargs_str = "_".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
-            cache_key = f"{key_prefix}_{func.__name__}_{args_str}_{kwargs_str}"
+            # Build tuple of key components for unambiguous serialization
+            key_components = (
+                key_prefix,
+                func.__qualname__,  # Use __qualname__ for better identification
+                args[1:],  # Skip 'self' or 'client'
+                tuple(sorted(kwargs.items()))
+            )
+
+            # Serialize with json.dumps for stability, fallback to repr for non-JSON types
+            try:
+                cache_key = json.dumps(key_components, sort_keys=True)
+            except (TypeError, ValueError):
+                # Fallback to repr for non-JSON-serializable objects
+                cache_key = repr(key_components)
 
             # Try to get from cache using sentinel to distinguish misses from None values
             cache = get_cache()
