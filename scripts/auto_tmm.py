@@ -25,17 +25,13 @@ def apply_auto_tmm_per_torrent(client, torrents: List[Any], dry_run: bool = Fals
         if dry_run:
             logging.info(f"[Dry Run] Would enable auto TMM for {len(torrent_hashes)} torrents")
         else:
-            try:
-                # Batch enable auto TMM for all torrents in a single API call
-                client.torrents_set_auto_management(
-                    enable=True,
-                    torrent_hashes=torrent_hashes
-                )
-                logging.info(f"Enabled auto TMM for {len(torrent_hashes)} torrents")
-            except Exception as e:
-                logging.error(f"Failed to enable auto TMM for torrents: {e}")
-                raise
+            # Batch enable auto TMM for all torrents in a single API call
+            client.torrents_set_auto_management(
+                enable=True,
+                torrent_hashes=torrent_hashes
+            )
+            logging.info(f"Enabled auto TMM for {len(torrent_hashes)} torrents")
 
-    except Exception as e:
-        logging.error(f"Error in apply_auto_tmm_per_torrent: {e}")
+    except Exception:
+        logging.exception("Error in apply_auto_tmm_per_torrent")
         raise

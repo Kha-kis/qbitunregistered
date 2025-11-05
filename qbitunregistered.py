@@ -101,8 +101,8 @@ except exceptions.APIConnectionError as e:
 # Define torrents
 try:
     torrents = client.torrents.info()
-except Exception as e:
-    logging.error(f"Failed to retrieve torrent list from qBittorrent: {e}")
+except Exception:
+    logging.exception("Failed to retrieve torrent list from qBittorrent")
     sys.exit(1)
 
 # Log script start
@@ -120,8 +120,8 @@ if args.orphaned:
 
         # Delete orphaned files unless dry-run is set (pass torrents to avoid redundant API call)
         delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents)
-    except Exception as e:
-        logging.error(f"Error during orphaned file check: {e}")
+    except Exception:
+        logging.exception("Error during orphaned file check")
         if not dry_run:
             logging.error("Orphaned file check failed, continuing with other operations...")
 
@@ -131,71 +131,71 @@ if args.unregistered:
         file_paths, unregistered_counts = unregistered_checks(client, torrents, config, use_delete_tags=config.get('use_delete_tags', False), delete_tags=config.get('delete_tags', []), delete_files=config.get('delete_files', {}), dry_run=dry_run)
         total_unregistered_count = sum(unregistered_counts.values())
         logging.info("Total unregistered count: %d", total_unregistered_count)
-    except Exception as e:
-        logging.error(f"Error during unregistered checks: {e}")
+    except Exception:
+        logging.exception("Error during unregistered checks")
 
 # Run the tag_by_tracker function if desired
 if args.tag_by_tracker:
     try:
         tag_by_tracker(client, torrents, config)
-    except Exception as e:
-        logging.error(f"Error during tag by tracker: {e}")
+    except Exception:
+        logging.exception("Error during tag by tracker")
 
 # Run the tag_by_cross_seed function if --tag-by-cross-seed argument is passed
 if args.tag_by_cross_seed:
     try:
         tag_cross_seeds(client, torrents, dry_run=dry_run)
-    except Exception as e:
-        logging.error(f"Error during cross-seed tagging: {e}")
+    except Exception:
+        logging.exception("Error during cross-seed tagging")
 
 # Run the tag_by_age function if --tag-by-age argument is passed
 if args.tag_by_age:
     try:
         tag_by_age(client, torrents, config, dry_run=dry_run)
-    except Exception as e:
-        logging.error(f"Error during tag by age: {e}")
+    except Exception:
+        logging.exception("Error during tag by age")
 
 # Apply seed time and seed ratio limits if --seeding-management argument is passed
 if args.seeding_management:
     try:
         apply_seed_limits(client, config, torrents=torrents)
-    except Exception as e:
-        logging.error(f"Error during seeding management: {e}")
+    except Exception:
+        logging.exception("Error during seeding management")
 
 # Run the apply_auto_tmm_per_torrent function if --auto-tmm argument is passed
 if args.auto_tmm:
     try:
         apply_auto_tmm_per_torrent(client, torrents, dry_run=dry_run)
-    except Exception as e:
-        logging.error(f"Error during auto TMM: {e}")
+    except Exception:
+        logging.exception("Error during auto TMM")
 
 # Pause all torrents if --pause-torrents argument is passed
 if args.pause_torrents:
     try:
         pause_torrents(client, torrents, dry_run=dry_run)
-    except Exception as e:
-        logging.error(f"Error pausing torrents: {e}")
+    except Exception:
+        logging.exception("Error pausing torrents")
 
 # Resume all torrents if --resume-torrents argument is passed
 if args.resume_torrents:
     try:
         resume_torrents(client, torrents, dry_run=dry_run)
-    except Exception as e:
-        logging.error(f"Error resuming torrents: {e}")
+    except Exception:
+        logging.exception("Error resuming torrents")
 
 # Check if --auto-remove argument is passed
 if args.auto_remove:
     try:
         auto_remove(client, torrents, dry_run)
-    except Exception as e:
-        logging.error(f"Error during auto remove: {e}")
+    except Exception:
+        logging.exception("Error during auto remove")
 
 # Run the create_hard_links function if --create-hard-links argument is passed
 if args.create_hard_links:
     try:
         create_hard_links(target_dir, torrents, dry_run=dry_run)
-    except Exception as e:
-        logging.error(f"Error creating hard links: {e}")
+    except Exception:
+        logging.exception("Error creating hard links")
 
 # Log cache statistics
 log_cache_stats()
@@ -205,7 +205,7 @@ try:
     client.auth_log_out()
     logging.debug("Logged out from qBittorrent")
 except Exception:
-    pass  # Ignore logout errors - not critical
+    logging.debug("Failed to logout from qBittorrent (non-critical)")
 
 # Log script end
 logging.info("qbitunregistered script completed.")

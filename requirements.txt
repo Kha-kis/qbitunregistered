@@ -1,7 +1,9 @@
 # Core dependencies
+# Using >= constraints to allow bug fixes and security updates while enforcing minimum versions
+# For reproducible builds, consider using pip freeze or a lock file (requirements.lock)
 qbittorrent-api>=2024.1.59
 schedule>=1.2.0
-tqdm>=4.66.3
+tqdm>=4.66.3  # Minimum version required for CVE fix
 
 # Testing dependencies
 pytest>=7.4.0

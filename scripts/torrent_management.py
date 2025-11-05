@@ -23,16 +23,12 @@ def pause_torrents(client, torrents: List[Any], dry_run: bool = False) -> None:
         if dry_run:
             logging.info(f"[Dry Run] Would pause {len(torrent_hashes)} torrents")
         else:
-            try:
-                # Batch pause all torrents in a single API call
-                client.torrents_pause(torrent_hashes=torrent_hashes)
-                logging.info(f"Paused {len(torrent_hashes)} torrents")
-            except Exception as e:
-                logging.error(f"Failed to pause torrents: {e}")
-                raise
+            # Batch pause all torrents in a single API call
+            client.torrents_pause(torrent_hashes=torrent_hashes)
+            logging.info(f"Paused {len(torrent_hashes)} torrents")
 
-    except Exception as e:
-        logging.error(f"Error in pause_torrents: {e}")
+    except Exception:
+        logging.exception("Error in pause_torrents")
         raise
 
 
@@ -57,14 +53,10 @@ def resume_torrents(client, torrents: List[Any], dry_run: bool = False) -> None:
         if dry_run:
             logging.info(f"[Dry Run] Would resume {len(torrent_hashes)} torrents")
         else:
-            try:
-                # Batch resume all torrents in a single API call
-                client.torrents_resume(torrent_hashes=torrent_hashes)
-                logging.info(f"Resumed {len(torrent_hashes)} torrents")
-            except Exception as e:
-                logging.error(f"Failed to resume torrents: {e}")
-                raise
+            # Batch resume all torrents in a single API call
+            client.torrents_resume(torrent_hashes=torrent_hashes)
+            logging.info(f"Resumed {len(torrent_hashes)} torrents")
 
-    except Exception as e:
-        logging.error(f"Error in resume_torrents: {e}")
+    except Exception:
+        logging.exception("Error in resume_torrents")
         raise
