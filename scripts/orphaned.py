@@ -1,7 +1,7 @@
 import logging
 import re
 from pathlib import Path
-from typing import List, Pattern, Dict, Any
+from typing import List, Pattern, Dict, Any, Optional
 from fnmatch import translate
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -9,20 +9,30 @@ from utils.cache import cached
 
 
 @cached(ttl=300, key_prefix="app_default_save_path")
-def _get_default_save_path(client) -> str:
+def _get_default_save_path(client, *, cache_scope: Optional[int] = None) -> str:
     """
     Cached wrapper for client.application.default_save_path.
     Reduces redundant API calls for read-only application settings.
+
+    Args:
+        client: qBittorrent client instance
+        cache_scope: Unique identifier to scope cache per client (use id(client))
+                     to prevent cache contamination across different client instances
     """
     return client.application.default_save_path
 
 
 @cached(ttl=300, key_prefix="torrent_categories")
-def _get_categories(client) -> Dict[str, Any]:
+def _get_categories(client, *, cache_scope: Optional[int] = None) -> Dict[str, Any]:
     """
     Cached wrapper for client.torrent_categories() method.
     Reduces redundant API calls for category configuration.
     Returns TorrentCategoriesDictionary with all defined categories.
+
+    Args:
+        client: qBittorrent client instance
+        cache_scope: Unique identifier to scope cache per client (use id(client))
+                     to prevent cache contamination across different client instances
     """
     return client.torrent_categories()
 
@@ -34,10 +44,11 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
     logging.debug("Entering check_files_on_disk function...")
 
     # Get the default save path (cached to reduce API calls)
-    default_save_path = Path(_get_default_save_path(client))
+    # Use id(client) to scope cache per client instance, preventing contamination
+    default_save_path = Path(_get_default_save_path(client, cache_scope=id(client)))
 
     # Get explicitly defined category save paths (cached to reduce API calls)
-    categories = _get_categories(client)
+    categories = _get_categories(client, cache_scope=id(client))
     category_paths = {
         Path(category.get('savePath', '')).resolve() if category.get('savePath') else default_save_path / category_name
         for category_name, category in categories.items()
@@ -164,7 +175,8 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
     orphaned_files_set = {Path(file) for file in orphaned_files}  # Convert to Path objects for easier comparison
 
     # Get active save paths to prevent accidental deletion (cached to reduce API calls)
-    default_save_path = Path(_get_default_save_path(client))
+    # Use id(client) to scope cache per client instance, preventing contamination
+    default_save_path = Path(_get_default_save_path(client, cache_scope=id(client)))
     active_save_paths = {default_save_path}
 
     # Get save paths from all torrents (reuse provided list to avoid redundant API call)
@@ -173,7 +185,7 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
     active_save_paths.update(Path(torrent.save_path) for torrent in torrents)
 
     # Get save paths from categories (cached to reduce API calls)
-    categories = _get_categories(client)
+    categories = _get_categories(client, cache_scope=id(client))
     for category_name, category in categories.items():
         category_save_path = Path(category.get('savePath', '')).resolve() if category.get('savePath') else default_save_path / category_name
         active_save_paths.add(category_save_path)
