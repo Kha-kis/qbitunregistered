@@ -1,9 +1,29 @@
 import logging
+from typing import Dict, Any, Optional
 from utils.tracker_matcher import match_tracker_url
+from utils.cache import cached
 
-def find_tracker_config(client, torrent, config):
+
+@cached(ttl=300, key_prefix="tracker_config")
+def _fetch_trackers(client, torrent_hash: str) -> list:
+    """
+    Fetch trackers for a torrent with caching.
+
+    Args:
+        client: qBittorrent client instance
+        torrent_hash: Torrent hash
+
+    Returns:
+        List of tracker dictionaries
+    """
+    return client.torrents_trackers(torrent_hash=torrent_hash)
+
+
+def find_tracker_config(client, torrent, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Find matching tracker configuration for a torrent.
+
+    Uses caching to avoid repeated API calls for the same torrent.
 
     Args:
         client: qBittorrent client instance
@@ -15,7 +35,8 @@ def find_tracker_config(client, torrent, config):
         Returns None on API errors (logged but not raised).
     """
     try:
-        trackers = client.torrents_trackers(torrent_hash=torrent.hash)
+        # Use cached tracker fetch
+        trackers = _fetch_trackers(client, torrent.hash)
     except Exception:
         logging.exception(f"Failed to fetch trackers for torrent {torrent.hash}")
         return None

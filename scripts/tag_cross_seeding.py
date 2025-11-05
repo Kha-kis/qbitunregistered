@@ -1,6 +1,22 @@
 import logging
 from collections import defaultdict
 from typing import List, Dict, Any
+from utils.cache import cached
+
+
+@cached(ttl=300, key_prefix="torrent_files")
+def _fetch_torrent_files(client, torrent_hash: str) -> list:
+    """
+    Fetch file list for a torrent with caching.
+
+    Args:
+        client: qBittorrent client instance
+        torrent_hash: Torrent hash
+
+    Returns:
+        List of file dictionaries
+    """
+    return client.torrents_files(torrent_hash)
 
 
 def tag_cross_seeds(client, torrents: List[Any], dry_run: bool = False) -> None:
@@ -34,9 +50,9 @@ def tag_cross_seeds(client, torrents: List[Any], dry_run: bool = False) -> None:
                     errors += 1
                     continue
 
-                # Fetch file list for this torrent (unavoidable API call)
+                # Fetch file list for this torrent (cached to reduce API calls)
                 try:
-                    torrent_files = client.torrents_files(torrent.hash)
+                    torrent_files = _fetch_torrent_files(client, torrent.hash)
                 except Exception as e:
                     logging.error(f"Failed to fetch files for torrent '{torrent.name}': {e}")
                     errors += 1

@@ -1,7 +1,17 @@
 import logging
+from typing import List, Dict, Any
 from scripts.seeding_management import find_tracker_config
 
-def tag_by_tracker(client, torrents, config):
+
+def tag_by_tracker(client, torrents: List[Any], config: Dict[str, Any]) -> None:
+    """
+    Tag torrents based on their tracker and optionally apply seed limits.
+
+    Args:
+        client: qBittorrent client instance
+        torrents: List of torrent objects to tag
+        config: Configuration dictionary with tracker_tags
+    """
     for torrent in torrents:
         tracker_tag_config = find_tracker_config(client, torrent, config)
 
