@@ -40,6 +40,14 @@ def tag_by_age(client, torrents: List[Any], _config: Dict[str, Any], dry_run: bo
                 torrent_age_months = months_diff
 
                 # Determine the appropriate tag based on age buckets in months
+                # Handle future creation dates (system clock issues or data errors)
+                if torrent_age_months < 0:
+                    logging.warning(f"Skipping torrent '{torrent.name}': creation date is in the future "
+                                    f"({torrent.creation_date} > {current_time}). "
+                                    f"Check system clock or torrent metadata.")
+                    continue
+
+                # Skip torrents less than 1 month old
                 if torrent_age_months < 1:
                     logging.debug(f"Skipping torrent '{torrent.name}': under one month old")
                     continue
