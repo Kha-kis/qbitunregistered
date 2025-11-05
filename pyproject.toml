@@ -6,7 +6,7 @@ requires-python = ">=3.9"
 dependencies = [
     "qbittorrent-api>=2024.1.59",
     "schedule>=1.2.0",
-    "tqdm>=4.66.0",
+    "tqdm>=4.66.3",
 ]
 
 [project.optional-dependencies]
