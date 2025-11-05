@@ -76,9 +76,14 @@ def process_torrent(torrent, exact_matches: Set[str], starts_with_patterns: Set[
 def update_torrent_file_paths(torrent_file_paths, torrent):
     torrent_file_paths.setdefault(torrent.save_path, []).append(torrent.hash)
 
-def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run):
+def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents=None):
+    """Delete torrents with specific tags. Pass torrents to avoid redundant API call."""
     if use_delete_tags:
-        for torrent in client.torrents.info():
+        # Use provided torrents list to avoid redundant API call
+        if torrents is None:
+            torrents = client.torrents.info()
+
+        for torrent in torrents:
             for tag in delete_tags:
                 if tag in torrent.tags:
                     if delete_files.get(tag, False):
@@ -98,6 +103,8 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
 def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run):
     """
     Check torrents for unregistered status and apply appropriate tags.
+
+    Uses batched API calls for maximum performance.
 
     Args:
         client: qBittorrent client
@@ -121,6 +128,10 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
     unregistered_patterns = config.get('unregistered', [])
     exact_matches, starts_with_patterns = compile_patterns(unregistered_patterns)
 
+    # Batch torrents by tag type for efficient API calls
+    default_tag_hashes = []
+    cross_seeding_tag_hashes = []
+
     for torrent in torrents:
         update_torrent_file_paths(torrent_file_paths, torrent)
 
@@ -129,21 +140,38 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
 
         unregistered_counts_per_path[torrent.save_path] = unregistered_counts_per_path.get(torrent.save_path, 0) + unregistered_count
 
-        # Add tags based on unregistered_count
+        # Group torrents by tag type for batching
         if unregistered_count > 0:
             is_all_unregistered = unregistered_counts_per_path[torrent.save_path] == len(torrent_file_paths[torrent.save_path])
-            tags_to_add = [default_tag] if is_all_unregistered else [cross_seeding_tag]
-            if not dry_run:
-                client.torrents_add_tags(torrent_hashes=[torrent.hash], tags=tags_to_add)
-                logging.info(f"Adding tags {tags_to_add} to torrent with name '{torrent.name}'")
-                for tag in tags_to_add:
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+            if is_all_unregistered:
+                default_tag_hashes.append(torrent.hash)
+                tag_counts[default_tag] = tag_counts.get(default_tag, 0) + 1
             else:
-                logging.info(f"[Dry Run] Would add tags {tags_to_add} to torrent with name '{torrent.name}'")
-                for tag in tags_to_add:
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                cross_seeding_tag_hashes.append(torrent.hash)
+                tag_counts[cross_seeding_tag] = tag_counts.get(cross_seeding_tag, 0) + 1
 
-    delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run)
+    # Apply tags in batches (2 API calls instead of N)
+    if not dry_run:
+        if default_tag_hashes:
+            try:
+                client.torrents_add_tags(torrent_hashes=default_tag_hashes, tags=[default_tag])
+                logging.info(f"Added tag '{default_tag}' to {len(default_tag_hashes)} torrents")
+            except Exception as e:
+                logging.error(f"Failed to add tag '{default_tag}' in batch: {e}")
+
+        if cross_seeding_tag_hashes:
+            try:
+                client.torrents_add_tags(torrent_hashes=cross_seeding_tag_hashes, tags=[cross_seeding_tag])
+                logging.info(f"Added tag '{cross_seeding_tag}' to {len(cross_seeding_tag_hashes)} torrents")
+            except Exception as e:
+                logging.error(f"Failed to add tag '{cross_seeding_tag}' in batch: {e}")
+    else:
+        if default_tag_hashes:
+            logging.info(f"[Dry Run] Would add tag '{default_tag}' to {len(default_tag_hashes)} torrents")
+        if cross_seeding_tag_hashes:
+            logging.info(f"[Dry Run] Would add tag '{cross_seeding_tag}' to {len(cross_seeding_tag_hashes)} torrents")
+
+    delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents)
 
     for tag, count in tag_counts.items():
         logging.info("Tag: %s, Count: %d", tag, count)

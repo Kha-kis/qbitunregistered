@@ -113,6 +113,7 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
         total_links = 0
         total_skipped = 0
         total_errors = 0
+        created_dirs = set()  # Cache for created directories to avoid redundant mkdir calls
 
         for torrent in tqdm(completed_torrents, desc="Creating hard links", unit="torrent"):
             try:
@@ -146,8 +147,11 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                                     logging.info(f"[Dry Run] Would create hard link: {source_path} -> {target_file_path}")
                                     total_links += 1
                                 else:
-                                    # Create parent directories
-                                    target_file_path.parent.mkdir(parents=True, exist_ok=True)
+                                    # Create parent directories (cached to avoid redundant mkdir calls)
+                                    parent_dir = target_file_path.parent
+                                    if parent_dir not in created_dirs:
+                                        parent_dir.mkdir(parents=True, exist_ok=True)
+                                        created_dirs.add(parent_dir)
 
                                     # Create hard link
                                     os.link(source_path, target_file_path)
@@ -180,8 +184,11 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                             logging.info(f"[Dry Run] Would create hard link: {content_path} -> {target_file_path}")
                             total_links += 1
                         else:
-                            # Create parent directories
-                            target_file_path.parent.mkdir(parents=True, exist_ok=True)
+                            # Create parent directories (cached to avoid redundant mkdir calls)
+                            parent_dir = target_file_path.parent
+                            if parent_dir not in created_dirs:
+                                parent_dir.mkdir(parents=True, exist_ok=True)
+                                created_dirs.add(parent_dir)
 
                             # Create hard link
                             os.link(content_path, target_file_path)

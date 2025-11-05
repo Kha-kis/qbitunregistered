@@ -1,7 +1,8 @@
 import logging
+import re
 from pathlib import Path
-from typing import List
-from fnmatch import fnmatch
+from typing import List, Pattern
+from fnmatch import translate
 
 def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str] = [], exclude_dirs: List[str] = []) -> List[str]:
     """
@@ -41,6 +42,30 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
     # Convert exclude_dirs to Path objects for comparison (only once)
     exclude_dir_paths = {Path(d).resolve() for d in exclude_dirs} if exclude_dirs else set()
 
+    # Pre-compile file patterns to regex for performance (O(1) matching vs O(n) fnmatch)
+    compiled_file_patterns = []
+    if exclude_file_patterns:
+        for pattern in exclude_file_patterns:
+            try:
+                regex_pattern = translate(pattern)
+                compiled_file_patterns.append(re.compile(regex_pattern))
+            except re.error as e:
+                logging.warning(f"Invalid file pattern '{pattern}': {e}")
+
+    # Pre-compile directory patterns to regex for performance
+    compiled_dir_patterns = []
+    if exclude_dir_paths:
+        # Extract any patterns from exclude_dir_paths (convert back from resolved paths if needed)
+        for excluded_path in list(exclude_dir_paths):
+            path_str = str(excluded_path)
+            # Check if this looks like a pattern (contains * or ?)
+            if '*' in path_str or '?' in path_str:
+                try:
+                    regex_pattern = translate(path_str)
+                    compiled_dir_patterns.append(re.compile(regex_pattern))
+                except re.error as e:
+                    logging.warning(f"Invalid directory pattern '{path_str}': {e}")
+
     orphaned_files = []
     files_checked = 0
     files_excluded_by_pattern = 0
@@ -51,13 +76,16 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
         logging.info(f"Checking files in: {save_path}")
 
         for entry in save_path.rglob("*"):  # Recursive check inside category paths
+            # Resolve path once at the start of the loop for performance
+            entry_resolved = entry.resolve()
+
             # Check if entry is in an excluded directory (early exit for better performance)
             if exclude_dir_paths:
-                entry_resolved = entry.resolve()
+                entry_str = str(entry_resolved)
                 is_excluded_dir = (
                     entry_resolved in exclude_dir_paths or
                     any(excluded_path in entry_resolved.parents for excluded_path in exclude_dir_paths) or
-                    any(fnmatch(str(entry_resolved), str(excluded_path)) for excluded_path in exclude_dir_paths)
+                    any(pattern.match(entry_str) for pattern in compiled_dir_patterns)
                 )
                 if is_excluded_dir:
                     files_excluded_by_dir += 1
@@ -66,15 +94,14 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: List[str]
             if entry.is_file():
                 files_checked += 1
 
-                # Check if file matches any exclude patterns
-                if exclude_file_patterns:
-                    if any(fnmatch(entry.name, pattern) for pattern in exclude_file_patterns):
+                # Check if file matches any exclude patterns (using pre-compiled regex)
+                if compiled_file_patterns:
+                    if any(pattern.match(entry.name) for pattern in compiled_file_patterns):
                         logging.debug(f"Excluding file matching pattern: {entry}")
                         files_excluded_by_pattern += 1
                         continue
 
-                # Use resolved path for comparison
-                entry_resolved = entry.resolve()
+                # Use resolved path for comparison (already computed above)
                 if entry_resolved in torrent_files:
                     continue  # Skip files that are tracked by torrents
 

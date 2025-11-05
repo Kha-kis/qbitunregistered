@@ -1,5 +1,6 @@
 import logging
 from typing import List, Dict, Any
+from collections import defaultdict
 from scripts.seeding_management import find_tracker_config
 
 
@@ -7,11 +8,18 @@ def tag_by_tracker(client, torrents: List[Any], config: Dict[str, Any]) -> None:
     """
     Tag torrents based on their tracker and optionally apply seed limits.
 
+    Uses batched API calls - groups torrents by tag and share limit configuration.
+
     Args:
         client: qBittorrent client instance
         torrents: List of torrent objects to tag
         config: Configuration dictionary with tracker_tags
     """
+    # Group torrents by tag for batching
+    torrents_by_tag = defaultdict(list)
+    # Group torrents by share limit configuration for batching
+    torrents_by_limits = defaultdict(list)
+
     for torrent in torrents:
         tracker_tag_config = find_tracker_config(client, torrent, config)
 
@@ -25,17 +33,11 @@ def tag_by_tracker(client, torrents: List[Any], config: Dict[str, Any]) -> None:
                 logging.warning(f"No tag defined for tracker config, skipping torrent '{torrent.name}' (hash: {torrent.hash})")
                 continue
 
-            # Add the tag to the torrent with error handling
-            try:
-                client.torrents_add_tags(torrent_hashes=[torrent.hash], tags=[tag])
-                logging.info(f"Added tag '{tag}' to torrent with name '{torrent.name}'")
-            except Exception:
-                logging.exception(f"Failed to add tag '{tag}' to torrent '{torrent.name}' (hash: {torrent.hash})")
-                # Continue to try applying seed limits even if tagging fails
+            # Group by tag for batch tagging
+            torrents_by_tag[tag].append(torrent.hash)
 
-            # Apply seed limits if provided
+            # Validate and group by share limits
             if seed_time_limit is not None or seed_ratio_limit is not None:
-                # Validate numeric values
                 time_limit_int = None
                 ratio_limit_float = None
 
@@ -43,28 +45,39 @@ def tag_by_tracker(client, torrents: List[Any], config: Dict[str, Any]) -> None:
                     try:
                         time_limit_int = int(seed_time_limit)
                     except (ValueError, TypeError) as e:
-                        logging.warning(f"Invalid seed_time_limit value '{seed_time_limit}' for torrent '{torrent.name}' (hash: {torrent.hash}): {type(e).__name__}: {e}")
+                        logging.warning(f"Invalid seed_time_limit value '{seed_time_limit}' for torrent '{torrent.name}': {e}")
 
                 if seed_ratio_limit is not None:
                     try:
                         ratio_limit_float = float(seed_ratio_limit)
                     except (ValueError, TypeError) as e:
-                        logging.warning(f"Invalid seed_ratio_limit value '{seed_ratio_limit}' for torrent '{torrent.name}' (hash: {torrent.hash}): {type(e).__name__}: {e}")
+                        logging.warning(f"Invalid seed_ratio_limit value '{seed_ratio_limit}' for torrent '{torrent.name}': {e}")
 
-                # Only call API if at least one valid limit was provided
+                # Group by limits configuration (use tuple as key)
                 if time_limit_int is not None or ratio_limit_float is not None:
-                    try:
-                        client.torrents_set_share_limits(
-                            torrent_hashes=[torrent.hash],
-                            ratio_limit=ratio_limit_float if ratio_limit_float is not None else -2.0,
-                            seeding_time_limit=time_limit_int if time_limit_int is not None else -2,
-                            inactive_seeding_time_limit=-2
-                        )
-                        if time_limit_int is not None:
-                            logging.info(f"Updated seeding time limit for torrent with name '{torrent.name}' to {seed_time_limit} minutes.")
-                        if ratio_limit_float is not None:
-                            logging.info(f"Updated seed ratio limit for torrent with name '{torrent.name}' to {seed_ratio_limit}.")
-                    except Exception:
-                        logging.exception(f"Failed to set share limits for torrent '{torrent.name}' (hash: {torrent.hash})")
+                    limits_key = (time_limit_int, ratio_limit_float)
+                    torrents_by_limits[limits_key].append(torrent.hash)
+
+    # Apply tags in batches (one API call per unique tag)
+    for tag, torrent_hashes in torrents_by_tag.items():
+        try:
+            client.torrents_add_tags(torrent_hashes=torrent_hashes, tags=[tag])
+            logging.info(f"Added tag '{tag}' to {len(torrent_hashes)} torrents")
+        except Exception as e:
+            logging.error(f"Failed to add tag '{tag}' to batch of {len(torrent_hashes)} torrents: {e}")
+
+    # Apply share limits in batches (one API call per unique configuration)
+    for (time_limit, ratio_limit), torrent_hashes in torrents_by_limits.items():
+        try:
+            client.torrents_set_share_limits(
+                torrent_hashes=torrent_hashes,
+                ratio_limit=ratio_limit if ratio_limit is not None else -2.0,
+                seeding_time_limit=time_limit if time_limit is not None else -2,
+                inactive_seeding_time_limit=-2
+            )
+            logging.info(f"Updated share limits for {len(torrent_hashes)} torrents "
+                         f"(time: {time_limit}, ratio: {ratio_limit})")
+        except Exception as e:
+            logging.error(f"Failed to set share limits for batch of {len(torrent_hashes)} torrents: {e}")
 
     logging.info("Tagging by tracker completed.")
