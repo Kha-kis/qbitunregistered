@@ -19,6 +19,7 @@ def _get_default_save_path(client, *, cache_scope: Optional[int] = None) -> str:
         cache_scope: Unique identifier to scope cache per client (use id(client))
                      to prevent cache contamination across different client instances
     """
+    _ = cache_scope  # Used by @cached decorator for cache key generation
     return client.application.default_save_path
 
 
@@ -34,6 +35,7 @@ def _get_categories(client, *, cache_scope: Optional[int] = None) -> Dict[str, A
         cache_scope: Unique identifier to scope cache per client (use id(client))
                      to prevent cache contamination across different client instances
     """
+    _ = cache_scope  # Used by @cached decorator for cache key generation
     return client.torrent_categories
 
 
