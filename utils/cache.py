@@ -11,6 +11,10 @@ from typing import Any, Optional, Callable, Dict, Tuple
 from functools import wraps
 
 
+# Sentinel object to distinguish cache misses from cached None values
+_CACHE_MISS = object()
+
+
 class SimpleCache:
     """
     Simple in-memory cache with TTL (time-to-live) support.
@@ -31,20 +35,21 @@ class SimpleCache:
         self._hits = 0
         self._misses = 0
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str, default: Any = None) -> Any:
         """
         Get a value from the cache.
 
         Args:
             key: Cache key
+            default: Value to return if key not found or expired (default: None)
 
         Returns:
-            Cached value if found and not expired, None otherwise
+            Cached value if found and not expired, default otherwise
         """
         if key not in self._cache:
             self._misses += 1
             logging.debug(f"Cache miss: {key}")
-            return None
+            return default
 
         value, expiry = self._cache[key]
 
@@ -53,7 +58,7 @@ class SimpleCache:
             del self._cache[key]
             self._misses += 1
             logging.debug(f"Cache expired: {key}")
-            return None
+            return default
 
         self._hits += 1
         logging.debug(f"Cache hit: {key}")
@@ -152,11 +157,11 @@ def cached(ttl: int = 300, key_prefix: str = ""):
             kwargs_str = "_".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
             cache_key = f"{key_prefix}_{func.__name__}_{args_str}_{kwargs_str}"
 
-            # Try to get from cache
+            # Try to get from cache using sentinel to distinguish misses from None values
             cache = get_cache()
-            cached_value = cache.get(cache_key)
+            cached_value = cache.get(cache_key, default=_CACHE_MISS)
 
-            if cached_value is not None:
+            if cached_value is not _CACHE_MISS:
                 return cached_value
 
             # Call the actual function
