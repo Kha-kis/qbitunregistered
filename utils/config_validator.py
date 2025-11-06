@@ -25,8 +25,12 @@ def validate_config(config: Dict[str, Any]) -> None:
     # Required fields
     required_fields = ['host', 'username', 'password']
     for field in required_fields:
-        if field not in config or not config[field]:
+        if field not in config:
             errors.append(f"Missing required field: '{field}'")
+        elif not isinstance(config[field], str):
+            errors.append(f"Field '{field}' must be a string, got: {type(config[field]).__name__}")
+        elif not config[field].strip():
+            errors.append(f"Field '{field}' cannot be empty or whitespace-only")
 
     # Validate host format
     if 'host' in config:
@@ -125,9 +129,14 @@ def validate_config(config: Dict[str, Any]) -> None:
                 if 'seed_time_limit' in tracker_config:
                     value = tracker_config['seed_time_limit']
                     # qBittorrent API: -2 = use global, -1 = no limit, >=0 = specific minutes
+                    # Upper bound: 1 year = 525,600 minutes (525600)
+                    MAX_SEED_TIME_MINUTES = 525600  # 1 year
                     if not isinstance(value, int) or (value < -2):
                         errors.append(f"tracker_tags['{tracker_name}']['seed_time_limit'] must be an integer >= -2 "
                                      f"(-2 = use global, -1 = no limit, 0+ = minutes)")
+                    elif value > MAX_SEED_TIME_MINUTES:
+                        errors.append(f"tracker_tags['{tracker_name}']['seed_time_limit'] exceeds maximum allowed "
+                                     f"value of {MAX_SEED_TIME_MINUTES} minutes (1 year). Got: {value}")
                     # Warn about potentially confusing edge case
                     elif value == 0:
                         logging.warning(f"tracker_tags['{tracker_name}']['seed_time_limit'] is 0, which means "
@@ -136,9 +145,14 @@ def validate_config(config: Dict[str, Any]) -> None:
                 if 'seed_ratio_limit' in tracker_config:
                     value = tracker_config['seed_ratio_limit']
                     # qBittorrent API: -2 = use global, -1 = no limit, >=0 = specific ratio
+                    # Upper bound: 100.0 (seeding 100x the download size is exceptionally high)
+                    MAX_SEED_RATIO = 100.0
                     if not isinstance(value, (int, float)) or (value < -2):
                         errors.append(f"tracker_tags['{tracker_name}']['seed_ratio_limit'] must be a number >= -2 "
                                      f"(-2 = use global, -1 = no limit, 0+ = ratio)")
+                    elif value > MAX_SEED_RATIO:
+                        errors.append(f"tracker_tags['{tracker_name}']['seed_ratio_limit'] exceeds maximum allowed "
+                                     f"value of {MAX_SEED_RATIO}. Got: {value}")
                     # Warn about potentially confusing edge case
                     elif value == 0:
                         logging.warning(f"tracker_tags['{tracker_name}']['seed_ratio_limit'] is 0, which means "

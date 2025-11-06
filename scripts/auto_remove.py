@@ -4,10 +4,10 @@ from tqdm import tqdm
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import TorrentInfo
+from utils.types import TorrentInfo, QBittorrentClient
 
 
-def auto_remove(client, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
+def auto_remove(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
     """
     Automatically remove completed torrents.
 

@@ -16,6 +16,8 @@ Cache Design Notes:
 import time
 import logging
 import json
+import pickle
+import hashlib
 from typing import Any, Optional, Callable, Dict, Tuple, Union
 from functools import wraps
 
@@ -31,6 +33,10 @@ class SimpleCache:
     This cache is designed for single-script execution caching to avoid
     repeated API calls for the same data within one run.
     """
+
+    # Cleanup thresholds (configurable class constants)
+    CLEANUP_ACCESS_THRESHOLD = 100  # Trigger cleanup after this many accesses
+    CLEANUP_TIME_THRESHOLD = 300    # Trigger cleanup after this many seconds (5 minutes)
 
     def __init__(self, default_ttl: int = 300):
         """
@@ -155,8 +161,8 @@ class SimpleCache:
         """
         Remove all expired entries from the cache.
 
-        This is automatically called periodically (every 100 accesses or 5 minutes)
-        to prevent memory leaks in long-running processes.
+        This is automatically called periodically based on CLEANUP_ACCESS_THRESHOLD
+        and CLEANUP_TIME_THRESHOLD to prevent memory leaks in long-running processes.
 
         Returns:
             Number of expired entries removed
@@ -178,13 +184,14 @@ class SimpleCache:
         Conditionally trigger cache cleanup based on access count or time.
 
         Cleanup is triggered when:
-        - 100 cache accesses have occurred since last cleanup, OR
-        - 5 minutes have elapsed since last cleanup
+        - CLEANUP_ACCESS_THRESHOLD cache accesses have occurred since last cleanup, OR
+        - CLEANUP_TIME_THRESHOLD seconds have elapsed since last cleanup
         """
         self._access_count += 1
 
-        # Trigger cleanup every 100 accesses or every 5 minutes
-        if self._access_count >= 100 or (time.time() - self._last_cleanup) >= 300:
+        # Trigger cleanup based on configurable thresholds
+        if (self._access_count >= self.CLEANUP_ACCESS_THRESHOLD or
+            (time.time() - self._last_cleanup) >= self.CLEANUP_TIME_THRESHOLD):
             self.cleanup_expired()
             self._access_count = 0
 
@@ -236,12 +243,19 @@ def cached(ttl: int = 300, key_prefix: str = "", skip_first_arg: bool = True):
                 tuple(sorted(kwargs.items()))
             )
 
-            # Serialize with json.dumps for stability, fallback to repr for non-JSON types
+            # Serialize with json.dumps for stability, fallback to pickle+hash for non-JSON types
             try:
                 cache_key = json.dumps(key_components, sort_keys=True)
             except (TypeError, ValueError):
-                # Fallback to repr for non-JSON-serializable objects
-                cache_key = repr(key_components)
+                # Fallback to pickle with deterministic hash for non-JSON-serializable objects
+                # This provides consistent cache keys across runs for complex objects
+                try:
+                    pickled = pickle.dumps(key_components, protocol=pickle.HIGHEST_PROTOCOL)
+                    cache_key = f"pickled:{hashlib.sha256(pickled).hexdigest()}"
+                except (TypeError, pickle.PicklingError) as e:
+                    # If even pickle fails, log error and skip caching for this call
+                    logging.warning(f"Cannot generate cache key for {func.__qualname__}: {e}. Skipping cache.")
+                    return func(*args, **kwargs)
 
             # Try to get from cache using sentinel to distinguish misses from None values
             cache = get_cache()

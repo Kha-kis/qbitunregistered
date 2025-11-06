@@ -4,6 +4,12 @@ import os
 import sys
 import logging
 from qbittorrentapi import Client, exceptions
+
+# Exit codes for different failure types
+EXIT_SUCCESS = 0
+EXIT_GENERAL_ERROR = 1
+EXIT_CONFIG_ERROR = 2
+EXIT_CONNECTION_ERROR = 3
 from scripts.orphaned import check_files_on_disk, delete_orphaned_files
 from scripts.unregistered_checks import unregistered_checks
 from scripts.tag_by_tracker import tag_by_tracker
@@ -51,18 +57,20 @@ try:
         config = json.load(config_file)
 except FileNotFoundError:
     print(f"ERROR: The configuration file {config_file_path} was not found.")
-    sys.exit(1)
+    sys.exit(EXIT_CONFIG_ERROR)
 except json.JSONDecodeError as e:
     print(f"ERROR: The configuration file {config_file_path} contains invalid JSON: {e}")
-    sys.exit(1)
+    sys.exit(EXIT_CONFIG_ERROR)
+except (KeyboardInterrupt, SystemExit):
+    raise
 except Exception as e:
     print(f"ERROR: Failed to read configuration file: {e}")
-    sys.exit(1)
+    sys.exit(EXIT_CONFIG_ERROR)
 
 # Ensure target_dir is provided if required
 if pre_args.create_hard_links and not pre_args.target_dir and not config.get('target_dir'):
     logging.error("Error: --target-dir is required when --create-hard-links is specified and not present in config.json.")
-    sys.exit(1)
+    sys.exit(EXIT_CONFIG_ERROR)
 
 # Re-parse arguments now that configuration has been loaded
 args = parser.parse_args()
@@ -103,6 +111,8 @@ if log_file:
             datefmt='%Y-%m-%d %H:%M:%S'
         ))
         log_handlers.append(file_handler)
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception as e:
         print(f"WARNING: Could not create log file {log_file}: {e}")
 
@@ -118,7 +128,7 @@ try:
     validate_config(config)
 except ConfigValidationError as e:
     logging.error(f"Configuration validation failed: {e}")
-    sys.exit(1)
+    sys.exit(EXIT_CONFIG_ERROR)
 
 # Validate exclude patterns
 validate_exclude_patterns(exclude_files, exclude_dirs)
@@ -128,14 +138,16 @@ try:
     client = Client(host=config['host'], username=config['username'], password=config['password'])
 except exceptions.APIConnectionError as e:
     logging.error(f"Failed to connect to qBittorrent: {e}")
-    sys.exit(1)
+    sys.exit(EXIT_CONNECTION_ERROR)
 
 # Define torrents
 try:
     torrents = client.torrents.info()
+except (KeyboardInterrupt, SystemExit):
+    raise
 except Exception:
     logging.exception("Failed to retrieve torrent list from qBittorrent")
-    sys.exit(1)
+    sys.exit(EXIT_CONNECTION_ERROR)
 
 # Log script start
 logging.info("Starting qbitunregistered script...")
@@ -158,6 +170,8 @@ if args.orphaned:
         # Delete orphaned files unless dry-run is set (pass torrents to avoid redundant API call)
         delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents)
         operation_results['succeeded'].append('Orphaned file check')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error during orphaned file check")
         logging.error("Orphaned file check failed, continuing with other operations...")
@@ -170,6 +184,8 @@ if args.unregistered:
         total_unregistered_count = sum(unregistered_counts.values())
         logging.info("Total unregistered count: %d", total_unregistered_count)
         operation_results['succeeded'].append('Unregistered checks')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error during unregistered checks")
         operation_results['failed'].append('Unregistered checks')
@@ -179,6 +195,8 @@ if args.tag_by_tracker:
     try:
         tag_by_tracker(client, torrents, config, dry_run=dry_run)
         operation_results['succeeded'].append('Tag by tracker')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error during tag by tracker")
         operation_results['failed'].append('Tag by tracker')
@@ -188,6 +206,8 @@ if args.tag_by_cross_seed:
     try:
         tag_cross_seeds(client, torrents, dry_run=dry_run)
         operation_results['succeeded'].append('Tag cross-seeds')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error during cross-seed tagging")
         operation_results['failed'].append('Tag cross-seeds')
@@ -197,6 +217,8 @@ if args.tag_by_age:
     try:
         tag_by_age(client, torrents, config, dry_run=dry_run)
         operation_results['succeeded'].append('Tag by age')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error during tag by age")
         operation_results['failed'].append('Tag by age')
@@ -206,6 +228,8 @@ if args.seeding_management:
     try:
         apply_seed_limits(client, config, torrents=torrents, dry_run=dry_run)
         operation_results['succeeded'].append('Seeding management')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error during seeding management")
         operation_results['failed'].append('Seeding management')
@@ -215,6 +239,8 @@ if args.auto_tmm:
     try:
         apply_auto_tmm_per_torrent(client, torrents, dry_run=dry_run)
         operation_results['succeeded'].append('Auto TMM')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error during auto TMM")
         operation_results['failed'].append('Auto TMM')
@@ -224,6 +250,8 @@ if args.pause_torrents:
     try:
         pause_torrents(client, torrents, dry_run=dry_run)
         operation_results['succeeded'].append('Pause torrents')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error pausing torrents")
         operation_results['failed'].append('Pause torrents')
@@ -233,6 +261,8 @@ if args.resume_torrents:
     try:
         resume_torrents(client, torrents, dry_run=dry_run)
         operation_results['succeeded'].append('Resume torrents')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error resuming torrents")
         operation_results['failed'].append('Resume torrents')
@@ -242,6 +272,8 @@ if args.auto_remove:
     try:
         auto_remove(client, torrents, dry_run)
         operation_results['succeeded'].append('Auto remove')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error during auto remove")
         operation_results['failed'].append('Auto remove')
@@ -251,6 +283,8 @@ if args.create_hard_links:
     try:
         create_hard_links(target_dir, torrents, dry_run=dry_run)
         operation_results['succeeded'].append('Create hard links')
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception:
         logging.exception("Error creating hard links")
         operation_results['failed'].append('Create hard links')
@@ -283,6 +317,8 @@ logging.info("=" * 60)
 try:
     client.auth_log_out()
     logging.debug("Logged out from qBittorrent")
+except (KeyboardInterrupt, SystemExit):
+    raise
 except Exception:
     logging.debug("Failed to logout from qBittorrent (non-critical)")
 
@@ -292,4 +328,4 @@ logging.info("qbitunregistered script completed.")
 # Exit with non-zero code if any operations failed (for cron/CI detection)
 if operation_results['failed']:
     logging.error(f"Script completed with {len(operation_results['failed'])} failed operation(s)")
-    sys.exit(1)
+    sys.exit(EXIT_GENERAL_ERROR)

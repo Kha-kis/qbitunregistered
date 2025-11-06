@@ -6,11 +6,11 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.cache import cached
-from utils.types import TorrentInfo
+from utils.types import TorrentInfo, QBittorrentClient
 
 
 @cached(ttl=300, key_prefix="torrent_files")
-def _fetch_torrent_files(client, torrent_hash: str, *, cache_scope: int) -> list:
+def _fetch_torrent_files(client: QBittorrentClient, torrent_hash: str, *, cache_scope: int) -> list:
     """
     Fetch file list for a torrent with caching.
 
@@ -32,7 +32,7 @@ def _fetch_torrent_files(client, torrent_hash: str, *, cache_scope: int) -> list
     return client.torrents_files(torrent_hash)
 
 
-def tag_cross_seeds(client, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
+def tag_cross_seeds(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
     """
     Tags torrents as 'cross-seed' if multiple torrents share the same file structure,
     otherwise tags them as 'not-cross-seeding'.

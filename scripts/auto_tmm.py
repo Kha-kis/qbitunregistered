@@ -3,10 +3,10 @@ from typing import Sequence
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import TorrentInfo
+from utils.types import TorrentInfo, QBittorrentClient
 
 
-def apply_auto_tmm_per_torrent(client, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
+def apply_auto_tmm_per_torrent(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
     """
     Enable Automatic Torrent Management (auto TMM) for all provided torrents.
 

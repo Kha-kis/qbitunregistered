@@ -3,10 +3,10 @@ from typing import Sequence
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import TorrentInfo
+from utils.types import TorrentInfo, QBittorrentClient
 
 
-def pause_torrents(client, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
+def pause_torrents(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
     """
     Pause all provided torrents using a single batched API call.
 
@@ -36,7 +36,7 @@ def pause_torrents(client, torrents: Sequence[TorrentInfo], dry_run: bool = Fals
         raise
 
 
-def resume_torrents(client, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
+def resume_torrents(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
     """
     Resume all provided torrents using a single batched API call.
 

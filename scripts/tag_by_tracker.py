@@ -5,10 +5,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts.seeding_management import find_tracker_config
-from utils.types import TorrentInfo
+from utils.types import TorrentInfo, QBittorrentClient
 
 
-def tag_by_tracker(client, torrents: Sequence[TorrentInfo], config: Dict[str, Any], dry_run: bool = False) -> None:
+def tag_by_tracker(client: QBittorrentClient, torrents: Sequence[TorrentInfo], config: Dict[str, Any], dry_run: bool = False) -> None:
     """
     Tag torrents based on their tracker and optionally apply seed limits.
 

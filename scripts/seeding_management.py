@@ -3,10 +3,14 @@ from typing import Dict, Any, Optional
 from collections import defaultdict
 from utils.tracker_matcher import match_tracker_url
 from utils.cache import cached
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.types import QBittorrentClient
 
 
 @cached(ttl=300, key_prefix="tracker_config")
-def _fetch_trackers(client, torrent_hash: str) -> list:
+def _fetch_trackers(client: QBittorrentClient, torrent_hash: str) -> list:
     """
     Fetch trackers for a torrent with caching.
 
@@ -20,7 +24,7 @@ def _fetch_trackers(client, torrent_hash: str) -> list:
     return client.torrents_trackers(torrent_hash=torrent_hash)
 
 
-def find_tracker_config(client, torrent, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def find_tracker_config(client: QBittorrentClient, torrent, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Find matching tracker configuration for a torrent.
 
@@ -60,7 +64,7 @@ def find_tracker_config(client, torrent, config: Dict[str, Any]) -> Optional[Dic
 
     return None
 
-def apply_seed_limits(client, config, torrents=None, dry_run: bool = False):
+def apply_seed_limits(client: QBittorrentClient, config: Dict[str, Any], torrents=None, dry_run: bool = False) -> None:
     """
     Apply both seeding time and ratio limits using batched API calls.
 

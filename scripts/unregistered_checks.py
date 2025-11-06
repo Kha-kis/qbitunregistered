@@ -13,6 +13,10 @@ def compile_patterns(unregistered: List[str]) -> Tuple[Set[str], Set[str]]:
 
     Returns:
         Tuple of (exact_match_set, starts_with_set)
+
+    Security:
+        Validates that starts_with patterns have non-empty prefixes to prevent
+        universal matching (empty prefix would match everything).
     """
     exact_matches = set()
     starts_with_patterns = set()
@@ -22,6 +26,16 @@ def compile_patterns(unregistered: List[str]) -> Tuple[Set[str], Set[str]]:
         if lower_pattern.startswith("starts_with:"):
             # Extract the prefix after "starts_with:"
             prefix = lower_pattern.split("starts_with:", 1)[1]
+
+            # Security: Normalize and validate prefix to prevent empty matches
+            prefix = prefix.strip()
+
+            if not prefix:
+                # Empty prefix would match everything - log warning and skip
+                logging.warning(f"Skipping malformed pattern '{pattern}': starts_with prefix is empty. "
+                               "Empty prefixes would match all messages.")
+                continue
+
             starts_with_patterns.add(prefix)
         else:
             exact_matches.add(lower_pattern)

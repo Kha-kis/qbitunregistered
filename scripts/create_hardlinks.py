@@ -1,5 +1,6 @@
 import os
 import logging
+import re
 from typing import Sequence
 from pathlib import Path
 from tqdm import tqdm
@@ -12,8 +13,15 @@ def _sanitize_category_name(category: str) -> str:
     """
     Sanitize category name to prevent path traversal attacks.
 
-    Iteratively removes '..' patterns to prevent attacks like '....' → '..'
-    Also replaces path separators with underscores.
+    Uses a whitelist approach: only allows alphanumeric characters, hyphens,
+    underscores, spaces, and periods (but not '..'). This is more secure than
+    trying to filter out dangerous patterns.
+
+    Security approach:
+    - Whitelist safe characters: alphanumeric, spaces, hyphens, underscores, periods
+    - Explicitly reject '..' patterns
+    - Replace unsafe characters with underscores
+    - Ensures non-empty result
 
     Args:
         category: Raw category name from torrent
@@ -24,16 +32,26 @@ def _sanitize_category_name(category: str) -> str:
     if not category:
         return ''
 
-    # Iteratively remove '..' until none remain (prevents '....' → '..' bypass)
-    sanitized = category
-    while '..' in sanitized:
-        sanitized = sanitized.replace('..', '')
+    # Remove leading/trailing whitespace first
+    sanitized = category.strip()
 
-    # Replace path separators with underscores
-    sanitized = sanitized.replace('/', '_').replace('\\', '_')
+    # Security: Explicitly reject '..' patterns (path traversal attempt)
+    if '..' in sanitized:
+        logging.warning(f"Path traversal pattern detected in category '{category}', replacing with 'uncategorized'")
+        return 'uncategorized'
 
-    # Remove leading/trailing whitespace
-    sanitized = sanitized.strip()
+    # Whitelist approach: Allow only safe characters
+    # - Alphanumeric (any Unicode script)
+    # - Spaces, hyphens, underscores
+    # - Single periods (but not '..')
+    # Replace unsafe characters with underscores
+    sanitized = re.sub(r'[^\w\s\-.]', '_', sanitized, flags=re.UNICODE)
+
+    # Replace multiple consecutive underscores/spaces with single underscore
+    sanitized = re.sub(r'[_\s]+', '_', sanitized)
+
+    # Remove leading/trailing underscores and periods
+    sanitized = sanitized.strip('_.')
 
     # Ensure result is non-empty after sanitization (use 'uncategorized' as fallback)
     if not sanitized:
