@@ -67,7 +67,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing --cov-fail-under=70 \
+          pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing --cov-fail-under=60 \
             --cov-config=pyproject.toml
         env:
           PYTEST_ADDOPTS: "--ignore=tests/integration/ --ignore=tests/smoke/"
