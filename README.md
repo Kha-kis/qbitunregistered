@@ -168,6 +168,7 @@ Here's what you can specify when running `qbitunregistered`:
 - `--exclude-dirs`: Exclude directories from being scanned for orphaned files. Full paths should be specified, and wildcards can be used to match multiple directories (e.g., `/path/to/exclude/*`). Multiple paths can be specified separated by spaces.
 - `--log-level`: Set logging verbosity (DEBUG, INFO, WARNING, ERROR). Overrides config.json setting.
 - `--log-file`: Write logs to specified file in addition to console. Useful for scheduled/cron runs.
+- `--yes`, `-y`: Skip confirmation prompt and proceed with operations automatically. Use with caution! Recommended for automation/cron jobs after testing with dry-run.
 
 ## Troubleshooting
 

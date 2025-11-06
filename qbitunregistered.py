@@ -46,6 +46,7 @@ parser.add_argument("--exclude-files", nargs='+', default=[], help="List of file
 parser.add_argument("--exclude-dirs", nargs='+', default=[], help="List of directories to exclude.")
 parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], help='Set logging level (default: INFO)')
 parser.add_argument('--log-file', type=str, help='Write logs to specified file in addition to console')
+parser.add_argument('--yes', '-y', action='store_true', help='Skip confirmation prompt and proceed with operations (use with caution)')
 
 # Parse command-line arguments
 pre_args, unknown = parser.parse_known_args()
@@ -160,6 +161,74 @@ operation_results = {
     'succeeded': [],
     'failed': []
 }
+
+# ============================================================
+# IMPACT PREVIEW (if not using --yes flag)
+# ============================================================
+# Collect operations to analyze
+operations_to_run = []
+if args.orphaned:
+    operations_to_run.append('orphaned')
+if args.unregistered:
+    operations_to_run.append('unregistered')
+if args.tag_by_tracker:
+    operations_to_run.append('tag_by_tracker')
+if args.tag_by_age:
+    operations_to_run.append('tag_by_age')
+if args.tag_by_cross_seed:
+    operations_to_run.append('tag_cross_seeding')
+if args.auto_remove:
+    operations_to_run.append('auto_remove')
+if args.pause_torrents:
+    operations_to_run.append('pause')
+if args.resume_torrents:
+    operations_to_run.append('resume')
+
+# Show impact preview if there are operations to run and not in --yes mode
+if operations_to_run and not args.yes:
+    try:
+        from utils.impact_analyzer import analyze_impact
+
+        logging.info("Analyzing potential impact of operations...")
+        impact_summary = analyze_impact(client, torrents, config, operations_to_run)
+
+        # Show preview
+        print(impact_summary.format_summary(show_details=False))
+
+        # If not in dry-run mode and there are actual changes, prompt for confirmation
+        if not dry_run and not impact_summary.is_empty():
+            try:
+                response = input("\n🔍 Proceed with these changes? [y/N]: ").strip().lower()
+                if response not in ['y', 'yes']:
+                    logging.info("Operation aborted by user")
+                    client.auth_log_out()
+                    sys.exit(EXIT_SUCCESS)
+                else:
+                    logging.info("User confirmed, proceeding with operations...")
+            except EOFError:
+                # Handle non-interactive environments (like CI/CD without --yes flag)
+                logging.warning("Non-interactive environment detected. Use --yes flag to skip confirmation.")
+                logging.info("Operation aborted (no confirmation in non-interactive mode)")
+                client.auth_log_out()
+                sys.exit(EXIT_SUCCESS)
+        elif dry_run:
+            logging.info("Dry-run mode: no actual changes will be made")
+        elif impact_summary.is_empty():
+            logging.info("No operations to perform")
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Operation cancelled by user")
+        try:
+            client.auth_log_out()
+        except:
+            pass
+        sys.exit(EXIT_SUCCESS)
+    except Exception as e:
+        logging.warning(f"Could not generate impact preview: {e}")
+        logging.warning("Continuing with operations...")
+
+# ============================================================
+# RUN OPERATIONS
+# ============================================================
 
 # Run orphaned check if --orphaned argument is passed
 if args.orphaned:
