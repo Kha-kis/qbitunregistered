@@ -1,10 +1,14 @@
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Sequence
 from collections import defaultdict
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts.seeding_management import find_tracker_config
+from utils.types import TorrentInfo
 
 
-def tag_by_tracker(client, torrents: List[Any], config: Dict[str, Any]) -> None:
+def tag_by_tracker(client, torrents: Sequence[TorrentInfo], config: Dict[str, Any], dry_run: bool = False) -> None:
     """
     Tag torrents based on their tracker and optionally apply seed limits.
 
@@ -14,6 +18,7 @@ def tag_by_tracker(client, torrents: List[Any], config: Dict[str, Any]) -> None:
         client: qBittorrent client instance
         torrents: List of torrent objects to tag
         config: Configuration dictionary with tracker_tags
+        dry_run: If True, only log actions without making changes
     """
     # Group torrents by tag for batching
     torrents_by_tag = defaultdict(list)
@@ -63,8 +68,11 @@ def tag_by_tracker(client, torrents: List[Any], config: Dict[str, Any]) -> None:
     # This is by design for performance - manual intervention may be needed for failures.
     for tag, torrent_hashes in torrents_by_tag.items():
         try:
-            client.torrents_add_tags(torrent_hashes=torrent_hashes, tags=[tag])
-            logging.info(f"Added tag '{tag}' to {len(torrent_hashes)} torrents")
+            if dry_run:
+                logging.info(f"[Dry Run] Would add tag '{tag}' to {len(torrent_hashes)} torrents")
+            else:
+                client.torrents_add_tags(torrent_hashes=torrent_hashes, tags=[tag])
+                logging.info(f"Added tag '{tag}' to {len(torrent_hashes)} torrents")
         except Exception:
             logging.exception(f"Failed to add tag '{tag}' to batch of {len(torrent_hashes)} torrents. "
                              f"Check qBittorrent connectivity and permissions. "
@@ -74,14 +82,18 @@ def tag_by_tracker(client, torrents: List[Any], config: Dict[str, Any]) -> None:
     # Note: Batch operations are all-or-nothing for performance.
     for (time_limit, ratio_limit), torrent_hashes in torrents_by_limits.items():
         try:
-            client.torrents_set_share_limits(
-                torrent_hashes=torrent_hashes,
-                ratio_limit=ratio_limit if ratio_limit is not None else -2.0,
-                seeding_time_limit=time_limit if time_limit is not None else -2,
-                inactive_seeding_time_limit=-2
-            )
-            logging.info(f"Updated share limits for {len(torrent_hashes)} torrents "
-                         f"(time: {time_limit}, ratio: {ratio_limit})")
+            if dry_run:
+                logging.info(f"[Dry Run] Would update share limits for {len(torrent_hashes)} torrents "
+                             f"(time: {time_limit}, ratio: {ratio_limit})")
+            else:
+                client.torrents_set_share_limits(
+                    torrent_hashes=torrent_hashes,
+                    ratio_limit=ratio_limit if ratio_limit is not None else -2.0,
+                    seeding_time_limit=time_limit if time_limit is not None else -2,
+                    inactive_seeding_time_limit=-2
+                )
+                logging.info(f"Updated share limits for {len(torrent_hashes)} torrents "
+                             f"(time: {time_limit}, ratio: {ratio_limit})")
         except Exception:
             logging.exception(f"Failed to set share limits for batch of {len(torrent_hashes)} torrents "
                              f"(time: {time_limit}, ratio: {ratio_limit}). "

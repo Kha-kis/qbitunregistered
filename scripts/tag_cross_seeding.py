@@ -1,26 +1,38 @@
 import logging
 from collections import defaultdict
-from typing import List, Dict, Any
+from typing import Sequence, Dict, Any
 from tqdm import tqdm
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.cache import cached
+from utils.types import TorrentInfo
 
 
 @cached(ttl=300, key_prefix="torrent_files")
-def _fetch_torrent_files(client, torrent_hash: str) -> list:
+def _fetch_torrent_files(client, torrent_hash: str, *, cache_scope: int) -> list:
     """
     Fetch file list for a torrent with caching.
 
     Args:
         client: qBittorrent client instance
         torrent_hash: Torrent hash
+        cache_scope: REQUIRED - Unique identifier to scope cache per client.
+                     Always pass id(client) to prevent cache contamination
+                     across different client instances.
 
     Returns:
         List of file dictionaries
+
+    Raises:
+        AssertionError: If cache_scope is None (programming error)
     """
+    # Runtime assertion to prevent cache contamination
+    assert cache_scope is not None, "cache_scope must be provided (use id(client))"
     return client.torrents_files(torrent_hash)
 
 
-def tag_cross_seeds(client, torrents: List[Any], dry_run: bool = False) -> None:
+def tag_cross_seeds(client, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
     """
     Tags torrents as 'cross-seed' if multiple torrents share the same file structure,
     otherwise tags them as 'not-cross-seeding'.
@@ -53,7 +65,7 @@ def tag_cross_seeds(client, torrents: List[Any], dry_run: bool = False) -> None:
 
                 # Fetch file list for this torrent (cached to reduce API calls)
                 try:
-                    torrent_files = _fetch_torrent_files(client, torrent.hash)
+                    torrent_files = _fetch_torrent_files(client, torrent.hash, cache_scope=id(client))
                 except Exception as e:
                     logging.error(f"Failed to fetch files for torrent '{torrent.name}': {e}")
                     errors += 1

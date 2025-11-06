@@ -1,10 +1,14 @@
 import logging
 import datetime
-from typing import List, Dict, Any
+from typing import Sequence, Dict, Any
 from collections import defaultdict
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.types import TorrentInfo
 
 
-def tag_by_age(client, torrents: List[Any], _config: Dict[str, Any], dry_run: bool = False) -> None:
+def tag_by_age(client, torrents: Sequence[TorrentInfo], _config: Dict[str, Any], dry_run: bool = False) -> None:
     """
     Tag torrents based on their age in months using batched API calls.
 

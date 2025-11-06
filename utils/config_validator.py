@@ -128,6 +128,10 @@ def validate_config(config: Dict[str, Any]) -> None:
                     if not isinstance(value, int) or (value < -2):
                         errors.append(f"tracker_tags['{tracker_name}']['seed_time_limit'] must be an integer >= -2 "
                                      f"(-2 = use global, -1 = no limit, 0+ = minutes)")
+                    # Warn about potentially confusing edge case
+                    elif value == 0:
+                        logging.warning(f"tracker_tags['{tracker_name}']['seed_time_limit'] is 0, which means "
+                                       "torrents will stop seeding immediately. Use -1 for unlimited seeding.")
 
                 if 'seed_ratio_limit' in tracker_config:
                     value = tracker_config['seed_ratio_limit']
@@ -135,6 +139,10 @@ def validate_config(config: Dict[str, Any]) -> None:
                     if not isinstance(value, (int, float)) or (value < -2):
                         errors.append(f"tracker_tags['{tracker_name}']['seed_ratio_limit'] must be a number >= -2 "
                                      f"(-2 = use global, -1 = no limit, 0+ = ratio)")
+                    # Warn about potentially confusing edge case
+                    elif value == 0:
+                        logging.warning(f"tracker_tags['{tracker_name}']['seed_ratio_limit'] is 0, which means "
+                                       "torrents will stop seeding immediately. Use -1 for unlimited seeding.")
 
     # Validate target_dir if present
     if 'target_dir' in config and config['target_dir']:

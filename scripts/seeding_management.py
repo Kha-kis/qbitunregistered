@@ -1,5 +1,6 @@
 import logging
 from typing import Dict, Any, Optional
+from collections import defaultdict
 from utils.tracker_matcher import match_tracker_url
 from utils.cache import cached
 
@@ -59,12 +60,16 @@ def find_tracker_config(client, torrent, config: Dict[str, Any]) -> Optional[Dic
 
     return None
 
-def apply_seed_limits(client, config, torrents=None):
+def apply_seed_limits(client, config, torrents=None, dry_run: bool = False):
     """
-    Apply both seeding time and ratio limits in a single pass.
+    Apply both seeding time and ratio limits using batched API calls.
 
     This function consolidates apply_seed_time and apply_seed_ratio to reduce
-    API calls and iterations. It applies both limits together when configured.
+    API calls. It groups torrents by their (time_limit, ratio_limit) configuration
+    and makes one API call per unique configuration instead of per-torrent calls.
+
+    Performance: For 1,000 torrents with 5 unique limit configurations, this makes
+    5 API calls instead of 1,000 (200x reduction).
 
     Note: Tracker fetching uses per-torrent API calls with 5-minute caching.
     qBittorrent API doesn't support batch tracker fetching, so we rely on
@@ -74,6 +79,7 @@ def apply_seed_limits(client, config, torrents=None):
         client: qBittorrent client instance
         config: Configuration dictionary with tracker_tags
         torrents: Optional list of torrents (avoids redundant API call if provided)
+        dry_run: If True, only log actions without making changes
     """
     if torrents is None:
         try:
@@ -84,6 +90,12 @@ def apply_seed_limits(client, config, torrents=None):
 
     logging.debug(f"Applying seed limits to {len(torrents)} torrents")
 
+    # Group torrents by share limit configuration for batching
+    # Key: (time_limit_int, ratio_limit_float)
+    # Value: list of torrent hashes
+    torrents_by_limits = defaultdict(list)
+
+    # First pass: Collect and validate all torrents
     for torrent in torrents:
         tracker_tag_config = find_tracker_config(client, torrent, config)
 
@@ -111,22 +123,32 @@ def apply_seed_limits(client, config, torrents=None):
                 except (ValueError, TypeError) as e:
                     logging.warning(f"Invalid seed_ratio_limit value '{seed_ratio_limit}' for torrent '{torrent.name}' (hash: {torrent.hash}): {type(e).__name__}: {e}")
 
-            # Only call API if at least one valid limit was provided
+            # Group by limits configuration (use tuple as key for batching)
             if time_limit_int is not None or ratio_limit_float is not None:
-                try:
-                    client.torrents_set_share_limits(
-                        torrent_hashes=torrent.hash,
-                        ratio_limit=ratio_limit_float if ratio_limit_float is not None else -2.0,
-                        seeding_time_limit=time_limit_int if time_limit_int is not None else -2,
-                        inactive_seeding_time_limit=-2
-                    )
-                    # Log what was updated
-                    if time_limit_int is not None:
-                        logging.info(f"Updated seeding time limit for torrent '{torrent.name}' to {seed_time_limit} minutes.")
-                    if ratio_limit_float is not None:
-                        logging.info(f"Updated seed ratio limit for torrent '{torrent.name}' to {seed_ratio_limit}.")
-                except Exception:
-                    logging.exception(f"Failed to set share limits for torrent '{torrent.name}' (hash: {torrent.hash})")
+                limits_key = (time_limit_int, ratio_limit_float)
+                torrents_by_limits[limits_key].append(torrent.hash)
+
+    # Second pass: Apply share limits in batches (one API call per unique configuration)
+    # Note: Batch operations are all-or-nothing for performance.
+    for (time_limit, ratio_limit), torrent_hashes in torrents_by_limits.items():
+        try:
+            if dry_run:
+                logging.info(f"[Dry Run] Would update share limits for {len(torrent_hashes)} torrents "
+                             f"(time: {time_limit} min, ratio: {ratio_limit})")
+            else:
+                client.torrents_set_share_limits(
+                    torrent_hashes=torrent_hashes,
+                    ratio_limit=ratio_limit if ratio_limit is not None else -2.0,
+                    seeding_time_limit=time_limit if time_limit is not None else -2,
+                    inactive_seeding_time_limit=-2
+                )
+                logging.info(f"Updated share limits for {len(torrent_hashes)} torrents "
+                             f"(time: {time_limit} min, ratio: {ratio_limit})")
+        except Exception:
+            logging.exception(f"Failed to set share limits for batch of {len(torrent_hashes)} torrents "
+                             f"(time: {time_limit}, ratio: {ratio_limit}). "
+                             f"Check qBittorrent API compatibility and values. "
+                             f"Affected torrent hashes: {torrent_hashes[:3]}{'...' if len(torrent_hashes) > 3 else ''}")
 
 
 def apply_seed_time(client, config):

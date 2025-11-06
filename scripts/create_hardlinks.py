@@ -1,8 +1,46 @@
 import os
 import logging
-from typing import List, Any
+from typing import Sequence
 from pathlib import Path
 from tqdm import tqdm
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.types import TorrentInfo
+
+
+def _sanitize_category_name(category: str) -> str:
+    """
+    Sanitize category name to prevent path traversal attacks.
+
+    Iteratively removes '..' patterns to prevent attacks like '....' → '..'
+    Also replaces path separators with underscores.
+
+    Args:
+        category: Raw category name from torrent
+
+    Returns:
+        Sanitized category name safe for use in paths
+    """
+    if not category:
+        return ''
+
+    # Iteratively remove '..' until none remain (prevents '....' → '..' bypass)
+    sanitized = category
+    while '..' in sanitized:
+        sanitized = sanitized.replace('..', '')
+
+    # Replace path separators with underscores
+    sanitized = sanitized.replace('/', '_').replace('\\', '_')
+
+    # Remove leading/trailing whitespace
+    sanitized = sanitized.strip()
+
+    # Ensure result is non-empty after sanitization (use 'uncategorized' as fallback)
+    if not sanitized:
+        logging.warning(f"Category name '{category}' sanitized to empty string, using 'uncategorized'")
+        sanitized = 'uncategorized'
+
+    return sanitized
 
 
 def _is_safe_path(base_path: Path, target_path: Path) -> bool:
@@ -28,7 +66,7 @@ def _is_safe_path(base_path: Path, target_path: Path) -> bool:
         return False
 
 
-def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = False) -> None:
+def create_hard_links(target_dir: str, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
     """
     Create hard links for completed torrents in the target directory.
 
@@ -127,8 +165,7 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                                 rel_path = source_path.relative_to(content_path)
 
                                 # Security: Sanitize category name to prevent path traversal
-                                category_dir = torrent.category or ''
-                                category_dir = category_dir.replace('..', '').replace('/', '_').replace('\\', '_').strip()
+                                category_dir = _sanitize_category_name(torrent.category or '')
 
                                 # Construct target path and resolve to absolute path
                                 target_file_path = (target_path / category_dir / rel_path).resolve()
@@ -181,8 +218,7 @@ def create_hard_links(target_dir: str, torrents: List[Any], dry_run: bool = Fals
                     # Handle single-file torrents
                     try:
                         # Security: Sanitize category name to prevent path traversal
-                        category_dir = torrent.category or ''
-                        category_dir = category_dir.replace('..', '').replace('/', '_').replace('\\', '_').strip()
+                        category_dir = _sanitize_category_name(torrent.category or '')
 
                         # Construct target path and resolve to absolute path
                         target_file_path = (target_path / category_dir / content_path.name).resolve()

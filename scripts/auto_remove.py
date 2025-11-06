@@ -1,9 +1,13 @@
 import logging
-from typing import List, Any
+from typing import Sequence
 from tqdm import tqdm
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.types import TorrentInfo
 
 
-def auto_remove(client, torrents: List[Any], dry_run: bool = False) -> None:
+def auto_remove(client, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
     """
     Automatically remove completed torrents.
 

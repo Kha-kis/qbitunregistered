@@ -9,22 +9,27 @@ from utils.cache import cached
 
 
 @cached(ttl=300, key_prefix="app_default_save_path")
-def _get_default_save_path(client, *, cache_scope: Optional[int] = None) -> str:
+def _get_default_save_path(client, *, cache_scope: int) -> str:
     """
     Cached wrapper for client.application.default_save_path.
     Reduces redundant API calls for read-only application settings.
 
     Args:
         client: qBittorrent client instance
-        cache_scope: Unique identifier to scope cache per client (use id(client))
-                     to prevent cache contamination across different client instances
+        cache_scope: REQUIRED - Unique identifier to scope cache per client.
+                     Always pass id(client) to prevent cache contamination
+                     across different client instances.
+
+    Raises:
+        AssertionError: If cache_scope is None (programming error)
     """
-    _ = cache_scope  # Used by @cached decorator for cache key generation
+    # Runtime assertion to prevent cache contamination
+    assert cache_scope is not None, "cache_scope must be provided (use id(client))"
     return client.application.default_save_path
 
 
 @cached(ttl=300, key_prefix="torrent_categories")
-def _get_categories(client, *, cache_scope: Optional[int] = None) -> Dict[str, Any]:
+def _get_categories(client, *, cache_scope: int) -> Dict[str, Any]:
     """
     Cached wrapper for client.torrent_categories.categories property.
     Reduces redundant API calls for category configuration.
@@ -32,10 +37,15 @@ def _get_categories(client, *, cache_scope: Optional[int] = None) -> Dict[str, A
 
     Args:
         client: qBittorrent client instance
-        cache_scope: Unique identifier to scope cache per client (use id(client))
-                     to prevent cache contamination across different client instances
+        cache_scope: REQUIRED - Unique identifier to scope cache per client.
+                     Always pass id(client) to prevent cache contamination
+                     across different client instances.
+
+    Raises:
+        AssertionError: If cache_scope is None (programming error)
     """
-    _ = cache_scope  # Used by @cached decorator for cache key generation
+    # Runtime assertion to prevent cache contamination
+    assert cache_scope is not None, "cache_scope must be provided (use id(client))"
     return client.torrent_categories.categories
 
 

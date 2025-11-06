@@ -49,6 +49,8 @@ class SimpleCache:
         self._default_ttl = default_ttl
         self._hits = 0
         self._misses = 0
+        self._access_count = 0  # Track accesses for periodic cleanup
+        self._last_cleanup = time.time()
 
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -61,6 +63,9 @@ class SimpleCache:
         Returns:
             Cached value if found and not expired, default otherwise
         """
+        # Trigger periodic cleanup to prevent memory leaks
+        self._maybe_cleanup()
+
         if key not in self._cache:
             self._misses += 1
             logging.debug(f"Cache miss: {key}")
@@ -145,6 +150,43 @@ class SimpleCache:
         stats = self.stats()
         logging.info(f"Cache stats - Hits: {stats['hits']}, Misses: {stats['misses']}, "
                      f"Size: {stats['size']}, Hit rate: {stats['hit_rate']}%")
+
+    def cleanup_expired(self) -> int:
+        """
+        Remove all expired entries from the cache.
+
+        This is automatically called periodically (every 100 accesses or 5 minutes)
+        to prevent memory leaks in long-running processes.
+
+        Returns:
+            Number of expired entries removed
+        """
+        now = time.time()
+        expired_keys = [key for key, (_, expiry) in self._cache.items() if now > expiry]
+
+        for key in expired_keys:
+            del self._cache[key]
+
+        if expired_keys:
+            logging.debug(f"Cache cleanup: removed {len(expired_keys)} expired entries")
+
+        self._last_cleanup = now
+        return len(expired_keys)
+
+    def _maybe_cleanup(self) -> None:
+        """
+        Conditionally trigger cache cleanup based on access count or time.
+
+        Cleanup is triggered when:
+        - 100 cache accesses have occurred since last cleanup, OR
+        - 5 minutes have elapsed since last cleanup
+        """
+        self._access_count += 1
+
+        # Trigger cleanup every 100 accesses or every 5 minutes
+        if self._access_count >= 100 or (time.time() - self._last_cleanup) >= 300:
+            self.cleanup_expired()
+            self._access_count = 0
 
 
 # Global cache instance

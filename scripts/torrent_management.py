@@ -1,8 +1,12 @@
 import logging
-from typing import List, Any
+from typing import Sequence
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.types import TorrentInfo
 
 
-def pause_torrents(client, torrents: List[Any], dry_run: bool = False) -> None:
+def pause_torrents(client, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
     """
     Pause all provided torrents using a single batched API call.
 
@@ -32,7 +36,7 @@ def pause_torrents(client, torrents: List[Any], dry_run: bool = False) -> None:
         raise
 
 
-def resume_torrents(client, torrents: List[Any], dry_run: bool = False) -> None:
+def resume_torrents(client, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
     """
     Resume all provided torrents using a single batched API call.
 

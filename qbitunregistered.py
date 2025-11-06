@@ -177,7 +177,7 @@ if args.unregistered:
 # Run the tag_by_tracker function if desired
 if args.tag_by_tracker:
     try:
-        tag_by_tracker(client, torrents, config)
+        tag_by_tracker(client, torrents, config, dry_run=dry_run)
         operation_results['succeeded'].append('Tag by tracker')
     except Exception:
         logging.exception("Error during tag by tracker")
@@ -204,7 +204,7 @@ if args.tag_by_age:
 # Apply seed time and seed ratio limits if --seeding-management argument is passed
 if args.seeding_management:
     try:
-        apply_seed_limits(client, config, torrents=torrents)
+        apply_seed_limits(client, config, torrents=torrents, dry_run=dry_run)
         operation_results['succeeded'].append('Seeding management')
     except Exception:
         logging.exception("Error during seeding management")
@@ -288,3 +288,8 @@ except Exception:
 
 # Log script end
 logging.info("qbitunregistered script completed.")
+
+# Exit with non-zero code if any operations failed (for cron/CI detection)
+if operation_results['failed']:
+    logging.error(f"Script completed with {len(operation_results['failed'])} failed operation(s)")
+    sys.exit(1)
