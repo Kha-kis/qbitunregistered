@@ -1,0 +1,16 @@
+# Lock file with pinned versions for reproducible builds
+# Generated for Python 3.x
+# To install: pip install -r requirements.lock
+#
+# To update this file:
+# 1. Install/update packages as needed: pip install -r requirements.txt
+# 2. Regenerate lock file: pip freeze | grep -E "qbittorrent-api|schedule|tqdm|pytest" > requirements.lock
+
+# Core dependencies
+qbittorrent-api==2025.7.0
+schedule==1.2.2
+tqdm==4.67.1
+
+# Testing dependencies
+pytest==8.4.2
+pytest-cov==7.0.0

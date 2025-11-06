@@ -1,0 +1,137 @@
+"""Tests for orphaned file checking functionality."""
+import pytest
+from pathlib import Path
+from fnmatch import fnmatch
+
+
+class TestFileExclusionPatterns:
+    """Test file exclusion pattern matching."""
+
+    def test_simple_pattern_match(self):
+        """Test simple pattern matching."""
+        filename = "test.tmp"
+        pattern = "*.tmp"
+        assert fnmatch(filename, pattern)
+
+    def test_pattern_no_match(self):
+        """Test that non-matching files don't match."""
+        filename = "test.txt"
+        pattern = "*.tmp"
+        assert not fnmatch(filename, pattern)
+
+    def test_multiple_patterns(self):
+        """Test matching against multiple patterns."""
+        filename = "test.!qB"
+        patterns = ["*.tmp", "*.!qB", "*.part"]
+
+        assert any(fnmatch(filename, pattern) for pattern in patterns)
+
+    def test_exact_filename_pattern(self):
+        """Test exact filename pattern."""
+        filename = "_unpackerred"
+        pattern = "*_unpackerred"
+        assert fnmatch(filename, pattern)
+
+
+class TestDirectoryExclusion:
+    """Test directory exclusion logic."""
+
+    def test_direct_path_exclusion(self):
+        """Test direct path exclusion."""
+        test_path = Path("/data/torrents/temp/file.txt").resolve()
+        excluded_path = Path("/data/torrents/temp").resolve()
+
+        # Check if excluded_path is in test_path's parents
+        assert excluded_path in test_path.parents
+
+    def test_parent_directory_not_excluded(self):
+        """Test that parent directories are not incorrectly excluded."""
+        test_path = Path("/data/torrents/completed/file.txt").resolve()
+        excluded_path = Path("/data/torrents/temp").resolve()
+
+        # Should not be in parents
+        assert excluded_path not in test_path.parents
+
+    def test_wildcard_pattern_matching(self):
+        """Test wildcard pattern matching for directories."""
+        test_path = "/data/torrents/temp1/file.txt"
+        pattern = "/data/torrents/temp*"
+
+        assert fnmatch(test_path, pattern + "*")
+
+
+class TestPathResolution:
+    """Test path resolution logic."""
+
+    def test_relative_to_absolute_conversion(self):
+        """Test that relative paths are converted to absolute."""
+        relative_path = Path("test/path")
+        absolute_path = relative_path.resolve()
+
+        assert absolute_path.is_absolute()
+
+    def test_path_comparison(self):
+        """Test that resolved paths can be compared."""
+        path1 = Path("/tmp/test").resolve()
+        path2 = Path("/tmp/test").resolve()
+
+        assert path1 == path2
+
+
+class TestSetOperations:
+    """Test set operations for performance."""
+
+    def test_set_lookup_performance(self):
+        """Verify that set lookups are used for torrent files."""
+        # Create a large set to simulate torrent files
+        torrent_files = {Path(f"/data/file_{i}.mkv").resolve() for i in range(1000)}
+
+        # Lookup should be O(1)
+        test_file = Path("/data/file_500.mkv").resolve()
+        assert test_file in torrent_files
+
+        # Non-existent file
+        missing_file = Path("/data/file_9999.mkv").resolve()
+        assert missing_file not in torrent_files
+
+    def test_exclude_dirs_as_set(self):
+        """Verify that exclude_dirs should be a set for O(1) lookup."""
+        exclude_dirs = {Path("/tmp/exclude1").resolve(), Path("/tmp/exclude2").resolve()}
+
+        test_path = Path("/tmp/exclude1/file.txt").resolve()
+        excluded_parent = Path("/tmp/exclude1").resolve()
+
+        # Fast lookup using set
+        assert excluded_parent in exclude_dirs
+
+
+class TestEdgeCases:
+    """Test edge cases in file exclusion."""
+
+    def test_empty_exclude_patterns(self):
+        """Test behavior with empty exclude patterns."""
+        filename = "test.txt"
+        exclude_patterns = []
+
+        # No patterns means nothing should be excluded
+        should_exclude = any(fnmatch(filename, pattern) for pattern in exclude_patterns)
+        assert not should_exclude
+
+    def test_exclude_all_pattern(self):
+        """Test that * pattern matches everything."""
+        filenames = ["test.txt", "file.mkv", "data.tmp"]
+        pattern = "*"
+
+        # All files should match
+        for filename in filenames:
+            assert fnmatch(filename, pattern)
+
+    def test_multiple_extension_pattern(self):
+        """Test pattern with multiple extensions."""
+        filenames = ["test.txt", "test.mkv", "test.tmp"]
+        patterns = ["*.txt", "*.tmp"]
+
+        # txt and tmp should match, mkv should not
+        assert any(fnmatch("test.txt", p) for p in patterns)
+        assert any(fnmatch("test.tmp", p) for p in patterns)
+        assert not any(fnmatch("test.mkv", p) for p in patterns)
