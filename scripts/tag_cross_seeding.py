@@ -112,33 +112,53 @@ def tag_cross_seeds(client: QBittorrentClient, torrents: Sequence[TorrentInfo], 
                 tag_counts["not-cross-seeding"] += len(torrent_list)
                 not_cross_seeding_hashes.extend([t.hash for t in torrent_list])
 
-        # Apply tags in batches (2 API calls total instead of N calls)
+        # Apply tags in batches with proper cleanup of contradictory tags
+        # Remove inverse tags first, then add the correct tag
         total_tagged = 0
+        total_removed = 0
 
         if cross_seed_hashes:
             try:
+                # Remove contradictory tag first
                 if dry_run:
+                    logging.info(f"[Dry Run] Would remove tag 'not-cross-seeding' from {len(cross_seed_hashes)} torrents")
                     logging.info(f"[Dry Run] Would add tag 'cross-seed' to {len(cross_seed_hashes)} torrents")
                 else:
-                    client.torrents_add_tags(torrent_hashes=cross_seed_hashes, tags=["cross-seed"])
+                    # Remove opposite tag to prevent contradictions
+                    client.torrents_remove_tags(torrent_hashes=cross_seed_hashes, tags="not-cross-seeding")
+                    total_removed += len(cross_seed_hashes)
+                    logging.debug(f"Removed tag 'not-cross-seeding' from {len(cross_seed_hashes)} torrents (cleanup)")
+
+                    # Add the correct tag
+                    client.torrents_add_tags(torrent_hashes=cross_seed_hashes, tags="cross-seed")
                     logging.info(f"Added tag 'cross-seed' to {len(cross_seed_hashes)} torrents")
+
                 total_tagged += len(cross_seed_hashes)
             except Exception as e:
-                logging.error(f"Failed to add 'cross-seed' tag to batch: {e}")
+                logging.error(f"Failed to update 'cross-seed' tags for batch: {e}")
 
         if not_cross_seeding_hashes:
             try:
+                # Remove contradictory tag first
                 if dry_run:
+                    logging.info(f"[Dry Run] Would remove tag 'cross-seed' from {len(not_cross_seeding_hashes)} torrents")
                     logging.info(f"[Dry Run] Would add tag 'not-cross-seeding' to {len(not_cross_seeding_hashes)} torrents")
                 else:
-                    client.torrents_add_tags(torrent_hashes=not_cross_seeding_hashes, tags=["not-cross-seeding"])
+                    # Remove opposite tag to prevent contradictions
+                    client.torrents_remove_tags(torrent_hashes=not_cross_seeding_hashes, tags="cross-seed")
+                    total_removed += len(not_cross_seeding_hashes)
+                    logging.debug(f"Removed tag 'cross-seed' from {len(not_cross_seeding_hashes)} torrents (cleanup)")
+
+                    # Add the correct tag
+                    client.torrents_add_tags(torrent_hashes=not_cross_seeding_hashes, tags="not-cross-seeding")
                     logging.info(f"Added tag 'not-cross-seeding' to {len(not_cross_seeding_hashes)} torrents")
+
                 total_tagged += len(not_cross_seeding_hashes)
             except Exception as e:
-                logging.error(f"Failed to add 'not-cross-seeding' tag to batch: {e}")
+                logging.error(f"Failed to update 'not-cross-seeding' tags for batch: {e}")
 
         # Summary
-        logging.info(f"Cross-seed tagging completed: {total_tagged} torrents tagged")
+        logging.info(f"Cross-seed tagging completed: {total_tagged} torrents tagged, {total_removed} contradictory tags removed")
         logging.info(f"  - cross-seed: {tag_counts['cross-seed']} torrents")
         logging.info(f"  - not-cross-seeding: {tag_counts['not-cross-seeding']} torrents")
 
