@@ -149,7 +149,7 @@ class TestConfigValidation:
         }
         with pytest.raises(ConfigValidationError) as exc_info:
             validate_config(config)
-        assert "must be >= -2" in str(exc_info.value)
+        assert "must be an integer >= -2" in str(exc_info.value)
 
 
 class TestExcludePatternValidation:

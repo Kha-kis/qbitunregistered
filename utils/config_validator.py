@@ -119,13 +119,22 @@ def validate_config(config: Dict[str, Any]) -> None:
                 if 'tag' in tracker_config and not isinstance(tracker_config['tag'], str):
                     errors.append(f"tracker_tags['{tracker_name}']['tag'] must be a string")
 
-                for limit_field in ['seed_time_limit', 'seed_ratio_limit']:
-                    if limit_field in tracker_config:
-                        value = tracker_config[limit_field]
-                        # qBittorrent API: -2 = no limit, -1 = use global settings, >=0 = specific limit
-                        if not isinstance(value, (int, float)) or (value < -2):
-                            errors.append(f"tracker_tags['{tracker_name}']['{limit_field}'] must be >= -2 "
-                                         f"(-2 = no limit, -1 = use global, 0+ = specific limit)")
+                # Validate seed limits with appropriate type checking
+                # seed_time_limit: Integer only (minutes)
+                # seed_ratio_limit: Integer or float (upload:download ratio)
+                if 'seed_time_limit' in tracker_config:
+                    value = tracker_config['seed_time_limit']
+                    # qBittorrent API: -2 = use global, -1 = no limit, >=0 = specific minutes
+                    if not isinstance(value, int) or (value < -2):
+                        errors.append(f"tracker_tags['{tracker_name}']['seed_time_limit'] must be an integer >= -2 "
+                                     f"(-2 = use global, -1 = no limit, 0+ = minutes)")
+
+                if 'seed_ratio_limit' in tracker_config:
+                    value = tracker_config['seed_ratio_limit']
+                    # qBittorrent API: -2 = use global, -1 = no limit, >=0 = specific ratio
+                    if not isinstance(value, (int, float)) or (value < -2):
+                        errors.append(f"tracker_tags['{tracker_name}']['seed_ratio_limit'] must be a number >= -2 "
+                                     f"(-2 = use global, -1 = no limit, 0+ = ratio)")
 
     # Validate target_dir if present
     if 'target_dir' in config and config['target_dir']:
