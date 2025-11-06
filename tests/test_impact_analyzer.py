@@ -194,7 +194,7 @@ class TestAnalyzeImpact:
 
         assert summary.is_empty()
 
-    @patch('utils.impact_analyzer._analyze_pause')
+    @patch("utils.impact_analyzer._analyze_pause")
     def test_analyze_pause_operation(self, mock_analyze):
         """Test analyzing pause operation."""
         mock_client = Mock()
@@ -205,7 +205,7 @@ class TestAnalyzeImpact:
 
         mock_analyze.assert_called_once()
 
-    @patch('utils.impact_analyzer._analyze_resume')
+    @patch("utils.impact_analyzer._analyze_resume")
     def test_analyze_resume_operation(self, mock_analyze):
         """Test analyzing resume operation."""
         mock_client = Mock()

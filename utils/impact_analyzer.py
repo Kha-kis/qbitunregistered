@@ -130,24 +130,17 @@ class ImpactSummary:
         # Warn about large disk space deletions
         gb_to_free = self.disk_to_free_bytes / (1024**3)
         if gb_to_free > 50:
-            warnings.append(
-                f"WARNING: {gb_to_free:.2f} GB will be freed. "
-                "Verify this is expected!"
-            )
+            warnings.append(f"WARNING: {gb_to_free:.2f} GB will be freed. " "Verify this is expected!")
 
         # Warn about large number of deletions
         total_deletions = sum(len(hashes) for hashes in self.torrents_to_delete.values())
         if total_deletions > 20:
-            warnings.append(
-                f"WARNING: {total_deletions} torrents will be deleted. "
-                "This is a large operation!"
-            )
+            warnings.append(f"WARNING: {total_deletions} torrents will be deleted. " "This is a large operation!")
 
         # Warn about large number of orphaned files
         if len(self.orphaned_files) > 50:
             warnings.append(
-                f"WARNING: {len(self.orphaned_files)} orphaned files will be deleted. "
-                "Verify these are not needed!"
+                f"WARNING: {len(self.orphaned_files)} orphaned files will be deleted. " "Verify these are not needed!"
             )
 
         return warnings
@@ -350,9 +343,7 @@ def _analyze_unregistered(
         try:
             trackers = _fetch_trackers(client, torrent.hash)
             unregistered_trackers = sum(
-                1
-                for t in trackers
-                if check_unregistered_message(t, exact_patterns, starts_with_patterns)
+                1 for t in trackers if check_unregistered_message(t, exact_patterns, starts_with_patterns)
             )
 
             if unregistered_trackers > 0:
@@ -385,12 +376,8 @@ def _analyze_unregistered(
         except Exception as e:
             logger.debug(f"Error analyzing torrent {torrent.hash}: {e}")
 
-    summary.set_operation_detail(
-        "unregistered_checks", "unregistered_found", unregistered_count
-    )
-    summary.set_operation_detail(
-        "unregistered_checks", "cross_seeding_found", cross_seed_count
-    )
+    summary.set_operation_detail("unregistered_checks", "unregistered_found", unregistered_count)
+    summary.set_operation_detail("unregistered_checks", "cross_seeding_found", cross_seed_count)
 
 
 def _analyze_orphaned(
@@ -481,9 +468,7 @@ def _analyze_tag_by_age(
         summary: ImpactSummary to update
     """
     # Simplified - would need full age calculation logic
-    summary.set_operation_detail(
-        "tag_by_age", "note", "Age-based tagging will be applied based on completion time"
-    )
+    summary.set_operation_detail("tag_by_age", "note", "Age-based tagging will be applied based on completion time")
 
 
 def _analyze_tag_cross_seeding(
@@ -500,9 +485,7 @@ def _analyze_tag_cross_seeding(
         config: Configuration dict
         summary: ImpactSummary to update
     """
-    summary.set_operation_detail(
-        "tag_cross_seeding", "note", "Cross-seeding detection will identify duplicates"
-    )
+    summary.set_operation_detail("tag_cross_seeding", "note", "Cross-seeding detection will identify duplicates")
 
 
 def _analyze_auto_remove(
@@ -520,9 +503,7 @@ def _analyze_auto_remove(
         summary: ImpactSummary to update
     """
     # Would need to implement actual removal logic
-    summary.set_operation_detail(
-        "auto_remove", "note", "Auto-removal will delete completed torrents matching criteria"
-    )
+    summary.set_operation_detail("auto_remove", "note", "Auto-removal will delete completed torrents matching criteria")
 
 
 def _analyze_pause(

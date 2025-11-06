@@ -11,12 +11,14 @@ from enum import Enum
 
 class TorrentState(Enum):
     """Simplified torrent state enum for type hints."""
+
     pass
 
 
 @runtime_checkable
 class TorrentStateEnum(Protocol):
     """Protocol for torrent state enum with completion check."""
+
     is_complete: bool
 
 
@@ -28,6 +30,7 @@ class TorrentInfo(Protocol):
     This allows type checking without depending on specific qbittorrent-api classes.
     All attributes are based on qBittorrent Web API torrent properties.
     """
+
     hash: str
     name: str
     save_path: str
@@ -48,6 +51,7 @@ class TorrentInfo(Protocol):
 @runtime_checkable
 class TorrentFile(Protocol):
     """Protocol for torrent file information."""
+
     name: str
     size: int
 
@@ -60,6 +64,7 @@ class QBittorrentClient(Protocol):
     This allows type checking without depending on specific qbittorrent-api classes.
     Only includes methods actually used in the codebase.
     """
+
     def auth_log_out(self) -> None:
         """Log out from qBittorrent."""
         ...

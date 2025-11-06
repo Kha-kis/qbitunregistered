@@ -5,6 +5,7 @@ from typing import Sequence
 from pathlib import Path
 from tqdm import tqdm
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.types import TorrentInfo
 
@@ -30,33 +31,33 @@ def _sanitize_category_name(category: str) -> str:
         Sanitized category name safe for use in paths
     """
     if not category:
-        return ''
+        return ""
 
     # Remove leading/trailing whitespace first
     sanitized = category.strip()
 
     # Security: Explicitly reject '..' patterns (path traversal attempt)
-    if '..' in sanitized:
+    if ".." in sanitized:
         logging.warning(f"Path traversal pattern detected in category '{category}', replacing with 'uncategorized'")
-        return 'uncategorized'
+        return "uncategorized"
 
     # Whitelist approach: Allow only safe characters
     # - Alphanumeric (any Unicode script)
     # - Spaces, hyphens, underscores
     # - Single periods (but not '..')
     # Replace unsafe characters with underscores
-    sanitized = re.sub(r'[^\w\s\-.]', '_', sanitized, flags=re.UNICODE)
+    sanitized = re.sub(r"[^\w\s\-.]", "_", sanitized, flags=re.UNICODE)
 
     # Replace multiple consecutive underscores/spaces with single underscore
-    sanitized = re.sub(r'[_\s]+', '_', sanitized)
+    sanitized = re.sub(r"[_\s]+", "_", sanitized)
 
     # Remove leading/trailing underscores and periods
-    sanitized = sanitized.strip('_.')
+    sanitized = sanitized.strip("_.")
 
     # Ensure result is non-empty after sanitization (use 'uncategorized' as fallback)
     if not sanitized:
         logging.warning(f"Category name '{category}' sanitized to empty string, using 'uncategorized'")
-        sanitized = 'uncategorized'
+        sanitized = "uncategorized"
 
     return sanitized
 
@@ -151,14 +152,20 @@ def create_hard_links(target_dir: str, torrents: Sequence[TorrentInfo], dry_run:
 
                 # Report findings
                 if incompatible_devices:
-                    logging.warning(f"WARNING: Found {len(incompatible_devices)} source filesystem(s) incompatible with target:")
+                    logging.warning(
+                        f"WARNING: Found {len(incompatible_devices)} source filesystem(s) incompatible with target:"
+                    )
                     for save_path, device_id in incompatible_devices:
                         logging.warning(f"  - {save_path} (device {device_id})")
                     logging.warning(f"  Target: {target_path} (device {target_device})")
                     logging.warning("  Hard links only work within the same filesystem.")
-                    logging.warning("  Operations on incompatible paths will fail. Consider using symlinks or copying instead.")
+                    logging.warning(
+                        "  Operations on incompatible paths will fail. Consider using symlinks or copying instead."
+                    )
                 elif checked_devices:
-                    logging.debug(f"Filesystem check passed: {len(checked_devices)} unique source device(s) compatible with target")
+                    logging.debug(
+                        f"Filesystem check passed: {len(checked_devices)} unique source device(s) compatible with target"
+                    )
             except Exception as e:
                 logging.debug(f"Could not verify filesystem compatibility: {e}")
 
@@ -183,14 +190,16 @@ def create_hard_links(target_dir: str, torrents: Sequence[TorrentInfo], dry_run:
                                 rel_path = source_path.relative_to(content_path)
 
                                 # Security: Sanitize category name to prevent path traversal
-                                category_dir = _sanitize_category_name(torrent.category or '')
+                                category_dir = _sanitize_category_name(torrent.category or "")
 
                                 # Construct target path and resolve to absolute path
                                 target_file_path = (target_path / category_dir / rel_path).resolve()
 
                                 # Security: Check for path traversal after resolution
                                 if not _is_safe_path(target_path, target_file_path):
-                                    logging.error(f"Security: Path traversal detected for torrent '{torrent.name}', category '{torrent.category}', skipping: {target_file_path}")
+                                    logging.error(
+                                        f"Security: Path traversal detected for torrent '{torrent.name}', category '{torrent.category}', skipping: {target_file_path}"
+                                    )
                                     total_errors += 1
                                     continue
 
@@ -221,10 +230,12 @@ def create_hard_links(target_dir: str, torrents: Sequence[TorrentInfo], dry_run:
 
                             except OSError as e:
                                 if e.errno == 18:  # EXDEV - Cross-device link
-                                    logging.error(f"Cannot create hard link: source and target are on different filesystems.\n"
-                                                  f"  Source: {source_path}\n"
-                                                  f"  Target: {target_file_path}\n"
-                                                  f"  Hard links only work within the same filesystem.")
+                                    logging.error(
+                                        f"Cannot create hard link: source and target are on different filesystems.\n"
+                                        f"  Source: {source_path}\n"
+                                        f"  Target: {target_file_path}\n"
+                                        f"  Hard links only work within the same filesystem."
+                                    )
                                 else:
                                     logging.exception(f"Failed to create hard link for '{source_path}'")
                                 total_errors += 1
@@ -236,14 +247,16 @@ def create_hard_links(target_dir: str, torrents: Sequence[TorrentInfo], dry_run:
                     # Handle single-file torrents
                     try:
                         # Security: Sanitize category name to prevent path traversal
-                        category_dir = _sanitize_category_name(torrent.category or '')
+                        category_dir = _sanitize_category_name(torrent.category or "")
 
                         # Construct target path and resolve to absolute path
                         target_file_path = (target_path / category_dir / content_path.name).resolve()
 
                         # Security: Check for path traversal after resolution
                         if not _is_safe_path(target_path, target_file_path):
-                            logging.error(f"Security: Path traversal detected for torrent '{torrent.name}', category '{torrent.category}', skipping: {target_file_path}")
+                            logging.error(
+                                f"Security: Path traversal detected for torrent '{torrent.name}', category '{torrent.category}', skipping: {target_file_path}"
+                            )
                             total_errors += 1
                             continue
 
@@ -272,10 +285,12 @@ def create_hard_links(target_dir: str, torrents: Sequence[TorrentInfo], dry_run:
 
                     except OSError as e:
                         if e.errno == 18:  # EXDEV - Cross-device link
-                            logging.error(f"Cannot create hard link: source and target are on different filesystems.\n"
-                                          f"  Source: {content_path}\n"
-                                          f"  Target: {target_file_path}\n"
-                                          f"  Hard links only work within the same filesystem.")
+                            logging.error(
+                                f"Cannot create hard link: source and target are on different filesystems.\n"
+                                f"  Source: {content_path}\n"
+                                f"  Target: {target_file_path}\n"
+                                f"  Hard links only work within the same filesystem."
+                            )
                         else:
                             logging.exception(f"Failed to create hard link for single file '{content_path}'")
                         total_errors += 1
@@ -293,7 +308,9 @@ def create_hard_links(target_dir: str, torrents: Sequence[TorrentInfo], dry_run:
 
         # Summary
         if dry_run:
-            logging.info(f"[Dry Run] Hard link summary: {total_links} would be created, {total_skipped} already exist, {total_errors} errors")
+            logging.info(
+                f"[Dry Run] Hard link summary: {total_links} would be created, {total_skipped} already exist, {total_errors} errors"
+            )
         else:
             logging.info(f"Hard link summary: {total_links} created, {total_skipped} already exist, {total_errors} errors")
 

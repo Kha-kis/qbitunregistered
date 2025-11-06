@@ -4,11 +4,14 @@ from typing import Sequence, Dict, Any
 from collections import defaultdict
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.types import TorrentInfo, QBittorrentClient
 
 
-def tag_by_age(client: QBittorrentClient, torrents: Sequence[TorrentInfo], _config: Dict[str, Any], dry_run: bool = False) -> None:
+def tag_by_age(
+    client: QBittorrentClient, torrents: Sequence[TorrentInfo], _config: Dict[str, Any], dry_run: bool = False
+) -> None:
     """
     Tag torrents based on their age in months using batched API calls.
 
@@ -46,9 +49,11 @@ def tag_by_age(client: QBittorrentClient, torrents: Sequence[TorrentInfo], _conf
                 # Determine the appropriate tag based on age buckets in months
                 # Handle future creation dates (system clock issues or data errors)
                 if torrent_age_months < 0:
-                    logging.warning(f"Skipping torrent '{torrent.name}': creation date is in the future "
-                                    f"({torrent.creation_date} > {current_time}). "
-                                    f"Check system clock or torrent metadata.")
+                    logging.warning(
+                        f"Skipping torrent '{torrent.name}': creation date is in the future "
+                        f"({torrent.creation_date} > {current_time}). "
+                        f"Check system clock or torrent metadata."
+                    )
                     continue
 
                 # Skip torrents less than 1 month old
@@ -56,17 +61,17 @@ def tag_by_age(client: QBittorrentClient, torrents: Sequence[TorrentInfo], _conf
                     logging.debug(f"Skipping torrent '{torrent.name}': under one month old")
                     continue
                 if torrent_age_months >= 6:
-                    tag = '6_months_plus'
+                    tag = "6_months_plus"
                 elif torrent_age_months >= 5:
-                    tag = '>5_months'
+                    tag = ">5_months"
                 elif torrent_age_months >= 4:
-                    tag = '>4_months'
+                    tag = ">4_months"
                 elif torrent_age_months >= 3:
-                    tag = '>3_months'
+                    tag = ">3_months"
                 elif torrent_age_months >= 2:
-                    tag = '>2_months'
+                    tag = ">2_months"
                 else:
-                    tag = '>1_month'
+                    tag = ">1_month"
 
                 # Group torrents by tag for batch processing
                 tag_groups[tag].append(torrent.hash)
@@ -75,7 +80,9 @@ def tag_by_age(client: QBittorrentClient, torrents: Sequence[TorrentInfo], _conf
                 logging.debug(f"Torrent '{torrent.name}' ({torrent_age_months} months old) -> tag '{tag}'")
 
             except AttributeError as e:
-                logging.warning(f"Skipping torrent '{getattr(torrent, 'name', 'unknown')}': missing creation_date attribute: {e}")
+                logging.warning(
+                    f"Skipping torrent '{getattr(torrent, 'name', 'unknown')}': missing creation_date attribute: {e}"
+                )
             except Exception:
                 logging.exception(f"Error processing torrent '{getattr(torrent, 'name', 'unknown')}'")
 
@@ -93,7 +100,7 @@ def tag_by_age(client: QBittorrentClient, torrents: Sequence[TorrentInfo], _conf
                 logging.exception(f"Failed to add tag '{tag}' to batch of {len(torrent_hashes)} torrents")
 
         # Summary with age-based sort order (oldest to youngest)
-        bucket_order = ['6_months_plus', '>5_months', '>4_months', '>3_months', '>2_months', '>1_month']
+        bucket_order = ["6_months_plus", ">5_months", ">4_months", ">3_months", ">2_months", ">1_month"]
 
         logging.info(f"Tagging by age completed: {total_tagged}/{len(torrents)} torrents tagged")
         for tag in bucket_order:
