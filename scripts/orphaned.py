@@ -1,7 +1,7 @@
 import logging
 import re
 from pathlib import Path
-from typing import List, Pattern, Dict, Any, Optional
+from typing import List, Dict, Any, Optional
 from fnmatch import translate
 import sys
 

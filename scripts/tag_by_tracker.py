@@ -1,5 +1,5 @@
 import logging
-from typing import List, Dict, Any, Sequence
+from typing import Dict, Any, Sequence
 from collections import defaultdict
 import sys
 from pathlib import Path

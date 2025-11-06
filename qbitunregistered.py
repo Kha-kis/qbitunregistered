@@ -5,12 +5,6 @@ import sys
 import logging
 from typing import Dict, List
 from qbittorrentapi import Client, exceptions
-
-# Exit codes for different failure types
-EXIT_SUCCESS = 0
-EXIT_GENERAL_ERROR = 1
-EXIT_CONFIG_ERROR = 2
-EXIT_CONNECTION_ERROR = 3
 from scripts.orphaned import check_files_on_disk, delete_orphaned_files
 from scripts.unregistered_checks import unregistered_checks
 from scripts.tag_by_tracker import tag_by_tracker
@@ -23,6 +17,12 @@ from scripts.tag_cross_seeding import tag_cross_seeds
 from scripts.tag_by_age import tag_by_age
 from utils.config_validator import validate_config, validate_exclude_patterns, ConfigValidationError
 from utils.cache import log_cache_stats
+
+# Exit codes for different failure types
+EXIT_SUCCESS = 0
+EXIT_GENERAL_ERROR = 1
+EXIT_CONFIG_ERROR = 2
+EXIT_CONNECTION_ERROR = 3
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
@@ -225,7 +225,7 @@ if operations_to_run and not args.yes:
         logging.info("Operation cancelled by user")
         try:
             client.auth_log_out()
-        except:
+        except Exception:
             pass
         sys.exit(EXIT_SUCCESS)
     except Exception as e:

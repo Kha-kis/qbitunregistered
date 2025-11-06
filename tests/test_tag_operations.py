@@ -1,6 +1,5 @@
 """Tests for tag operations."""
 
-import pytest
 from datetime import datetime
 from collections import defaultdict
 

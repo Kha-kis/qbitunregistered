@@ -5,7 +5,7 @@ before they are executed, giving users confidence and preventing accidental data
 """
 
 import logging
-from typing import Dict, List, Any, Set, Tuple
+from typing import Dict, List, Any
 from collections import defaultdict
 
 from utils.types import TorrentInfo, QBittorrentClient
@@ -394,7 +394,6 @@ def _analyze_orphaned(
         config: Configuration dict
         summary: ImpactSummary to update
     """
-    from scripts.orphaned import check_files_on_disk
     from pathlib import Path
 
     # This is a simplified version - full implementation would need to scan disk

@@ -1,6 +1,5 @@
 """Tests for caching functionality."""
 
-import pytest
 import time
 from utils.cache import SimpleCache, cached, get_cache, clear_cache
 
@@ -147,18 +146,18 @@ class TestCachedDecorator:
             return f"result_{param}"
 
         # First call
-        result1 = expiring_function("client", "value")
+        _result1 = expiring_function("client", "value")
         assert call_count == 1
 
         # Immediate second call should use cache
-        result2 = expiring_function("client", "value")
+        _result2 = expiring_function("client", "value")
         assert call_count == 1
 
         # Wait for expiry
         time.sleep(1.1)
 
         # Should execute function again after expiry
-        result3 = expiring_function("client", "value")
+        _result3 = expiring_function("client", "value")
         assert call_count == 2
 
     def test_global_cache_operations(self):

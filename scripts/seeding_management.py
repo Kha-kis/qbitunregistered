@@ -91,7 +91,7 @@ def apply_seed_limits(client: QBittorrentClient, config: Dict[str, Any], torrent
         try:
             torrents = client.torrents.info()
         except Exception:
-            logging.exception(f"Failed to fetch torrent list")
+            logging.exception("Failed to fetch torrent list")
             return
 
     logging.debug(f"Applying seed limits to {len(torrents)} torrents")

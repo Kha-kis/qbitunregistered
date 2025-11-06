@@ -1,6 +1,5 @@
 """Tests for orphaned file checking functionality."""
 
-import pytest
 from pathlib import Path
 from fnmatch import fnmatch
 
@@ -99,7 +98,6 @@ class TestSetOperations:
         """Verify that exclude_dirs should be a set for O(1) lookup."""
         exclude_dirs = {Path("/tmp/exclude1").resolve(), Path("/tmp/exclude2").resolve()}
 
-        test_path = Path("/tmp/exclude1/file.txt").resolve()
         excluded_parent = Path("/tmp/exclude1").resolve()
 
         # Fast lookup using set
@@ -129,7 +127,6 @@ class TestEdgeCases:
 
     def test_multiple_extension_pattern(self):
         """Test pattern with multiple extensions."""
-        filenames = ["test.txt", "test.mkv", "test.tmp"]
         patterns = ["*.txt", "*.tmp"]
 
         # txt and tmp should match, mkv should not

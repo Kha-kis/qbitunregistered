@@ -1,7 +1,7 @@
 """Tests for the impact analyzer module."""
 
 import pytest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, patch
 from utils.impact_analyzer import (
     ImpactSummary,
     analyze_impact,

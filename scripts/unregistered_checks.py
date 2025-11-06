@@ -1,5 +1,4 @@
 import logging
-from urllib.parse import urlsplit
 from typing import List, Set, Tuple
 from tqdm import tqdm
 

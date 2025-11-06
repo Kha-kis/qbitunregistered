@@ -51,4 +51,4 @@ def auto_remove(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_
         else:
             logging.info(f"Removed {total_removed} out of {completed_count} completed torrents")
 
-    logging.info(f"auto_remove script completed.")
+    logging.info("auto_remove script completed.")
