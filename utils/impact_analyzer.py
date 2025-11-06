@@ -375,8 +375,10 @@ def _analyze_unregistered(
                     try:
                         torrent_info = client.torrents_info(torrent_hashes=torrent.hash)[0]
                         size = torrent_info.get("size", 0)
-                    except:
-                        pass
+                    except (KeyboardInterrupt, SystemExit):
+                        raise
+                    except Exception as e:
+                        logger.debug(f"Error fetching size for torrent {torrent.hash}: {e}")
 
                     summary.add_deletion(tag, torrent.hash, size)
 
