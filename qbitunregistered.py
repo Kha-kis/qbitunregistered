@@ -4,12 +4,6 @@ import os
 import sys
 import logging
 from qbittorrentapi import Client, exceptions
-
-# Exit codes for different failure types
-EXIT_SUCCESS = 0
-EXIT_GENERAL_ERROR = 1
-EXIT_CONFIG_ERROR = 2
-EXIT_CONNECTION_ERROR = 3
 from scripts.orphaned import check_files_on_disk, delete_orphaned_files
 from scripts.unregistered_checks import unregistered_checks
 from scripts.tag_by_tracker import tag_by_tracker
@@ -24,6 +18,12 @@ from utils.config_validator import validate_config, validate_exclude_patterns, C
 from utils.cache import log_cache_stats
 from utils.events import get_event_tracker, EventLevel, EventType
 from utils.webhooks import get_webhook_manager
+
+# Exit codes for different failure types
+EXIT_SUCCESS = 0
+EXIT_GENERAL_ERROR = 1
+EXIT_CONFIG_ERROR = 2
+EXIT_CONNECTION_ERROR = 3
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
