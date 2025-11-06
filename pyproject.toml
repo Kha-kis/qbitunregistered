@@ -62,3 +62,24 @@ markers = [
     "unit: marks tests as unit tests",
     "smoke: marks tests as smoke tests",
 ]
+
+[tool.coverage.run]
+omit = [
+    "qbitunregistered.py",  # Main entry point script
+    "scheduler.py",          # Scheduler entry point
+    "tests/*",               # Test files
+    "*/venv/*",              # Virtual environments
+    "*/.venv/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.:",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if typing.TYPE_CHECKING:",
+    "@abstractmethod",
+]
