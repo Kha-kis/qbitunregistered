@@ -29,7 +29,9 @@ class TestEvent:
 
     def test_event_creation(self):
         """Test creating an event."""
-        event = Event(event_type=EventType.UNREGISTERED_FOUND, level=EventLevel.WARNING, message="Test message", details={"count": 5})
+        event = Event(
+            event_type=EventType.UNREGISTERED_FOUND, level=EventLevel.WARNING, message="Test message", details={"count": 5}
+        )
 
         assert event.event_type == EventType.UNREGISTERED_FOUND
         assert event.level == EventLevel.WARNING
@@ -39,7 +41,9 @@ class TestEvent:
 
     def test_event_to_dict(self):
         """Test converting event to dictionary."""
-        event = Event(event_type=EventType.TORRENT_DELETED, level=EventLevel.ERROR, message="Deleted torrent", details={"hash": "abc123"})
+        event = Event(
+            event_type=EventType.TORRENT_DELETED, level=EventLevel.ERROR, message="Deleted torrent", details={"hash": "abc123"}
+        )
 
         event_dict = event.to_dict()
 
@@ -498,7 +502,10 @@ class TestWebhookIntegration:
 
         # Send event
         event = Event(
-            EventType.UNREGISTERED_FOUND, EventLevel.WARNING, "Found 10 unregistered torrents", details={"count": 10, "tag": "unregistered"}
+            EventType.UNREGISTERED_FOUND,
+            EventLevel.WARNING,
+            "Found 10 unregistered torrents",
+            details={"count": 10, "tag": "unregistered"},
         )
 
         result = delivery.send_event(event)
