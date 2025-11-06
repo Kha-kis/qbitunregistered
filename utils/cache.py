@@ -36,7 +36,7 @@ class SimpleCache:
 
     # Cleanup thresholds (configurable class constants)
     CLEANUP_ACCESS_THRESHOLD = 100  # Trigger cleanup after this many accesses
-    CLEANUP_TIME_THRESHOLD = 300    # Trigger cleanup after this many seconds (5 minutes)
+    CLEANUP_TIME_THRESHOLD = 300  # Trigger cleanup after this many seconds (5 minutes)
 
     def __init__(self, default_ttl: int = 300):
         """
@@ -144,18 +144,15 @@ class SimpleCache:
         total = self._hits + self._misses
         hit_rate = (self._hits / total * 100) if total > 0 else 0
 
-        return {
-            'hits': self._hits,
-            'misses': self._misses,
-            'size': len(self._cache),
-            'hit_rate': round(hit_rate, 2)
-        }
+        return {"hits": self._hits, "misses": self._misses, "size": len(self._cache), "hit_rate": round(hit_rate, 2)}
 
     def log_stats(self) -> None:
         """Log cache statistics."""
         stats = self.stats()
-        logging.info(f"Cache stats - Hits: {stats['hits']}, Misses: {stats['misses']}, "
-                     f"Size: {stats['size']}, Hit rate: {stats['hit_rate']}%")
+        logging.info(
+            f"Cache stats - Hits: {stats['hits']}, Misses: {stats['misses']}, "
+            f"Size: {stats['size']}, Hit rate: {stats['hit_rate']}%"
+        )
 
     def cleanup_expired(self) -> int:
         """
@@ -190,8 +187,10 @@ class SimpleCache:
         self._access_count += 1
 
         # Trigger cleanup based on configurable thresholds
-        if (self._access_count >= self.CLEANUP_ACCESS_THRESHOLD or
-            (time.time() - self._last_cleanup) >= self.CLEANUP_TIME_THRESHOLD):
+        if (
+            self._access_count >= self.CLEANUP_ACCESS_THRESHOLD
+            or (time.time() - self._last_cleanup) >= self.CLEANUP_TIME_THRESHOLD
+        ):
             self.cleanup_expired()
             self._access_count = 0
 
@@ -230,6 +229,7 @@ def cached(ttl: int = 300, key_prefix: str = "", skip_first_arg: bool = True):
         def get_system_config(config_name):
             return load_config(config_name)
     """
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -240,7 +240,7 @@ def cached(ttl: int = 300, key_prefix: str = "", skip_first_arg: bool = True):
                 key_prefix,
                 func.__qualname__,  # Use __qualname__ for better identification
                 cache_args,
-                tuple(sorted(kwargs.items()))
+                tuple(sorted(kwargs.items())),
             )
 
             # Serialize with json.dumps for stability, fallback to pickle+hash for non-JSON types
@@ -273,6 +273,7 @@ def cached(ttl: int = 300, key_prefix: str = "", skip_first_arg: bool = True):
             return result
 
         return wrapper
+
     return decorator
 
 

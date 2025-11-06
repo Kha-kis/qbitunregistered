@@ -1,4 +1,5 @@
 """Tests for unregistered checks functionality."""
+
 import pytest
 from scripts.unregistered_checks import (
     compile_patterns,

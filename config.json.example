@@ -97,5 +97,33 @@
   },
 
   "//": "List of times (24-hour format) to schedule the script to run daily. Example: ['09:00', '15:00', '21:00']",
-  "scheduled_times": []
+  "scheduled_times": [],
+
+  "//": "Webhook notifications configuration - send operation results to external services",
+  "webhooks": [
+    {
+      "//": "Example Discord webhook",
+      "url": "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN",
+      "format": "discord",
+      "min_level": "warning",
+      "enabled": false,
+      "retry_attempts": 3,
+      "retry_delay": 1.0,
+      "timeout": 10.0
+    },
+    {
+      "//": "Example Slack webhook",
+      "url": "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK",
+      "format": "slack",
+      "min_level": "error",
+      "enabled": false
+    },
+    {
+      "//": "Example generic webhook (sends raw JSON)",
+      "url": "https://example.com/webhook",
+      "format": "generic",
+      "min_level": "info",
+      "enabled": false
+    }
+  ]
 }

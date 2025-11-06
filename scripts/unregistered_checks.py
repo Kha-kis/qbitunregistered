@@ -32,8 +32,10 @@ def compile_patterns(unregistered: List[str]) -> Tuple[Set[str], Set[str]]:
 
             if not prefix:
                 # Empty prefix would match everything - log warning and skip
-                logging.warning(f"Skipping malformed pattern '{pattern}': starts_with prefix is empty. "
-                               "Empty prefixes would match all messages.")
+                logging.warning(
+                    f"Skipping malformed pattern '{pattern}': starts_with prefix is empty. "
+                    "Empty prefixes would match all messages."
+                )
                 continue
 
             starts_with_patterns.add(prefix)
@@ -88,8 +90,10 @@ def process_torrent(torrent, exact_matches: Set[str], starts_with_patterns: Set[
     )
     return unregistered_count
 
+
 def update_torrent_file_paths(torrent_file_paths, torrent):
     torrent_file_paths.setdefault(torrent.save_path, []).append(torrent.hash)
+
 
 def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents=None):
     """Delete torrents with specific tags. Pass torrents to avoid redundant API call."""
@@ -107,7 +111,9 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
                             client.torrents.delete(torrent.hash, delete_files=True)
                             logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash} and its files.")
                         else:
-                            logging.info(f"[Dry Run] Would delete torrent '{torrent.name}' with hash {torrent.hash} and its files.")
+                            logging.info(
+                                f"[Dry Run] Would delete torrent '{torrent.name}' with hash {torrent.hash} and its files."
+                            )
                     else:
                         if not dry_run:
                             client.torrents.delete(torrent.hash, delete_files=False)
@@ -120,6 +126,7 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
             # Skip to next torrent if this one was deleted (object is now stale)
             if torrent_deleted:
                 continue
+
 
 def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run):
     """
@@ -143,11 +150,11 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
     unregistered_counts_per_path = {}
     unregistered_torrents_per_path = {}  # Track number of torrents (not tracker hits) with unregistered trackers
     tag_counts = {}
-    default_tag = config['default_unregistered_tag']
-    cross_seeding_tag = config['cross_seeding_tag']
+    default_tag = config["default_unregistered_tag"]
+    cross_seeding_tag = config["cross_seeding_tag"]
 
     # Pre-compile patterns for efficient matching
-    unregistered_patterns = config.get('unregistered', [])
+    unregistered_patterns = config.get("unregistered", [])
     exact_matches, starts_with_patterns = compile_patterns(unregistered_patterns)
 
     # First pass: Collect all torrent data and unregistered status
@@ -160,14 +167,14 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
         # Use pre-compiled patterns for faster matching
         unregistered_count = process_torrent(torrent, exact_matches, starts_with_patterns)
 
-        unregistered_counts_per_path[torrent.save_path] = unregistered_counts_per_path.get(torrent.save_path, 0) + unregistered_count
+        unregistered_counts_per_path[torrent.save_path] = (
+            unregistered_counts_per_path.get(torrent.save_path, 0) + unregistered_count
+        )
 
         # Track unregistered torrents per path (don't assign tags yet)
         if unregistered_count > 0:
             # Track number of torrents (not tracker hits) with any unregistered tracker
-            unregistered_torrents_per_path[torrent.save_path] = (
-                unregistered_torrents_per_path.get(torrent.save_path, 0) + 1
-            )
+            unregistered_torrents_per_path[torrent.save_path] = unregistered_torrents_per_path.get(torrent.save_path, 0) + 1
             # Store this torrent hash for the path
             if torrent.save_path not in unregistered_hashes_per_path:
                 unregistered_hashes_per_path[torrent.save_path] = []
@@ -182,7 +189,7 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
         total_torrents_in_path = len(torrent_file_paths[save_path])
         unregistered_torrents_in_path = unregistered_torrents_per_path[save_path]
 
-        is_all_unregistered = (unregistered_torrents_in_path == total_torrents_in_path)
+        is_all_unregistered = unregistered_torrents_in_path == total_torrents_in_path
 
         if is_all_unregistered:
             # All torrents in this path have unregistered trackers

@@ -27,19 +27,16 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Paths relative to script location
-CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config.json')
-MAIN_SCRIPT_PATH = os.path.join(SCRIPT_DIR, 'qbitunregistered.py')
+CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
+MAIN_SCRIPT_PATH = os.path.join(SCRIPT_DIR, "qbitunregistered.py")
+
 
 def run_script():
     """Execute the qbitunregistered.py script with error handling and timeout."""
     try:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting scheduled run of qbitunregistered.py")
         result = subprocess.run(
-            [sys.executable, MAIN_SCRIPT_PATH],
-            timeout=3600,  # 1 hour timeout
-            check=True,
-            capture_output=True,
-            text=True
+            [sys.executable, MAIN_SCRIPT_PATH], timeout=3600, check=True, capture_output=True, text=True  # 1 hour timeout
         )
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Completed scheduled run successfully")
 
@@ -56,9 +53,10 @@ def run_script():
     except Exception as e:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ERROR: Unexpected error running script: {type(e).__name__}: {e}")
 
+
 # Load configuration from config.json (relative to this script)
 try:
-    with open(CONFIG_PATH, 'r') as config_file:
+    with open(CONFIG_PATH, "r") as config_file:
         config = json.load(config_file)
 except FileNotFoundError:
     print(f"Error: The configuration file {CONFIG_PATH} was not found.")
@@ -68,7 +66,7 @@ except json.JSONDecodeError:
     sys.exit(1)
 
 # Schedule the script to run at the specified times
-scheduled_times = config.get('scheduled_times', [])
+scheduled_times = config.get("scheduled_times", [])
 if not scheduled_times:
     print("Warning: No scheduled_times found in config.json. Scheduler will not run any tasks.")
     sys.exit(0)

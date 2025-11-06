@@ -1,4 +1,5 @@
 """Tests for caching functionality."""
+
 import pytest
 import time
 from utils.cache import SimpleCache, cached, get_cache, clear_cache
@@ -91,20 +92,20 @@ class TestSimpleCache:
 
         stats = cache.stats()
 
-        assert stats['hits'] == 2
-        assert stats['misses'] == 2
-        assert stats['size'] == 1
-        assert stats['hit_rate'] == 50.0
+        assert stats["hits"] == 2
+        assert stats["misses"] == 2
+        assert stats["size"] == 1
+        assert stats["hit_rate"] == 50.0
 
     def test_cache_stats_no_requests(self):
         """Test cache stats with no requests."""
         cache = SimpleCache()
         stats = cache.stats()
 
-        assert stats['hits'] == 0
-        assert stats['misses'] == 0
-        assert stats['size'] == 0
-        assert stats['hit_rate'] == 0
+        assert stats["hits"] == 0
+        assert stats["misses"] == 0
+        assert stats["size"] == 0
+        assert stats["hit_rate"] == 0
 
 
 class TestCachedDecorator:
@@ -213,5 +214,5 @@ class TestCacheTypes:
 
         # Check stats to verify it was a hit, not a miss
         stats = cache.stats()
-        assert stats['hits'] == 1
-        assert stats['misses'] == 0
+        assert stats["hits"] == 1
+        assert stats["misses"] == 0

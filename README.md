@@ -100,6 +100,85 @@ Control logging behavior through `config.json` or command-line arguments:
   ```
   CLI override: `--log-file /path/to/logfile.log`
 
+### Webhook Notifications
+
+Receive real-time notifications about operations via webhooks. Supports Discord, Slack, and generic JSON endpoints.
+
+**Configuration in `config.json`:**
+```json
+{
+  "webhooks": [
+    {
+      "url": "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN",
+      "format": "discord",
+      "min_level": "warning",
+      "enabled": true,
+      "retry_attempts": 3,
+      "retry_delay": 1.0,
+      "timeout": 10.0
+    }
+  ]
+}
+```
+
+**Webhook Options:**
+- **`url`** (required): Webhook endpoint URL
+- **`format`**: `discord`, `slack`, or `generic` (default: `generic`)
+- **`min_level`**: Minimum event severity to send: `info`, `warning`, `error`, `critical` (default: `info`)
+- **`enabled`**: Enable/disable this webhook (default: `true`)
+- **`retry_attempts`**: Number of retry attempts on failure (default: `3`)
+- **`retry_delay`**: Initial delay between retries in seconds (default: `1.0`)
+- **`timeout`**: Request timeout in seconds (default: `10.0`)
+
+**Event Types:**
+- Connection established/failed
+- Unregistered torrents found
+- Torrents deleted
+- Orphaned files found/deleted
+- Operation started/completed/failed
+- Large operation warnings
+
+**Platform-Specific Setup:**
+
+*Discord:*
+1. Go to Server Settings → Integrations → Webhooks
+2. Create New Webhook
+3. Copy the Webhook URL
+4. Set `format: "discord"` in config
+
+*Slack:*
+1. Go to https://api.slack.com/apps
+2. Create an Incoming Webhook
+3. Copy the Webhook URL
+4. Set `format: "slack"` in config
+
+*Generic:*
+- Sends raw JSON payload with event details
+- Compatible with any service accepting JSON webhooks
+
+**Example: Multiple Webhooks**
+```json
+{
+  "webhooks": [
+    {
+      "url": "https://discord.com/api/webhooks/...",
+      "format": "discord",
+      "min_level": "warning"
+    },
+    {
+      "url": "https://hooks.slack.com/services/...",
+      "format": "slack",
+      "min_level": "error"
+    },
+    {
+      "url": "https://your-service.com/webhook",
+      "format": "generic",
+      "min_level": "info"
+    }
+  ]
+}
+```
+
 ## Security
 
 ### Config File Permissions

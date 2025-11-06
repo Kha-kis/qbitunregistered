@@ -5,6 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### Feature 1.1: Dry-Run Impact Preview
+- **Impact Analyzer** (`utils/impact_analyzer.py`):
+  - Shows what operations will be performed before execution
+  - Summarizes torrents to delete, tag, pause, and resume
+  - Calculates disk space to be freed
+  - Warns about large operations (>50GB, >20 torrents, >50 orphaned files)
+  - Supports all major operations (unregistered, orphaned, pause/resume)
+- **Interactive Confirmation**:
+  - New `--yes` / `-y` flag to skip confirmation and proceed directly
+  - Safe by default: prompts user before destructive operations
+  - Preview shown automatically when operations are pending
+- **Comprehensive Tests**: 26 tests covering all impact analysis scenarios
+  - Mock tracker objects with `.msg` attribute support
+  - Integration tests for full workflow
+  - Warning threshold validation
+
+#### Feature 1.2: Webhook Notifications
+- **Event System** (`utils/events.py`):
+  - Tracks all major operations and results
+  - Event types: connection, unregistered found, torrents deleted, orphaned files, operation status
+  - Event levels: INFO, WARNING, ERROR, CRITICAL
+  - Event filtering by type and severity level
+  - Operation timing and duration tracking
+  - Global event tracker singleton with reset capability
+- **Webhook Delivery** (`utils/webhooks.py`):
+  - Supports Discord, Slack, and generic JSON webhooks
+  - Retry logic with exponential backoff (configurable attempts and delays)
+  - Automatic payload formatting for each platform
+  - Color-coded embeds/attachments based on severity
+  - Event summary reports with statistics
+  - Configurable minimum severity level per webhook
+  - Connection timeout and error handling
+- **Integration**:
+  - Automatic event tracking for all operations in `qbitunregistered.py`
+  - Webhook summary sent at script completion
+  - Connection events tracked (success/failure)
+  - Unregistered torrents, deletions, and orphaned files tracked
+  - Operation start/complete/failure events
+- **Configuration**: See `config.json.example` for webhook setup examples
+- **Tests**: 30+ tests covering events, webhooks, formatting, and delivery
+
+#### CI/CD Pipeline
+- **GitHub Actions Workflow** (`.github/workflows/ci.yml`):
+  - Lint job: flake8, black, mypy type checking
+  - Test matrix: Python 3.9, 3.10, 3.11, 3.12
+  - Integration and smoke test jobs
+  - Security scanning: safety (dependency vulnerabilities), bandit (code security)
+  - Code coverage reporting with 60% threshold
+- **Development Configuration**:
+  - `pyproject.toml` with dev dependencies and tool configurations
+  - `.flake8` configuration for linting
+  - Black formatter (127 char line length)
+  - Coverage exclusions for main entry points
+
+### Changed
+- **Configuration Validation**: Added webhook configuration validation
+- **Event Tracking**: Integrated throughout all operations
+
 ## [2.0.0] - 2025-11-06
 
 ### ⚠️ BREAKING CHANGES
