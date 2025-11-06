@@ -152,7 +152,6 @@ def apply_seed_limits(client: QBittorrentClient, config: Dict[str, Any], torrent
                     torrent_hashes=torrent_hashes,
                     ratio_limit=ratio_limit if ratio_limit is not None else -2.0,
                     seeding_time_limit=time_limit if time_limit is not None else -2,
-                    inactive_seeding_time_limit=-2,
                 )
                 logging.info(
                     f"Updated share limits for {len(torrent_hashes)} torrents "

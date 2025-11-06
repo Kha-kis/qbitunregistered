@@ -11,7 +11,9 @@ class MockTorrent:
     def __init__(self, name, hash_val, creation_date=None, state="complete"):
         self.name = name
         self.hash = hash_val
-        self.creation_date = creation_date or datetime.now()
+        # Convert datetime to timestamp for added_on
+        creation_dt = creation_date or datetime.now()
+        self.added_on = int(creation_dt.timestamp())
 
         # Mock state enum
         class MockStateEnum:

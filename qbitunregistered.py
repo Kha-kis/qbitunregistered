@@ -3,6 +3,7 @@ import argparse
 import os
 import sys
 import logging
+from typing import Dict, List
 from qbittorrentapi import Client, exceptions
 
 # Exit codes for different failure types
@@ -165,7 +166,7 @@ logging.info("Starting qbitunregistered script...")
 # No manual clearing needed on startup.
 
 # Track operation results for summary
-operation_results = {"succeeded": [], "failed": []}
+operation_results: Dict[str, List[str]] = {"succeeded": [], "failed": []}
 
 # ============================================================
 # IMPACT PREVIEW (if not using --yes flag)

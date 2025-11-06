@@ -6,10 +6,11 @@ tracker patterns and retrieve associated configuration.
 """
 
 import logging
+from typing import Dict, Any, Optional
 from urllib.parse import urlparse
 
 
-def match_tracker_url(tracker_url, tracker_tags_config):
+def match_tracker_url(tracker_url: str, tracker_tags_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Match a tracker URL against configured tracker patterns.
 

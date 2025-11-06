@@ -76,7 +76,7 @@ def tag_by_tracker(
             if dry_run:
                 logging.info(f"[Dry Run] Would add tag '{tag}' to {len(torrent_hashes)} torrents")
             else:
-                client.torrents_add_tags(torrent_hashes=torrent_hashes, tags=[tag])
+                client.torrents_add_tags(torrent_hashes=torrent_hashes, tags=tag)
                 logging.info(f"Added tag '{tag}' to {len(torrent_hashes)} torrents")
         except Exception:
             logging.exception(
@@ -99,7 +99,6 @@ def tag_by_tracker(
                     torrent_hashes=torrent_hashes,
                     ratio_limit=ratio_limit if ratio_limit is not None else -2.0,
                     seeding_time_limit=time_limit if time_limit is not None else -2,
-                    inactive_seeding_time_limit=-2,
                 )
                 logging.info(
                     f"Updated share limits for {len(torrent_hashes)} torrents " f"(time: {time_limit}, ratio: {ratio_limit})"

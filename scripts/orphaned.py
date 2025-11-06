@@ -26,7 +26,7 @@ def _get_default_save_path(client, *, cache_scope: int) -> str:
     """
     # Runtime assertion to prevent cache contamination
     assert cache_scope is not None, "cache_scope must be provided (use id(client))"
-    return client.application.default_save_path
+    return str(client.application.default_save_path)
 
 
 @cached(ttl=300, key_prefix="torrent_categories")
@@ -92,7 +92,7 @@ def check_files_on_disk(
     # Track files used by torrents - use resolved paths for accurate comparison
     # Cache resolved save paths to avoid redundant syscalls (1M+ syscalls → ~1K for 1K torrents)
     resolved_save_paths = {}
-    torrent_files = set()
+    torrent_files: set[Path] = set()
 
     for torrent in torrents:
         # Cache resolve() result per unique save_path

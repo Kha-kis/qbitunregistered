@@ -1,6 +1,6 @@
 import logging
 import datetime
-from typing import Sequence, Dict, Any
+from typing import Sequence, Dict, Any, DefaultDict
 from collections import defaultdict
 import sys
 from pathlib import Path
@@ -28,20 +28,27 @@ def tag_by_age(
 
         # Group torrents by age tag for batch processing
         tag_groups = defaultdict(list)
-        tag_counts = defaultdict(int)
+        tag_counts: DefaultDict[str, int] = defaultdict(int)
 
         logging.info(f"Calculating age tags for {len(torrents)} torrents...")
 
         for torrent in torrents:
             try:
+                # Get added_on timestamp (when torrent was added to qBittorrent)
+                added_on = getattr(torrent, "added_on", None)
+                if not added_on:
+                    logging.debug(f"Skipping torrent '{torrent.name}': missing added_on timestamp")
+                    continue
+
+                # Convert timestamp to datetime
+                created_at = datetime.datetime.fromtimestamp(added_on)
+
                 # Calculate the age of the torrent in months (accounting for day-of-month)
-                months_diff = (current_time.year - torrent.creation_date.year) * 12 + (
-                    current_time.month - torrent.creation_date.month
-                )
+                months_diff = (current_time.year - created_at.year) * 12 + (current_time.month - created_at.month)
 
                 # Adjust if the day hasn't passed yet in the current month
                 # (e.g., created Jan 31, checked Feb 1 should be 0 months, not 1)
-                if current_time.day < torrent.creation_date.day:
+                if current_time.day < created_at.day:
                     months_diff -= 1
 
                 torrent_age_months = months_diff
@@ -51,7 +58,7 @@ def tag_by_age(
                 if torrent_age_months < 0:
                     logging.warning(
                         f"Skipping torrent '{torrent.name}': creation date is in the future "
-                        f"({torrent.creation_date} > {current_time}). "
+                        f"({created_at} > {current_time}). "
                         f"Check system clock or torrent metadata."
                     )
                     continue
@@ -81,7 +88,7 @@ def tag_by_age(
 
             except AttributeError as e:
                 logging.warning(
-                    f"Skipping torrent '{getattr(torrent, 'name', 'unknown')}': missing creation_date attribute: {e}"
+                    f"Skipping torrent '{getattr(torrent, 'name', 'unknown')}': missing added_on attribute: {e}"
                 )
             except Exception:
                 logging.exception(f"Error processing torrent '{getattr(torrent, 'name', 'unknown')}'")
@@ -93,7 +100,7 @@ def tag_by_age(
                 if dry_run:
                     logging.info(f"[Dry Run] Would add tag '{tag}' to {len(torrent_hashes)} torrents")
                 else:
-                    client.torrents_add_tags(torrent_hashes=torrent_hashes, tags=[tag])
+                    client.torrents_add_tags(torrent_hashes=torrent_hashes, tags=tag)
                     logging.info(f"Added tag '{tag}' to {len(torrent_hashes)} torrents")
                 total_tagged += len(torrent_hashes)
             except Exception:
