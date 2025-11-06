@@ -5,7 +5,7 @@ Provides Protocol classes for type hints to improve IDE support and type checkin
 without tight coupling to qbittorrent-api implementation details.
 """
 
-from typing import Protocol, Any, runtime_checkable
+from typing import Protocol, Any, runtime_checkable, Optional, List
 from enum import Enum
 
 
@@ -42,6 +42,7 @@ class TorrentInfo(Protocol):
     ratio: float
     uploaded: int
     downloaded: int
+    files: Optional[List[Any]]  # List of file information dictionaries
 
 
 @runtime_checkable
