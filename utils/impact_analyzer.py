@@ -394,8 +394,6 @@ def _analyze_orphaned(
         config: Configuration dict
         summary: ImpactSummary to update
     """
-    from pathlib import Path
-
     # This is a simplified version - full implementation would need to scan disk
     # For now, we'll note that orphaned check requires actual disk scanning
     summary.set_operation_detail(

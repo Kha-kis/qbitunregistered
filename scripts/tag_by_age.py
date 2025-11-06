@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import TorrentInfo, QBittorrentClient
+from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
 
 
 def tag_by_age(
@@ -87,9 +87,7 @@ def tag_by_age(
                 logging.debug(f"Torrent '{torrent.name}' ({torrent_age_months} months old) -> tag '{tag}'")
 
             except AttributeError as e:
-                logging.warning(
-                    f"Skipping torrent '{getattr(torrent, 'name', 'unknown')}': missing added_on attribute: {e}"
-                )
+                logging.warning(f"Skipping torrent '{getattr(torrent, 'name', 'unknown')}': missing added_on attribute: {e}")
             except Exception:
                 logging.exception(f"Error processing torrent '{getattr(torrent, 'name', 'unknown')}'")
 

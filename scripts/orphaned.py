@@ -6,7 +6,7 @@ from fnmatch import translate
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.cache import cached
+from utils.cache import cached  # noqa: E402
 
 
 @cached(ttl=300, key_prefix="app_default_save_path")

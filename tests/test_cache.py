@@ -146,18 +146,18 @@ class TestCachedDecorator:
             return f"result_{param}"
 
         # First call
-        _result1 = expiring_function("client", "value")
+        expiring_function("client", "value")
         assert call_count == 1
 
         # Immediate second call should use cache
-        _result2 = expiring_function("client", "value")
+        expiring_function("client", "value")
         assert call_count == 1
 
         # Wait for expiry
         time.sleep(1.1)
 
         # Should execute function again after expiry
-        _result3 = expiring_function("client", "value")
+        expiring_function("client", "value")
         assert call_count == 2
 
     def test_global_cache_operations(self):

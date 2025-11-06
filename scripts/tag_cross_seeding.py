@@ -6,8 +6,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.cache import cached
-from utils.types import TorrentInfo, QBittorrentClient
+from utils.cache import cached  # noqa: E402
+from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
 
 
 @cached(ttl=300, key_prefix="torrent_files")

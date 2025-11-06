@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from scripts.seeding_management import find_tracker_config
-from utils.types import TorrentInfo, QBittorrentClient
+from scripts.seeding_management import find_tracker_config  # noqa: E402
+from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
 
 
 def tag_by_tracker(

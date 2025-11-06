@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import TorrentInfo, QBittorrentClient
+from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
 
 
 def apply_auto_tmm_per_torrent(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:

@@ -7,7 +7,7 @@ from tqdm import tqdm
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import TorrentInfo
+from utils.types import TorrentInfo  # noqa: E402
 
 
 def _sanitize_category_name(category: str) -> str:
