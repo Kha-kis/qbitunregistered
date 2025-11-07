@@ -359,6 +359,16 @@ class WebhookManager:
                     timeout=webhook_cfg.get("timeout", 10.0),
                 )
 
+                # Warn about insecure HTTP webhooks
+                from urllib.parse import urlparse
+
+                parsed_url = urlparse(webhook_cfg["url"])
+                if parsed_url.scheme == "http":
+                    logger.warning(
+                        f"Webhook using insecure HTTP protocol (credentials/data sent unencrypted): "
+                        f"{webhook_cfg['url'][:50]}{'...' if len(webhook_cfg['url']) > 50 else ''}"
+                    )
+
                 self.add_webhook(webhook_config)
 
             except KeyError as e:

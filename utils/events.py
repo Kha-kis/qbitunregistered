@@ -67,10 +67,18 @@ class Event:
 class EventTracker:
     """Tracks events during qbitunregistered operations."""
 
-    def __init__(self):
-        """Initialize the event tracker."""
+    def __init__(self, max_events: int = 10000):
+        """
+        Initialize the event tracker.
+
+        Args:
+            max_events: Maximum number of events to store (prevents memory issues in long-running tasks).
+                       Older events are dropped when limit is reached. Default: 10000
+        """
         self.events: List[Event] = []
+        self.max_events = max_events
         self._operation_start_time: Optional[datetime] = None
+        self._dropped_events_count: int = 0
 
     def track(self, event_type: EventType, level: EventLevel, message: str, details: Optional[Dict[str, Any]] = None):
         """
@@ -83,6 +91,19 @@ class EventTracker:
             details: Additional event details
         """
         event = Event(event_type=event_type, level=level, message=message, details=details or {})
+
+        # Implement event rotation if limit reached
+        if len(self.events) >= self.max_events:
+            # Keep most recent events, drop oldest
+            # Keep the last 90% of max_events to avoid frequent rotation
+            keep_count = int(self.max_events * 0.9)
+            dropped_count = len(self.events) - keep_count
+            self.events = self.events[-keep_count:]
+            self._dropped_events_count += dropped_count
+            logger.debug(
+                f"Event limit reached ({self.max_events}), dropped {dropped_count} oldest events. "
+                f"Total dropped: {self._dropped_events_count}"
+            )
 
         self.events.append(event)
 
