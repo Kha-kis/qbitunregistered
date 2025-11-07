@@ -1,5 +1,5 @@
 """Tests for tag operations."""
-import pytest
+
 from datetime import datetime
 from collections import defaultdict
 
@@ -10,11 +10,13 @@ class MockTorrent:
     def __init__(self, name, hash_val, creation_date=None, state="complete"):
         self.name = name
         self.hash = hash_val
-        self.creation_date = creation_date or datetime.now()
+        # Convert datetime to timestamp for added_on
+        creation_dt = creation_date or datetime.now()
+        self.added_on = int(creation_dt.timestamp())
 
         # Mock state enum
         class MockStateEnum:
-            is_complete = (state == "complete")
+            is_complete = state == "complete"
 
         self.state_enum = MockStateEnum()
 
@@ -39,10 +41,7 @@ class MockClient:
         """Mock files method."""
         self.api_calls.append(("get_files", torrent_hash))
         # Return mock file list
-        return [
-            {"name": "file1.mkv"},
-            {"name": "file2.mkv"}
-        ]
+        return [{"name": "file1.mkv"}, {"name": "file2.mkv"}]
 
 
 class TestTagByAge:

@@ -1,12 +1,13 @@
 import logging
 from collections import defaultdict
-from typing import Sequence, Dict, Any
+from typing import Sequence
 from tqdm import tqdm
 from pathlib import Path
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.cache import cached
-from utils.types import TorrentInfo, QBittorrentClient
+from utils.cache import cached  # noqa: E402
+from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
 
 
 @cached(ttl=300, key_prefix="torrent_files")
@@ -57,7 +58,7 @@ def tag_cross_seeds(client: QBittorrentClient, torrents: Sequence[TorrentInfo], 
         # Collect torrents by their file structure
         for torrent in tqdm(torrents, desc="Analyzing file structures", unit="torrent", disable=dry_run):
             try:
-                torrent_path = getattr(torrent, 'save_path', None)
+                torrent_path = getattr(torrent, "save_path", None)
                 if not torrent_path:
                     logging.warning(f"Skipping torrent '{torrent.name}': missing save_path")
                     errors += 1
@@ -99,7 +100,9 @@ def tag_cross_seeds(client: QBittorrentClient, torrents: Sequence[TorrentInfo], 
         not_cross_seeding_hashes = []
 
         for file_structure, torrent_list in file_structure_map.items():
-            logging.debug(f"File structure with {len(list(file_structure)[:3])}... files found in {len(torrent_list)} torrents")
+            logging.debug(
+                f"File structure with {len(list(file_structure)[:3])}... files found in {len(torrent_list)} torrents"
+            )
 
             if len(torrent_list) > 1:
                 # Cross-seeding detected
@@ -158,7 +161,9 @@ def tag_cross_seeds(client: QBittorrentClient, torrents: Sequence[TorrentInfo], 
                 logging.error(f"Failed to update 'not-cross-seeding' tags for batch: {e}")
 
         # Summary
-        logging.info(f"Cross-seed tagging completed: {total_tagged} torrents tagged, {total_removed} contradictory tags removed")
+        logging.info(
+            f"Cross-seed tagging completed: {total_tagged} torrents tagged, {total_removed} contradictory tags removed"
+        )
         logging.info(f"  - cross-seed: {tag_counts['cross-seed']} torrents")
         logging.info(f"  - not-cross-seeding: {tag_counts['not-cross-seeding']} torrents")
 

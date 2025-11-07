@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Dry-Run Impact Preview**: New impact analysis system that shows what will happen before executing operations
+  - Interactive confirmation prompt for non-dry-run operations
+  - Comprehensive preview showing torrents to delete, tag, pause/resume, and orphaned files
+  - Disk space calculation showing how much will be freed
+  - Automatic warnings for large operations (>50GB or >20 torrents)
+  - Detailed operation summaries with affected torrent counts
+  - New `--yes` / `-y` flag to skip confirmation prompt (for automation/cron)
+  - Non-interactive environment detection (prevents hangs in CI/CD)
+  - New module `utils/impact_analyzer.py` with `ImpactSummary` class
+  - 26 comprehensive tests for impact analysis
+
+### Changed
+- Operations now show preview before execution unless `--yes` flag is used
+- Improved user feedback with clearer understanding of pending changes
+
 ## [2.0.0] - 2025-11-06
 
 ### ⚠️ BREAKING CHANGES

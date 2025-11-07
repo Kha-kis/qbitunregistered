@@ -95,21 +95,23 @@ class RateLimiter:
         recent_calls = [call_time for call_time in self.calls if current_time - call_time < self.time_window]
 
         return {
-            'total_calls': self._total_calls,
-            'delayed_calls': self._total_delayed,
-            'current_rate': len(recent_calls),
-            'max_rate': self.max_calls,
-            'time_window': self.time_window
+            "total_calls": self._total_calls,
+            "delayed_calls": self._total_delayed,
+            "current_rate": len(recent_calls),
+            "max_rate": self.max_calls,
+            "time_window": self.time_window,
         }
 
     def log_stats(self) -> None:
         """Log rate limiter statistics."""
         stats = self.stats()
-        if stats['total_calls'] > 0:
-            delay_rate = (stats['delayed_calls'] / stats['total_calls'] * 100)
-            logging.info(f"Rate limiter stats - Total calls: {stats['total_calls']}, "
-                         f"Delayed: {stats['delayed_calls']} ({delay_rate:.1f}%), "
-                         f"Current rate: {stats['current_rate']}/{stats['max_rate']} per {stats['time_window']}s")
+        if stats["total_calls"] > 0:
+            delay_rate = stats["delayed_calls"] / stats["total_calls"] * 100
+            logging.info(
+                f"Rate limiter stats - Total calls: {stats['total_calls']}, "
+                f"Delayed: {stats['delayed_calls']} ({delay_rate:.1f}%), "
+                f"Current rate: {stats['current_rate']}/{stats['max_rate']} per {stats['time_window']}s"
+            )
 
 
 # Global rate limiter instance
@@ -154,6 +156,7 @@ def rate_limited(func):
         def api_call(client, data):
             return client.some_method(data)
     """
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         limiter = get_rate_limiter()

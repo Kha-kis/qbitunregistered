@@ -1,11 +1,12 @@
 import logging
 import re
 from pathlib import Path
-from typing import List, Pattern, Dict, Any, Optional
+from typing import List, Dict, Any, Optional
 from fnmatch import translate
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.cache import cached
+from utils.cache import cached  # noqa: E402
 
 
 @cached(ttl=300, key_prefix="app_default_save_path")
@@ -25,7 +26,7 @@ def _get_default_save_path(client, *, cache_scope: int) -> str:
     """
     # Runtime assertion to prevent cache contamination
     assert cache_scope is not None, "cache_scope must be provided (use id(client))"
-    return client.application.default_save_path
+    return str(client.application.default_save_path)
 
 
 @cached(ttl=300, key_prefix="torrent_categories")
@@ -49,7 +50,9 @@ def _get_categories(client, *, cache_scope: int) -> Dict[str, Any]:
     return client.torrent_categories.categories
 
 
-def check_files_on_disk(client, torrents: List, exclude_file_patterns: Optional[List[str]] = None, exclude_dirs: Optional[List[str]] = None) -> List[str]:
+def check_files_on_disk(
+    client, torrents: List, exclude_file_patterns: Optional[List[str]] = None, exclude_dirs: Optional[List[str]] = None
+) -> List[str]:
     """
     Identifies orphaned files on disk that are not associated with any active torrents in qBittorrent.
     """
@@ -66,7 +69,7 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: Optional[
     # Get explicitly defined category save paths (cached to reduce API calls)
     categories = _get_categories(client, cache_scope=id(client))
     category_paths = {
-        Path(category.get('savePath', '')).resolve() if category.get('savePath') else default_save_path / category_name
+        Path(category.get("savePath", "")).resolve() if category.get("savePath") else default_save_path / category_name
         for category_name, category in categories.items()
     }
 
@@ -89,7 +92,7 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: Optional[
     # Track files used by torrents - use resolved paths for accurate comparison
     # Cache resolved save paths to avoid redundant syscalls (1M+ syscalls → ~1K for 1K torrents)
     resolved_save_paths = {}
-    torrent_files = set()
+    torrent_files: set[Path] = set()
 
     for torrent in torrents:
         # Cache resolve() result per unique save_path
@@ -100,15 +103,17 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: Optional[
         # Add all files for this torrent
         torrent_files.update((base_path / file.name).resolve() for file in torrent.files)
 
-    logging.debug(f"Tracking {len(torrent_files)} files from {len(torrents)} torrents (using {len(resolved_save_paths)} unique save paths)")
+    logging.debug(
+        f"Tracking {len(torrent_files)} files from {len(torrents)} torrents (using {len(resolved_save_paths)} unique save paths)"
+    )
 
     # Separate literal paths from patterns for efficient handling
     # Patterns (with wildcards) are compiled to regex, literals are resolved for exact matching
     exclude_dir_paths = set()
     exclude_dir_patterns_raw = []
 
-    for d in (exclude_dirs or []):
-        if '*' in d or '?' in d:
+    for d in exclude_dirs or []:
+        if "*" in d or "?" in d:
             # This is a pattern - keep for regex compilation
             exclude_dir_patterns_raw.append(d)
         else:
@@ -184,10 +189,13 @@ def check_files_on_disk(client, torrents: List, exclude_file_patterns: Optional[
 
                 orphaned_files.append(str(entry))
 
-    logging.info(f"Scanned {files_checked} files, excluded {files_excluded_by_pattern} by pattern, "
-                 f"excluded {files_excluded_by_dir} by directory")
+    logging.info(
+        f"Scanned {files_checked} files, excluded {files_excluded_by_pattern} by pattern, "
+        f"excluded {files_excluded_by_dir} by directory"
+    )
 
     return orphaned_files
+
 
 def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torrents: Optional[List] = None):
     """
@@ -217,7 +225,9 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
     # Get save paths from categories (cached to reduce API calls)
     categories = _get_categories(client, cache_scope=id(client))
     for category_name, category in categories.items():
-        category_save_path = Path(category.get('savePath', '')).resolve() if category.get('savePath') else default_save_path / category_name
+        category_save_path = (
+            Path(category.get("savePath", "")).resolve() if category.get("savePath") else default_save_path / category_name
+        )
         active_save_paths.add(category_save_path)
 
     if not orphaned_files:
@@ -284,7 +294,9 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
 
     # Final Summary
     if dry_run:
-        logging.info(f"Dry-run: Would have deleted {deleted_files_count} orphaned files and {deleted_dirs_count} empty directories.")
+        logging.info(
+            f"Dry-run: Would have deleted {deleted_files_count} orphaned files and {deleted_dirs_count} empty directories."
+        )
     else:
         logging.info(f"Deleted {deleted_files_count} orphaned files and {deleted_dirs_count} empty directories.")
 

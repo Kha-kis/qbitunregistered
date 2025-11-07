@@ -1,5 +1,5 @@
 """Tests for caching functionality."""
-import pytest
+
 import time
 from utils.cache import SimpleCache, cached, get_cache, clear_cache
 
@@ -91,20 +91,20 @@ class TestSimpleCache:
 
         stats = cache.stats()
 
-        assert stats['hits'] == 2
-        assert stats['misses'] == 2
-        assert stats['size'] == 1
-        assert stats['hit_rate'] == 50.0
+        assert stats["hits"] == 2
+        assert stats["misses"] == 2
+        assert stats["size"] == 1
+        assert stats["hit_rate"] == 50.0
 
     def test_cache_stats_no_requests(self):
         """Test cache stats with no requests."""
         cache = SimpleCache()
         stats = cache.stats()
 
-        assert stats['hits'] == 0
-        assert stats['misses'] == 0
-        assert stats['size'] == 0
-        assert stats['hit_rate'] == 0
+        assert stats["hits"] == 0
+        assert stats["misses"] == 0
+        assert stats["size"] == 0
+        assert stats["hit_rate"] == 0
 
 
 class TestCachedDecorator:
@@ -146,18 +146,18 @@ class TestCachedDecorator:
             return f"result_{param}"
 
         # First call
-        result1 = expiring_function("client", "value")
+        expiring_function("client", "value")
         assert call_count == 1
 
         # Immediate second call should use cache
-        result2 = expiring_function("client", "value")
+        expiring_function("client", "value")
         assert call_count == 1
 
         # Wait for expiry
         time.sleep(1.1)
 
         # Should execute function again after expiry
-        result3 = expiring_function("client", "value")
+        expiring_function("client", "value")
         assert call_count == 2
 
     def test_global_cache_operations(self):
@@ -213,5 +213,5 @@ class TestCacheTypes:
 
         # Check stats to verify it was a hit, not a miss
         stats = cache.stats()
-        assert stats['hits'] == 1
-        assert stats['misses'] == 0
+        assert stats["hits"] == 1
+        assert stats["misses"] == 0

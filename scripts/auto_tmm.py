@@ -2,8 +2,9 @@ import logging
 from typing import Sequence
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import TorrentInfo, QBittorrentClient
+from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
 
 
 def apply_auto_tmm_per_torrent(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
@@ -30,10 +31,7 @@ def apply_auto_tmm_per_torrent(client: QBittorrentClient, torrents: Sequence[Tor
             logging.info(f"[Dry Run] Would enable auto TMM for {len(torrent_hashes)} torrents")
         else:
             # Batch enable auto TMM for all torrents in a single API call
-            client.torrents_set_auto_management(
-                enable=True,
-                torrent_hashes=torrent_hashes
-            )
+            client.torrents_set_auto_management(enable=True, torrent_hashes=torrent_hashes)
             logging.info(f"Enabled auto TMM for {len(torrent_hashes)} torrents")
 
     except Exception:

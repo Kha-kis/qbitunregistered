@@ -3,8 +3,9 @@ from typing import Sequence
 from tqdm import tqdm
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import TorrentInfo, QBittorrentClient
+from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
 
 
 def auto_remove(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
@@ -50,4 +51,4 @@ def auto_remove(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_
         else:
             logging.info(f"Removed {total_removed} out of {completed_count} completed torrents")
 
-    logging.info(f"auto_remove script completed.")
+    logging.info("auto_remove script completed.")
