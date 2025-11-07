@@ -216,6 +216,75 @@ def validate_config(config: Dict[str, Any]) -> None:
                 except ValueError:
                     errors.append(f"Invalid time format in scheduled_times: '{time_str}'")
 
+    # Validate webhooks configuration
+    if "webhooks" in config:
+        if not isinstance(config["webhooks"], list):
+            errors.append("'webhooks' must be a list")
+        else:
+            for idx, webhook in enumerate(config["webhooks"]):
+                if not isinstance(webhook, dict):
+                    errors.append(f"Webhook {idx} must be a dictionary")
+                    continue
+
+                # Required field: url
+                if "url" not in webhook:
+                    errors.append(f"Webhook {idx} missing required field 'url'")
+                elif not isinstance(webhook["url"], str) or not webhook["url"].strip():
+                    errors.append(f"Webhook {idx} 'url' must be a non-empty string")
+                else:
+                    # Basic URL validation
+                    url = webhook["url"].strip()
+                    if not url.startswith(("http://", "https://")):
+                        errors.append(f"Webhook {idx} 'url' must start with http:// or https://")
+
+                # Validate format field
+                if "format" in webhook:
+                    valid_formats = ["discord", "slack", "generic"]
+                    if webhook["format"] not in valid_formats:
+                        errors.append(f"Webhook {idx} invalid format: '{webhook['format']}'. Must be one of {valid_formats}")
+
+                # Validate min_level field
+                if "min_level" in webhook:
+                    valid_levels = ["info", "warning", "error", "critical"]
+                    min_level = webhook["min_level"]
+                    if not isinstance(min_level, str):
+                        errors.append(f"Webhook {idx} 'min_level' must be a string")
+                    elif min_level.lower() not in valid_levels:
+                        errors.append(f"Webhook {idx} invalid min_level: '{min_level}'. Must be one of {valid_levels}")
+
+                # Validate enabled field
+                if "enabled" in webhook and not isinstance(webhook["enabled"], bool):
+                    errors.append(f"Webhook {idx} 'enabled' must be a boolean")
+
+                # Validate numeric fields
+                if "retry_attempts" in webhook:
+                    value = webhook["retry_attempts"]
+                    if not isinstance(value, int) or value < 0:
+                        errors.append(f"Webhook {idx} 'retry_attempts' must be a non-negative integer")
+                    elif value > 10:
+                        logging.warning(
+                            f"Webhook {idx} 'retry_attempts' is {value}, which is quite high. "
+                            "Consider using a lower value to avoid long delays."
+                        )
+
+                if "retry_delay" in webhook:
+                    value = webhook["retry_delay"]
+                    if not isinstance(value, (int, float)) or value < 0:
+                        errors.append(f"Webhook {idx} 'retry_delay' must be a non-negative number")
+                    elif value > 60:
+                        logging.warning(
+                            f"Webhook {idx} 'retry_delay' is {value}s, which is quite long. " "Consider using a shorter delay."
+                        )
+
+                if "timeout" in webhook:
+                    value = webhook["timeout"]
+                    if not isinstance(value, (int, float)) or value <= 0:
+                        errors.append(f"Webhook {idx} 'timeout' must be a positive number")
+                    elif value > 300:
+                        logging.warning(
+                            f"Webhook {idx} 'timeout' is {value}s, which is very long. " "Consider using a shorter timeout."
+                        )
+
     if errors:
         error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
         raise ConfigValidationError(error_msg)
