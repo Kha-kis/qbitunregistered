@@ -3,7 +3,13 @@
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
-from utils.file_operations import check_cross_seeding, move_files_to_recycle_bin, get_torrent_file_paths
+from utils.file_operations import (
+    check_cross_seeding,
+    move_files_to_recycle_bin,
+    get_torrent_file_paths,
+    fetch_torrent_files,
+)
+from utils.cache import get_cache
 
 
 class TestCheckCrossSeeding:
@@ -230,3 +236,132 @@ class TestGetTorrentFilePaths:
         file_paths = get_torrent_file_paths(mock_client, "test_hash")
 
         assert len(file_paths) == 0
+
+
+class TestFetchTorrentFiles:
+    """Test cached torrent file fetching."""
+
+    def test_fetch_torrent_files_caching(self):
+        """Test that fetch_torrent_files caches API calls."""
+        mock_client = MagicMock()
+        mock_file = MagicMock()
+        mock_file.name = "test.mkv"
+        mock_client.torrents_files.return_value = [mock_file]
+
+        # Clear cache before test
+        get_cache().clear()
+
+        # First call should hit API
+        result1 = fetch_torrent_files(mock_client, "test_hash", cache_scope=id(mock_client))
+        assert len(result1) == 1
+        assert mock_client.torrents_files.call_count == 1
+
+        # Second call with same hash should use cache (no additional API call)
+        result2 = fetch_torrent_files(mock_client, "test_hash", cache_scope=id(mock_client))
+        assert len(result2) == 1
+        assert mock_client.torrents_files.call_count == 1  # Still 1, not 2
+
+        # Third call with different hash should hit API
+        result3 = fetch_torrent_files(mock_client, "different_hash", cache_scope=id(mock_client))
+        assert len(result3) == 1
+        assert mock_client.torrents_files.call_count == 2  # Now 2
+
+    def test_fetch_torrent_files_requires_cache_scope(self):
+        """Test that fetch_torrent_files requires cache_scope parameter."""
+        mock_client = MagicMock()
+
+        with pytest.raises(AssertionError) as exc_info:
+            fetch_torrent_files(mock_client, "test_hash", cache_scope=None)
+
+        assert "cache_scope must be provided" in str(exc_info.value)
+
+    def test_fetch_torrent_files_cache_isolation(self):
+        """Test that different clients don't share cache."""
+        mock_client1 = MagicMock()
+        mock_client2 = MagicMock()
+
+        mock_file1 = MagicMock()
+        mock_file1.name = "file1.mkv"
+        mock_client1.torrents_files.return_value = [mock_file1]
+
+        mock_file2 = MagicMock()
+        mock_file2.name = "file2.mkv"
+        mock_client2.torrents_files.return_value = [mock_file2]
+
+        # Clear cache before test
+        get_cache().clear()
+
+        # Fetch with client1
+        result1 = fetch_torrent_files(mock_client1, "test_hash", cache_scope=id(mock_client1))
+        assert result1[0].name == "file1.mkv"
+
+        # Fetch with client2 (different cache scope)
+        result2 = fetch_torrent_files(mock_client2, "test_hash", cache_scope=id(mock_client2))
+        assert result2[0].name == "file2.mkv"
+
+        # Both clients should have made API calls (no cache sharing)
+        assert mock_client1.torrents_files.call_count == 1
+        assert mock_client2.torrents_files.call_count == 1
+
+    def test_get_torrent_file_paths_uses_cache(self):
+        """Test that get_torrent_file_paths uses cached fetch_torrent_files."""
+        mock_client = MagicMock()
+
+        mock_torrent = MagicMock()
+        mock_torrent.save_path = "/data/movies"
+        mock_client.torrents_info.return_value = [mock_torrent]
+
+        mock_file = MagicMock()
+        mock_file.name = "movie.mkv"
+        mock_client.torrents_files.return_value = [mock_file]
+
+        # Clear cache before test
+        get_cache().clear()
+
+        # First call
+        from unittest.mock import patch
+
+        with patch.object(Path, "exists", return_value=True):
+            result1 = get_torrent_file_paths(mock_client, "test_hash")
+
+        # torrents_files should be called once
+        assert mock_client.torrents_files.call_count == 1
+
+        # Second call with same hash should use cache
+        with patch.object(Path, "exists", return_value=True):
+            result2 = get_torrent_file_paths(mock_client, "test_hash")
+
+        # torrents_files should still be 1 (cached)
+        assert mock_client.torrents_files.call_count == 1
+
+    def test_check_cross_seeding_uses_cache(self):
+        """Test that check_cross_seeding uses cached fetch_torrent_files."""
+        mock_client = MagicMock()
+
+        mock_torrent = MagicMock()
+        mock_torrent.hash = "torrent1"
+        mock_torrent.name = "Test Torrent"
+        mock_torrent.save_path = "/data/movies"
+
+        mock_client.torrents_info.return_value = [mock_torrent]
+
+        mock_file = MagicMock()
+        mock_file.name = "movie.mkv"
+        mock_client.torrents_files.return_value = [mock_file]
+
+        test_files = [Path("/data/movies/movie.mkv")]
+
+        # Clear cache before test
+        get_cache().clear()
+
+        # First call
+        is_cross_seeded1, torrents1 = check_cross_seeding(mock_client, test_files, exclude_hash="exclude")
+
+        # torrents_files should be called once
+        assert mock_client.torrents_files.call_count == 1
+
+        # Second call with same torrent should use cache
+        is_cross_seeded2, torrents2 = check_cross_seeding(mock_client, test_files, exclude_hash="exclude")
+
+        # torrents_files should still be 1 (cached)
+        assert mock_client.torrents_files.call_count == 1
