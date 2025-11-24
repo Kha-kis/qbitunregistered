@@ -5,7 +5,6 @@ from typing import List, Dict, Any, Optional
 from fnmatch import translate
 import sys
 import shutil
-from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.cache import cached  # noqa: E402
@@ -49,7 +48,7 @@ def _get_categories(client, *, cache_scope: int) -> Dict[str, Any]:
     """
     # Runtime assertion to prevent cache contamination
     assert cache_scope is not None, "cache_scope must be provided (use id(client))"
-    return client.torrent_categories.categories  # type: ignore[no-any-return]
+    return client.torrent_categories.categories
 
 
 def check_files_on_disk(
@@ -244,18 +243,13 @@ def delete_orphaned_files(
 
     recycle_bin_path = Path(recycle_bin) if recycle_bin else None
     if recycle_bin_path and not dry_run:
+        if not recycle_bin_path.exists():
+            logging.info(f"Creating recycle bin directory: {recycle_bin_path}")
         recycle_bin_path.mkdir(parents=True, exist_ok=True)
-        logging.debug(f"Ensured recycle bin directory exists: {recycle_bin_path}")
-
-    # Cache path resolution to reduce syscalls (per CLAUDE.md §9.2)
-    resolved_paths = {fp: fp.resolve() for fp in orphaned_files_set}
 
     for file_path in orphaned_files_set:
         parent_dir = file_path.parent
         while parent_dir != parent_dir.parent:  # Add parent and all ancestor directories
-            # Defensive check: never add recycle bin to potential_empty_dirs
-            if recycle_bin_path and parent_dir.resolve() == recycle_bin_path.resolve():
-                break
             potential_empty_dirs.add(parent_dir)
             parent_dir = parent_dir.parent
 
@@ -267,11 +261,36 @@ def delete_orphaned_files(
             deleted_files_count += 1
         else:
             try:
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except Exception:
-                logging.exception(f"Error processing {file_path}")
-                skipped_files.append((file_path, "See logs for details"))
+                if recycle_bin_path:
+                    # Maintain directory structure in recycle bin
+                    # For cross-platform compatibility, we need to handle both Unix and Windows paths
+                    # On Windows: C:\data\movie.mkv -> recycle_bin\C\data\movie.mkv
+                    # On Unix: /mnt/data/movie.mkv -> recycle_bin/mnt/data/movie.mkv
+                    
+                    # Get the absolute path
+                    abs_file_path = file_path.resolve()
+                    
+                    # For Windows, replace drive letter colon with underscore (C: -> C_)
+                    # For Unix, just strip the leading slash
+                    if abs_file_path.drive:
+                        # Windows path with drive letter
+                        relative_path = Path(abs_file_path.drive.replace(':', '_')) / abs_file_path.relative_to(abs_file_path.anchor)
+                    else:
+                        # Unix path
+                        relative_path = abs_file_path.relative_to(abs_file_path.anchor)
+                    
+                    dest_path = recycle_bin_path / relative_path
+                    
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(file_path), str(dest_path))
+                    logging.info(f"Moved orphaned file to recycle bin: {file_path} -> {dest_path}")
+                else:
+                    file_path.unlink()
+                    logging.info(f"Deleted orphaned file: {file_path}")
+                deleted_files_count += 1
+            except Exception as e:
+                logging.error(f"Error processing {file_path}: {e}")
+                skipped_files.append((file_path, str(e)))
 
     # Determine which directories would be empty
     empty_dirs_to_delete = set()
@@ -317,9 +336,7 @@ def delete_orphaned_files(
             f"Dry-run: Would have {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories."
         )
     else:
-        logging.info(
-            f"Successfully {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories."
-        )
+        logging.info(f"Successfully {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories.")
 
     if skipped_files:
         logging.warning(f"Skipped {len(skipped_files)} files due to errors:")
