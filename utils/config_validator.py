@@ -217,42 +217,51 @@ def validate_config(config: Dict[str, Any]) -> None:
                 except ValueError:
                     errors.append(f"Invalid time format in scheduled_times: '{time_str}'")
 
+    # Validate recycle_bin if present
+    recycle_bin = config.get("recycle_bin")
+    if recycle_bin:
+        if not isinstance(recycle_bin, str):
+            errors.append(f"'recycle_bin' must be a string, got: {type(recycle_bin).__name__}")
+        else:
+            recycle_bin_path = Path(recycle_bin)
+            try:
+                if recycle_bin_path.exists():
+                    if not recycle_bin_path.is_dir():
+                        errors.append(f"Recycle bin path '{recycle_bin}' is not a directory.")
+                    elif not os.access(recycle_bin_path, os.W_OK):
+                        errors.append(f"Recycle bin path '{recycle_bin}' is not writable.")
+            except OSError as e:
+                errors.append(f"Invalid recycle bin path '{recycle_bin}': {e}")
+
+    # Validate notification settings
+    if "apprise_url" in config and config["apprise_url"]:
+        if not isinstance(config["apprise_url"], str):
+            errors.append(f"'apprise_url' must be a string, got: {type(config['apprise_url']).__name__}")
+    
+    # Validate Notifiarr settings - key and channel must be set together
+    notifiarr_key = config.get("notifiarr_key")
+    notifiarr_channel = config.get("notifiarr_channel")
+    
+    if notifiarr_key and not notifiarr_channel:
+        errors.append("'notifiarr_channel' must be set when 'notifiarr_key' is provided")
+    if notifiarr_channel and not notifiarr_key:
+        errors.append("'notifiarr_key' must be set when 'notifiarr_channel' is provided")
+    
+    if notifiarr_key:
+        if not isinstance(notifiarr_key, str):
+            errors.append(f"'notifiarr_key' must be a string, got: {type(notifiarr_key).__name__}")
+    
+    if notifiarr_channel:
+        if not isinstance(notifiarr_channel, str):
+            errors.append(f"'notifiarr_channel' must be a string, got: {type(notifiarr_channel).__name__}")
+        elif not notifiarr_channel.isdigit():
+            errors.append(f"'notifiarr_channel' must be a numeric Discord channel ID, got: '{notifiarr_channel}'")
+
     if errors:
         error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
         raise ConfigValidationError(error_msg)
 
     logging.info("Configuration validation passed")
-
-
-    # Validate recycle_bin if present
-    recycle_bin = config.get("recycle_bin")
-    if recycle_bin:
-        recycle_bin_path = Path(recycle_bin)
-        try:
-            if not recycle_bin_path.exists():
-                # It's okay if it doesn't exist, we'll try to create it later.
-                # But we should check if the parent is writable if possible, or just assume it's fine.
-                # For now, let's just skip the directory check if it doesn't exist.
-                pass
-            elif not recycle_bin_path.is_dir():
-                raise ConfigValidationError(f"Recycle bin path '{recycle_bin}' is not a directory.")
-            elif not os.access(recycle_bin_path, os.W_OK):
-                raise ConfigValidationError(f"Recycle bin path '{recycle_bin}' is not writable.")
-        except OSError as e:
-            raise ConfigValidationError(f"Invalid recycle bin path '{recycle_bin}': {e}")
-
-    # Validate notification settings
-    if "apprise_url" in config and config["apprise_url"]:
-        if not isinstance(config["apprise_url"], str):
-            raise ConfigValidationError(f"'apprise_url' must be a string, got: {type(config['apprise_url']).__name__}")
-    
-    if "notifiarr_key" in config and config["notifiarr_key"]:
-        if not isinstance(config["notifiarr_key"], str):
-            raise ConfigValidationError(f"'notifiarr_key' must be a string, got: {type(config['notifiarr_key']).__name__}")
-
-    if "notifiarr_channel" in config and config["notifiarr_channel"]:
-        if not isinstance(config["notifiarr_channel"], str):
-            raise ConfigValidationError(f"'notifiarr_channel' must be a string, got: {type(config['notifiarr_channel']).__name__}")
 
 
 def validate_exclude_patterns(exclude_files: List[str], exclude_dirs: List[str]) -> None:

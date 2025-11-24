@@ -263,13 +263,22 @@ def delete_orphaned_files(
             try:
                 if recycle_bin_path:
                     # Maintain directory structure in recycle bin
-                    # Calculate relative path from the root of the file system or a common base?
-                    # Since files can be anywhere, we'll use the full path structure inside the recycle bin
-                    # e.g. /mnt/data/movie.mkv -> /recycle_bin/mnt/data/movie.mkv
-                    # This avoids collisions and makes restoration easier.
+                    # For cross-platform compatibility, we need to handle both Unix and Windows paths
+                    # On Windows: C:\data\movie.mkv -> recycle_bin\C\data\movie.mkv
+                    # On Unix: /mnt/data/movie.mkv -> recycle_bin/mnt/data/movie.mkv
                     
-                    # Remove drive letter (Windows) or leading slash (Unix) for safe joining
-                    relative_path = file_path.relative_to(file_path.anchor)
+                    # Get the absolute path
+                    abs_file_path = file_path.resolve()
+                    
+                    # For Windows, replace drive letter colon with underscore (C: -> C_)
+                    # For Unix, just strip the leading slash
+                    if abs_file_path.drive:
+                        # Windows path with drive letter
+                        relative_path = Path(abs_file_path.drive.replace(':', '_')) / abs_file_path.relative_to(abs_file_path.anchor)
+                    else:
+                        # Unix path
+                        relative_path = abs_file_path.relative_to(abs_file_path.anchor)
+                    
                     dest_path = recycle_bin_path / relative_path
                     
                     dest_path.parent.mkdir(parents=True, exist_ok=True)
