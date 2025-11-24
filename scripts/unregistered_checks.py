@@ -99,7 +99,9 @@ def update_torrent_file_paths(torrent_file_paths, torrent):
     torrent_file_paths.setdefault(torrent.save_path, []).append(torrent.hash)
 
 
-def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents=None, recycle_bin: Optional[str] = None):
+def delete_torrents_and_files(
+    client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents=None, recycle_bin: Optional[str] = None
+):
     """
     Delete torrents with specific tags. Pass torrents to avoid redundant API call.
 
@@ -145,11 +147,13 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
                                         recycle_bin_path=recycle_bin_path,
                                         deletion_type="unregistered",
                                         category=category,
-                                        dry_run=False
+                                        dry_run=False,
                                     )
 
                                     if failed:
-                                        logging.warning(f"Failed to move {len(failed)} files to recycle bin for torrent '{torrent.name}'")
+                                        logging.warning(
+                                            f"Failed to move {len(failed)} files to recycle bin for torrent '{torrent.name}'"
+                                        )
 
                                     logging.info(
                                         f"Moved {success_count} files to recycle bin (unregistered/{category}) for torrent '{torrent.name}'"
@@ -187,7 +191,9 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
                 continue
 
 
-def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run, recycle_bin: Optional[str] = None):
+def unregistered_checks(
+    client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run, recycle_bin: Optional[str] = None
+):
     """
     Check torrents for unregistered status and apply appropriate tags.
 

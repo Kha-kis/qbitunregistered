@@ -8,11 +8,7 @@ from typing import List, Tuple, Optional
 
 
 def move_files_to_recycle_bin(
-    file_paths: List[Path],
-    recycle_bin_path: Path,
-    deletion_type: str,
-    category: str = "uncategorized",
-    dry_run: bool = False
+    file_paths: List[Path], recycle_bin_path: Path, deletion_type: str, category: str = "uncategorized", dry_run: bool = False
 ) -> Tuple[int, List[Tuple[Path, str]]]:
     """
     Move files to recycle bin with hybrid organization (type + category).
@@ -69,7 +65,7 @@ def move_files_to_recycle_bin(
             # For cross-platform compatibility, handle both Unix and Windows paths
             if abs_file_path.drive:
                 # Windows path with drive letter (C: -> C_)
-                relative_path = Path(abs_file_path.drive.replace(':', '_')) / abs_file_path.relative_to(abs_file_path.anchor)
+                relative_path = Path(abs_file_path.drive.replace(":", "_")) / abs_file_path.relative_to(abs_file_path.anchor)
             else:
                 # Unix path (strip leading slash)
                 relative_path = abs_file_path.relative_to(abs_file_path.anchor)

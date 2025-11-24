@@ -108,7 +108,11 @@ class NotificationManager:
 
     def _send_apprise(self, title: str, body: str) -> None:
         """Sends notification via Apprise with retry logic."""
+        # Type assertion for type checker
+        assert self.apprise_obj is not None, "apprise_obj should be initialized"
+
         def send():
+            assert self.apprise_obj is not None  # For type checker in closure
             self.apprise_obj.notify(body=body, title=title)
 
         if self._retry_with_backoff(send):
@@ -125,6 +129,10 @@ class NotificationManager:
             body: Notification body
             has_failures: Whether any operations failed (affects color)
         """
+        # Type assertions for type checker
+        assert self.notifiarr_key is not None, "notifiarr_key should be set when _notifiarr_enabled is True"
+        assert self.notifiarr_channel is not None, "notifiarr_channel should be set when _notifiarr_enabled is True"
+
         url = "https://notifiarr.com/api/v1/notification/passthrough"
 
         # Choose color based on success/failure
@@ -182,6 +190,4 @@ class NotificationManager:
                     error_body = error_body.replace(self.notifiarr_key, "***REDACTED***")
             except Exception:
                 pass
-            logging.exception(
-                f"Failed to send Notifiarr notification: HTTP {e.code} - {e.reason}. Details: {error_body}"
-            )
+            logging.exception(f"Failed to send Notifiarr notification: HTTP {e.code} - {e.reason}. Details: {error_body}")

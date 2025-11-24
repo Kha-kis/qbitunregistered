@@ -262,7 +262,7 @@ def delete_orphaned_files(
             recycle_bin_path=recycle_bin_path,
             deletion_type="orphaned",
             category="uncategorized",  # Orphaned files don't have a category
-            dry_run=dry_run
+            dry_run=dry_run,
         )
 
         deleted_files_count = success_count
@@ -326,7 +326,9 @@ def delete_orphaned_files(
             f"Dry-run: Would have {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories."
         )
     else:
-        logging.info(f"Successfully {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories.")
+        logging.info(
+            f"Successfully {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories."
+        )
 
     if skipped_files:
         logging.warning(f"Skipped {len(skipped_files)} files due to errors:")
