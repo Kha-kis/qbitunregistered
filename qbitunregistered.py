@@ -283,7 +283,7 @@ if args.orphaned:
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as e:
-        logging.exception(f"Error checking orphaned files: {e}")
+        logging.exception("Error checking orphaned files")
         operation_results["failed"].append(f"Orphaned files check: {e}")
 
 # Run unregistered checks if --unregistered argument is passed

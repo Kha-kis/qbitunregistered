@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 from fnmatch import translate
 import sys
 import shutil
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.cache import cached  # noqa: E402
@@ -252,6 +253,9 @@ def delete_orphaned_files(
     for file_path in orphaned_files_set:
         parent_dir = file_path.parent
         while parent_dir != parent_dir.parent:  # Add parent and all ancestor directories
+            # Defensive check: never add recycle bin to potential_empty_dirs
+            if recycle_bin_path and parent_dir.resolve() == recycle_bin_path.resolve():
+                break
             potential_empty_dirs.add(parent_dir)
             parent_dir = parent_dir.parent
 
@@ -263,45 +267,6 @@ def delete_orphaned_files(
             deleted_files_count += 1
         else:
             try:
-                if recycle_bin_path:
-                    # Maintain directory structure in recycle bin
-                    # For cross-platform compatibility, we need to handle both Unix and Windows paths
-                    # On Windows: C:\data\movie.mkv -> recycle_bin\C_\data\movie.mkv (colon replaced with underscore)
-                    # On Unix: /mnt/data/movie.mkv -> recycle_bin/mnt/data/movie.mkv
-                    # Note: shutil.move() may perform copy+delete across filesystems (slower than os.rename)
-
-                    # Get the cached resolved path
-                    abs_file_path = resolved_paths[file_path]
-
-                    # For Windows, replace drive letter colon with underscore (C: -> C_)
-                    # For Unix, just strip the leading slash
-                    if abs_file_path.drive:
-                        # Windows path with drive letter
-                        relative_path = Path(abs_file_path.drive.replace(":", "_")) / abs_file_path.relative_to(
-                            abs_file_path.anchor
-                        )
-                    else:
-                        # Unix path
-                        relative_path = abs_file_path.relative_to(abs_file_path.anchor)
-
-                    dest_path = recycle_bin_path / relative_path
-
-                    # Handle file collision: add timestamp if destination exists
-                    if dest_path.exists():
-                        from datetime import datetime
-
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        stem = dest_path.stem
-                        suffix = dest_path.suffix
-                        dest_path = dest_path.parent / f"{stem}_{timestamp}{suffix}"
-
-                    dest_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(file_path), str(dest_path))
-                    logging.info(f"Moved orphaned file to recycle bin: {file_path} -> {dest_path}")
-                else:
-                    file_path.unlink()
-                    logging.info(f"Deleted orphaned file: {file_path}")
-                deleted_files_count += 1
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception:
