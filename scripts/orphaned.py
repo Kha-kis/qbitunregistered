@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fnmatch import translate
 import sys
+import shutil
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.cache import cached  # noqa: E402
@@ -197,7 +198,9 @@ def check_files_on_disk(
     return orphaned_files
 
 
-def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torrents: Optional[List] = None):
+def delete_orphaned_files(
+    orphaned_files: List[str], dry_run: bool, client, torrents: Optional[List] = None, recycle_bin: Optional[str] = None
+):
     """
     Deletes orphaned files and removes empty directories, while preserving active save paths.
     If dry-run is enabled, it logs what would be deleted without actually deleting files.
@@ -207,6 +210,7 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
         dry_run: If True, only log actions without deleting
         client: qBittorrent client instance
         torrents: Optional list of torrents (avoids redundant API call if provided)
+        recycle_bin: Optional path to move files to instead of deleting
     """
     deleted_files_count = 0
     skipped_files = []
@@ -237,6 +241,12 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
     # Track directories that will become empty
     potential_empty_dirs = set()
 
+    recycle_bin_path = Path(recycle_bin) if recycle_bin else None
+    if recycle_bin_path and not dry_run:
+        if not recycle_bin_path.exists():
+            logging.info(f"Creating recycle bin directory: {recycle_bin_path}")
+        recycle_bin_path.mkdir(parents=True, exist_ok=True)
+
     for file_path in orphaned_files_set:
         parent_dir = file_path.parent
         while parent_dir != parent_dir.parent:  # Add parent and all ancestor directories
@@ -244,15 +254,33 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
             parent_dir = parent_dir.parent
 
         if dry_run:
-            logging.info(f"Would delete orphaned file: {file_path}")
+            if recycle_bin:
+                logging.info(f"Would move orphaned file to recycle bin: {file_path}")
+            else:
+                logging.info(f"Would delete orphaned file: {file_path}")
             deleted_files_count += 1
         else:
             try:
-                file_path.unlink()
-                logging.info(f"Deleted orphaned file: {file_path}")
+                if recycle_bin_path:
+                    # Maintain directory structure in recycle bin
+                    # Calculate relative path from the root of the file system or a common base?
+                    # Since files can be anywhere, we'll use the full path structure inside the recycle bin
+                    # e.g. /mnt/data/movie.mkv -> /recycle_bin/mnt/data/movie.mkv
+                    # This avoids collisions and makes restoration easier.
+                    
+                    # Remove drive letter (Windows) or leading slash (Unix) for safe joining
+                    relative_path = file_path.relative_to(file_path.anchor)
+                    dest_path = recycle_bin_path / relative_path
+                    
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(file_path), str(dest_path))
+                    logging.info(f"Moved orphaned file to recycle bin: {file_path} -> {dest_path}")
+                else:
+                    file_path.unlink()
+                    logging.info(f"Deleted orphaned file: {file_path}")
                 deleted_files_count += 1
             except Exception as e:
-                logging.error(f"Error deleting {file_path}: {e}")
+                logging.error(f"Error processing {file_path}: {e}")
                 skipped_files.append((file_path, str(e)))
 
     # Determine which directories would be empty
@@ -293,12 +321,13 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
                 logging.error(f"Error deleting directory {dir_path}: {e}")
 
     # Final Summary
+    action = "moved to recycle bin" if recycle_bin else "deleted"
     if dry_run:
         logging.info(
-            f"Dry-run: Would have deleted {deleted_files_count} orphaned files and {deleted_dirs_count} empty directories."
+            f"Dry-run: Would have {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories."
         )
     else:
-        logging.info(f"Deleted {deleted_files_count} orphaned files and {deleted_dirs_count} empty directories.")
+        logging.info(f"Successfully {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories.")
 
     if skipped_files:
         logging.warning(f"Skipped {len(skipped_files)} files due to errors:")

@@ -152,9 +152,88 @@ class TestConfigValidation:
             validate_config(config)
         assert "must be an integer >= -2" in str(exc_info.value)
 
+    def test_invalid_apprise_url(self):
+        """Test that invalid apprise_url type raises error."""
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "apprise_url": 123,  # Should be string
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "'apprise_url' must be a string" in str(exc_info.value)
+
+    def test_invalid_notifiarr_key(self):
+        """Test that invalid notifiarr_key type raises error."""
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "notifiarr_key": 123,  # Should be string
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "'notifiarr_key' must be a string" in str(exc_info.value)
+
+    def test_invalid_notifiarr_channel(self):
+        """Test that invalid notifiarr_channel type raises error."""
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "notifiarr_channel": 123,  # Should be string
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "'notifiarr_channel' must be a string" in str(exc_info.value)
+
+    def test_recycle_bin_not_dir(self, tmp_path):
+        """Test that recycle bin path pointing to a file raises error."""
+        file_path = tmp_path / "file.txt"
+        file_path.touch()
+        
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "recycle_bin": str(file_path),
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "is not a directory" in str(exc_info.value)
+
+    def test_recycle_bin_does_not_exist_ok(self, tmp_path):
+        """Test that non-existent recycle bin path is allowed (will be created later)."""
+        non_existent_path = tmp_path / "does_not_exist"
+        
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "recycle_bin": str(non_existent_path),
+        }
+        # Should not raise exception
+        validate_config(config)
+
+    def test_recycle_bin_not_writable(self, tmp_path):
+        """Test that non-writable recycle bin raises error."""
+        from unittest.mock import patch
+        
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "recycle_bin": str(tmp_path),
+        }
+        
+        with patch("os.access", return_value=False):
+             with pytest.raises(ConfigValidationError) as exc_info:
+                validate_config(config)
+             assert "is not writable" in str(exc_info.value)
+
 
 class TestExcludePatternValidation:
-    """Test exclude pattern validation."""
 
     def test_validate_dangerous_pattern(self, caplog):
         """Test that dangerous patterns generate warnings."""

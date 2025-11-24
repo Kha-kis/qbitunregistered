@@ -1,6 +1,7 @@
 """Configuration validation utilities for qbitunregistered."""
 
 import logging
+import os
 from typing import Dict, List, Any
 from pathlib import Path
 from urllib.parse import urlparse
@@ -221,6 +222,37 @@ def validate_config(config: Dict[str, Any]) -> None:
         raise ConfigValidationError(error_msg)
 
     logging.info("Configuration validation passed")
+
+
+    # Validate recycle_bin if present
+    recycle_bin = config.get("recycle_bin")
+    if recycle_bin:
+        recycle_bin_path = Path(recycle_bin)
+        try:
+            if not recycle_bin_path.exists():
+                # It's okay if it doesn't exist, we'll try to create it later.
+                # But we should check if the parent is writable if possible, or just assume it's fine.
+                # For now, let's just skip the directory check if it doesn't exist.
+                pass
+            elif not recycle_bin_path.is_dir():
+                raise ConfigValidationError(f"Recycle bin path '{recycle_bin}' is not a directory.")
+            elif not os.access(recycle_bin_path, os.W_OK):
+                raise ConfigValidationError(f"Recycle bin path '{recycle_bin}' is not writable.")
+        except OSError as e:
+            raise ConfigValidationError(f"Invalid recycle bin path '{recycle_bin}': {e}")
+
+    # Validate notification settings
+    if "apprise_url" in config and config["apprise_url"]:
+        if not isinstance(config["apprise_url"], str):
+            raise ConfigValidationError(f"'apprise_url' must be a string, got: {type(config['apprise_url']).__name__}")
+    
+    if "notifiarr_key" in config and config["notifiarr_key"]:
+        if not isinstance(config["notifiarr_key"], str):
+            raise ConfigValidationError(f"'notifiarr_key' must be a string, got: {type(config['notifiarr_key']).__name__}")
+
+    if "notifiarr_channel" in config and config["notifiarr_channel"]:
+        if not isinstance(config["notifiarr_channel"], str):
+            raise ConfigValidationError(f"'notifiarr_channel' must be a string, got: {type(config['notifiarr_channel']).__name__}")
 
 
 def validate_exclude_patterns(exclude_files: List[str], exclude_dirs: List[str]) -> None:

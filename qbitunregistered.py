@@ -17,6 +17,7 @@ from scripts.tag_cross_seeding import tag_cross_seeds
 from scripts.tag_by_age import tag_by_age
 from utils.config_validator import validate_config, validate_exclude_patterns, ConfigValidationError
 from utils.cache import log_cache_stats
+from utils.notifications import NotificationManager
 
 # Exit codes for different failure types
 EXIT_SUCCESS = 0
@@ -32,6 +33,15 @@ parser.add_argument(
     action="store_true",
     help="If set, check for orphaned files on disk and delete them unless --dry-run is specified.",
 )
+parser.add_argument(
+    "--recycle-bin",
+    type=str,
+    default=None,
+    help="Path to the recycle bin directory. If set, orphaned files will be moved here instead of being deleted.",
+)
+parser.add_argument("--apprise-url", type=str, help="Apprise URL for notifications.")
+parser.add_argument("--notifiarr-key", type=str, help="Notifiarr API Key.")
+parser.add_argument("--notifiarr-channel", type=str, help="Notifiarr Discord Channel ID.")
 parser.add_argument("--unregistered", action="store_true", help="If set, perform unregistered checks.")
 parser.add_argument(
     "--dry-run", action="store_true", help="If set, the script will only print actions without executing them."
@@ -103,6 +113,11 @@ target_dir = args.target_dir or config.get("target_dir", None)
 dry_run = args.dry_run if args.dry_run is not None else config.get("dry_run", False)
 exclude_files = args.exclude_files if args.exclude_files else config.get("exclude_files", [])
 exclude_dirs = args.exclude_dirs if args.exclude_dirs else config.get("exclude_dirs", [])
+
+# Notification configuration
+config["apprise_url"] = args.apprise_url or config.get("apprise_url")
+config["notifiarr_key"] = args.notifiarr_key or config.get("notifiarr_key")
+config["notifiarr_channel"] = args.notifiarr_channel or config.get("notifiarr_channel")
 
 # Determine log level (CLI arg > config.json > default INFO)
 log_level_str = args.log_level or config.get("log_level", "INFO")
@@ -243,7 +258,8 @@ if args.orphaned:
         logging.info("Total orphaned files: %d", len(orphaned_files))
 
         # Delete orphaned files unless dry-run is set (pass torrents to avoid redundant API call)
-        delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents)
+        recycle_bin = args.recycle_bin or config.get("recycle_bin", None)
+        delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents, recycle_bin=recycle_bin)
         operation_results["succeeded"].append("Orphaned file check")
     except (KeyboardInterrupt, SystemExit):
         raise
@@ -395,6 +411,10 @@ else:
     logging.info("✗ Failed: None")
 
 logging.info("=" * 60)
+
+# Send notifications
+notification_manager = NotificationManager(config)
+notification_manager.send_summary(operation_results)
 
 # Clean up client connection
 try:

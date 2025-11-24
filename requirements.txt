@@ -10,3 +10,6 @@ tqdm>=4.66.3  # Minimum version required for CVE fix
 # Testing dependencies
 pytest>=7.4.0
 pytest-cov>=4.1.0
+
+# Notification dependencies
+apprise>=1.0.0
