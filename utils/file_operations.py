@@ -138,3 +138,65 @@ def get_torrent_file_paths(client, torrent_hash: str) -> List[Path]:
     except Exception as e:
         logging.exception(f"Error getting file paths for torrent {torrent_hash}: {e}")
         return []
+
+
+def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tuple[bool, List[str]]:
+    """
+    Check if any of the given file paths are being used by other active torrents.
+
+    Args:
+        client: qBittorrent client instance
+        file_paths: List of file paths to check
+        exclude_hash: Hash of the torrent being deleted (to exclude from check)
+
+    Returns:
+        Tuple of (is_cross_seeded, list_of_cross_seeded_torrent_names)
+
+    Security:
+        - Uses resolved paths for accurate comparison
+        - Only checks active torrents (not paused/stopped)
+    """
+    if not file_paths:
+        return False, []
+
+    # Build set of resolved file paths for O(1) lookup
+    file_paths_set = {path.resolve() for path in file_paths}
+
+    cross_seeded_torrents = []
+
+    try:
+        # Get all torrents except the one being deleted
+        all_torrents = client.torrents_info()
+
+        for torrent in all_torrents:
+            # Skip the torrent being deleted
+            if torrent.hash == exclude_hash:
+                continue
+
+            # Get torrent's file paths
+            try:
+                torrent_save_path = Path(torrent.save_path)
+                torrent_files = client.torrents_files(torrent.hash)
+
+                for file_info in torrent_files:
+                    file_path = (torrent_save_path / file_info.name).resolve()
+
+                    # Check if this file is in our list
+                    if file_path in file_paths_set:
+                        cross_seeded_torrents.append(torrent.name)
+                        logging.warning(
+                            f"Cross-seeding detected: File '{file_path}' is also used by torrent '{torrent.name}' (hash: {torrent.hash})"
+                        )
+                        break  # Found a match, no need to check other files in this torrent
+
+            except Exception as e:
+                logging.debug(f"Error checking torrent {torrent.hash} for cross-seeding: {e}")
+                continue
+
+        is_cross_seeded = len(cross_seeded_torrents) > 0
+        return is_cross_seeded, cross_seeded_torrents
+
+    except Exception as e:
+        logging.exception(f"Error during cross-seeding check: {e}")
+        # On error, assume not cross-seeded to avoid blocking legitimate deletions
+        return False, []

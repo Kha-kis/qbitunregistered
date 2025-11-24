@@ -5,7 +5,7 @@ from typing import List, Set, Tuple, Optional
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.file_operations import move_files_to_recycle_bin, get_torrent_file_paths  # noqa: E402
+from utils.file_operations import move_files_to_recycle_bin, get_torrent_file_paths, check_cross_seeding  # noqa: E402
 
 
 def compile_patterns(unregistered: List[str]) -> Tuple[Set[str], Set[str]]:
@@ -138,30 +138,58 @@ def delete_torrents_and_files(
                                 file_paths = get_torrent_file_paths(client, torrent.hash)
 
                                 if file_paths:
-                                    # Move files to recycle bin with hybrid structure
-                                    # Unregistered files go to: /recycle_bin/unregistered/{category}/[original_path]
-                                    category = torrent.category if torrent.category else "uncategorized"
-
-                                    success_count, failed = move_files_to_recycle_bin(
-                                        file_paths=file_paths,
-                                        recycle_bin_path=recycle_bin_path,
-                                        deletion_type="unregistered",
-                                        category=category,
-                                        dry_run=False,
+                                    # CRITICAL: Check for cross-seeding before moving files
+                                    is_cross_seeded, cross_seeded_torrents = check_cross_seeding(
+                                        client, file_paths, exclude_hash=torrent.hash
                                     )
 
-                                    if failed:
+                                    if is_cross_seeded:
+                                        # Files are being used by other torrents - skip moving files
                                         logging.warning(
-                                            f"Failed to move {len(failed)} files to recycle bin for torrent '{torrent.name}'"
+                                            f"Skipping file deletion for torrent '{torrent.name}' (hash: {torrent.hash}) - "
+                                            f"files are cross-seeded by {len(cross_seeded_torrents)} other torrent(s): "
+                                            f"{', '.join(cross_seeded_torrents[:3])}"
+                                            + (
+                                                f" and {len(cross_seeded_torrents) - 3} more"
+                                                if len(cross_seeded_torrents) > 3
+                                                else ""
+                                            )
+                                        )
+                                        # Delete torrent only, keep files
+                                        client.torrents.delete(torrent.hash, delete_files=False)
+                                        logging.info(
+                                            f"Deleted torrent '{torrent.name}' (hash: {torrent.hash}) but kept files due to cross-seeding."
+                                        )
+                                    else:
+                                        # No cross-seeding detected - safe to move files
+                                        # Move files to recycle bin with hybrid structure
+                                        # Unregistered files go to: /recycle_bin/unregistered/{category}/[original_path]
+                                        category = torrent.category if torrent.category else "uncategorized"
+
+                                        success_count, failed = move_files_to_recycle_bin(
+                                            file_paths=file_paths,
+                                            recycle_bin_path=recycle_bin_path,
+                                            deletion_type="unregistered",
+                                            category=category,
+                                            dry_run=False,
                                         )
 
-                                    logging.info(
-                                        f"Moved {success_count} files to recycle bin (unregistered/{category}) for torrent '{torrent.name}'"
-                                    )
+                                        if failed:
+                                            logging.warning(
+                                                f"Failed to move {len(failed)} files to recycle bin for torrent '{torrent.name}'"
+                                            )
 
-                                # Delete torrent WITHOUT files (we already moved them)
-                                client.torrents.delete(torrent.hash, delete_files=False)
-                                logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash}.")
+                                        logging.info(
+                                            f"Moved {success_count} files to recycle bin (unregistered/{category}) for torrent '{torrent.name}'"
+                                        )
+
+                                        # Delete torrent WITHOUT files (we already moved them)
+                                        client.torrents.delete(torrent.hash, delete_files=False)
+                                        logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash}.")
+                                else:
+                                    # No files found - just delete the torrent
+                                    client.torrents.delete(torrent.hash, delete_files=False)
+                                    logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash}.")
                             else:
                                 logging.info(
                                     f"[Dry Run] Would move files to recycle bin and delete torrent '{torrent.name}' with hash {torrent.hash}."

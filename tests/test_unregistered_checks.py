@@ -217,11 +217,16 @@ class TestUnregisteredRecycleBin:
         # Mock torrents_info to return file list
         mock_file = MagicMock()
         mock_file.name = "movie.mkv"
-        mock_client.torrents_files.return_value = [mock_file]
 
         mock_torrent_info = MagicMock()
         mock_torrent_info.save_path = str(source_dir)
-        mock_client.torrents_info.return_value = [mock_torrent_info]
+        mock_torrent_info.hash = "abc123"
+
+        # Setup mock to handle cross-seeding check
+        # First call: get torrent files
+        # Second call: get all torrents for cross-seed check (return empty list to simulate no cross-seeding)
+        mock_client.torrents_info.side_effect = [[mock_torrent_info], []]
+        mock_client.torrents_files.return_value = [mock_file]
 
         # Run deletion with recycle bin
         delete_torrents_and_files(
@@ -232,7 +237,7 @@ class TestUnregisteredRecycleBin:
             delete_files={"unregistered": True},
             dry_run=False,
             torrents=[mock_torrent],
-            recycle_bin=str(recycle_bin)
+            recycle_bin=str(recycle_bin),
         )
 
         # Verify torrent was deleted WITHOUT files
@@ -266,7 +271,7 @@ class TestUnregisteredRecycleBin:
             delete_files={"unregistered": True},
             dry_run=False,
             torrents=[mock_torrent],
-            recycle_bin=None
+            recycle_bin=None,
         )
 
         # Verify torrent was deleted WITH files (permanent deletion)
@@ -295,7 +300,7 @@ class TestUnregisteredRecycleBin:
             delete_files={"unregistered": True},
             dry_run=True,
             torrents=[mock_torrent],
-            recycle_bin=str(recycle_bin)
+            recycle_bin=str(recycle_bin),
         )
 
         # Verify nothing was actually deleted
@@ -335,11 +340,16 @@ class TestUnregisteredRecycleBin:
 
             mock_file = MagicMock()
             mock_file.name = filename
-            mock_client.torrents_files.return_value = [mock_file]
 
             mock_torrent_info = MagicMock()
             mock_torrent_info.save_path = str(source_dir)
-            mock_client.torrents_info.return_value = [mock_torrent_info]
+            mock_torrent_info.hash = f"hash_{filename}"
+
+            # Setup mock to handle cross-seeding check
+            # First call: get torrent files
+            # Second call: get all torrents for cross-seed check (return empty list to simulate no cross-seeding)
+            mock_client.torrents_info.side_effect = [[mock_torrent_info], []]
+            mock_client.torrents_files.return_value = [mock_file]
 
             delete_torrents_and_files(
                 client=mock_client,
@@ -349,7 +359,7 @@ class TestUnregisteredRecycleBin:
                 delete_files={"unregistered": True},
                 dry_run=False,
                 torrents=[mock_torrent],
-                recycle_bin=str(recycle_bin)
+                recycle_bin=str(recycle_bin),
             )
 
         # Verify directory structure
@@ -381,7 +391,7 @@ class TestUnregisteredRecycleBin:
             delete_files={"unregistered": False},  # Don't delete files
             dry_run=False,
             torrents=[mock_torrent],
-            recycle_bin=str(recycle_bin)
+            recycle_bin=str(recycle_bin),
         )
 
         # Verify torrent was deleted without files
@@ -389,3 +399,126 @@ class TestUnregisteredRecycleBin:
 
         # Recycle bin should not be used
         assert not recycle_bin.exists()
+
+    def test_cross_seeding_detection_prevents_file_move(self, mock_client, config, tmp_path):
+        """Test that cross-seeding detection prevents file deletion."""
+        from scripts.unregistered_checks import delete_torrents_and_files
+
+        recycle_bin = tmp_path / "recycle_bin"
+
+        # Create test files
+        test_file_dir = tmp_path / "torrents" / "movies"
+        test_file_dir.mkdir(parents=True)
+        test_file = test_file_dir / "movie.mkv"
+        test_file.write_text("content")
+
+        # Mock torrent to be deleted
+        mock_unregistered_torrent = MagicMock()
+        mock_unregistered_torrent.name = "Unregistered Movie"
+        mock_unregistered_torrent.hash = "unreg123"
+        mock_unregistered_torrent.tags = "unregistered"
+        mock_unregistered_torrent.category = "movies"
+        mock_unregistered_torrent.save_path = str(test_file_dir)
+
+        # Mock cross-seeded torrent using the same files
+        mock_cross_seeded_torrent = MagicMock()
+        mock_cross_seeded_torrent.name = "Cross-Seeded Movie"
+        mock_cross_seeded_torrent.hash = "cross456"
+        mock_cross_seeded_torrent.tags = ""
+        mock_cross_seeded_torrent.category = "movies"
+        mock_cross_seeded_torrent.save_path = str(test_file_dir)
+
+        # Mock file info
+        mock_file_info = MagicMock()
+        mock_file_info.name = "movie.mkv"
+
+        # Setup client mocks
+        mock_client.torrents_info.side_effect = [
+            # First call: get torrent being deleted
+            [mock_unregistered_torrent],
+            # Second call: get all torrents for cross-seed check
+            [mock_unregistered_torrent, mock_cross_seeded_torrent],
+        ]
+        mock_client.torrents_files.return_value = [mock_file_info]
+
+        delete_torrents_and_files(
+            client=mock_client,
+            config=config,
+            use_delete_tags=True,
+            delete_tags=["unregistered"],
+            delete_files={"unregistered": True},
+            dry_run=False,
+            torrents=[mock_unregistered_torrent],
+            recycle_bin=str(recycle_bin),
+        )
+
+        # Verify torrent was deleted without files (due to cross-seeding)
+        mock_client.torrents.delete.assert_called_once_with("unreg123", delete_files=False)
+
+        # Verify file was NOT moved (still exists in original location)
+        assert test_file.exists(), "File should not be moved due to cross-seeding"
+
+        # Recycle bin should not contain the file
+        assert not (recycle_bin / "unregistered" / "movies").exists()
+
+    def test_no_cross_seeding_allows_file_move(self, mock_client, config, tmp_path):
+        """Test that files are moved when no cross-seeding is detected."""
+        from scripts.unregistered_checks import delete_torrents_and_files
+
+        recycle_bin = tmp_path / "recycle_bin"
+
+        # Create test files
+        test_file_dir = tmp_path / "torrents" / "movies"
+        test_file_dir.mkdir(parents=True)
+        test_file = test_file_dir / "movie.mkv"
+        test_file.write_text("content")
+
+        # Mock torrent to be deleted
+        mock_torrent = MagicMock()
+        mock_torrent.name = "Unregistered Movie"
+        mock_torrent.hash = "unreg123"
+        mock_torrent.tags = "unregistered"
+        mock_torrent.category = "movies"
+        mock_torrent.save_path = str(test_file_dir)
+
+        # Mock another torrent with different files
+        mock_other_torrent = MagicMock()
+        mock_other_torrent.name = "Other Movie"
+        mock_other_torrent.hash = "other456"
+        mock_other_torrent.save_path = str(tmp_path / "other")
+
+        # Mock file info
+        mock_file_info = MagicMock()
+        mock_file_info.name = "movie.mkv"
+
+        mock_other_file_info = MagicMock()
+        mock_other_file_info.name = "different.mkv"
+
+        # Setup client mocks
+        mock_client.torrents_info.side_effect = [
+            # First call: get torrent being deleted
+            [mock_torrent],
+            # Second call: get all torrents for cross-seed check
+            [mock_torrent, mock_other_torrent],
+        ]
+        mock_client.torrents_files.side_effect = [
+            [mock_file_info],  # Files for torrent being deleted
+            [mock_other_file_info],  # Files for other torrent (different)
+        ]
+
+        delete_torrents_and_files(
+            client=mock_client,
+            config=config,
+            use_delete_tags=True,
+            delete_tags=["unregistered"],
+            delete_files={"unregistered": True},
+            dry_run=False,
+            torrents=[mock_torrent],
+            recycle_bin=str(recycle_bin),
+        )
+
+        # Verify torrent was deleted without files (we moved them to recycle bin)
+        mock_client.torrents.delete.assert_called_once_with("unreg123", delete_files=False)
+
+        # Verify file was moved to recycle bin
+        assert not test_file.exists(), "File should be moved from original location"
