@@ -192,7 +192,7 @@ class TestConfigValidation:
         """Test that recycle bin path pointing to a file raises error."""
         file_path = tmp_path / "file.txt"
         file_path.touch()
-        
+
         config = {
             "host": "localhost:8080",
             "username": "admin",
@@ -206,7 +206,7 @@ class TestConfigValidation:
     def test_recycle_bin_does_not_exist_ok(self, tmp_path):
         """Test that non-existent recycle bin path is allowed (will be created later)."""
         non_existent_path = tmp_path / "does_not_exist"
-        
+
         config = {
             "host": "localhost:8080",
             "username": "admin",
@@ -219,18 +219,18 @@ class TestConfigValidation:
     def test_recycle_bin_not_writable(self, tmp_path):
         """Test that non-writable recycle bin raises error."""
         from unittest.mock import patch
-        
+
         config = {
             "host": "localhost:8080",
             "username": "admin",
             "password": "password",
             "recycle_bin": str(tmp_path),
         }
-        
+
         with patch("os.access", return_value=False):
-             with pytest.raises(ConfigValidationError) as exc_info:
+            with pytest.raises(ConfigValidationError) as exc_info:
                 validate_config(config)
-             assert "is not writable" in str(exc_info.value)
+            assert "is not writable" in str(exc_info.value)
 
 
 class TestExcludePatternValidation:

@@ -109,6 +109,7 @@ args = parser.parse_args()
 config["host"] = args.host or config.get("host")
 config["username"] = args.username or config.get("username")
 config["password"] = args.password or config.get("password")
+config["recycle_bin"] = args.recycle_bin or config.get("recycle_bin")
 target_dir = args.target_dir or config.get("target_dir", None)
 dry_run = args.dry_run if args.dry_run is not None else config.get("dry_run", False)
 exclude_files = args.exclude_files if args.exclude_files else config.get("exclude_files", [])
@@ -254,19 +255,35 @@ if operations_to_run and not args.yes:
 # Run orphaned check if --orphaned argument is passed
 if args.orphaned:
     try:
-        orphaned_files = check_files_on_disk(client, torrents, exclude_file_patterns=exclude_files, exclude_dirs=exclude_dirs)
-        logging.info("Total orphaned files: %d", len(orphaned_files))
+        # Avoid treating recycle bin contents as orphaned on subsequent runs
+        recycle_bin = config.get("recycle_bin")
+        exclude_dirs_for_scan = list(exclude_dirs)
+        if recycle_bin:
+            exclude_dirs_for_scan.append(recycle_bin)
 
-        # Delete orphaned files unless dry-run is set (pass torrents to avoid redundant API call)
-        recycle_bin = args.recycle_bin or config.get("recycle_bin", None)
+        orphaned_files = check_files_on_disk(
+            client,
+            torrents,
+            exclude_file_patterns=exclude_files,
+            exclude_dirs=exclude_dirs_for_scan,
+        )
+        logging.info(f"Found {len(orphaned_files)} orphaned files")
+
+        if orphaned_files:
+            logging.info("Orphaned files:")
+            for file in orphaned_files:
+                logging.info(f"  - {file}")
+        else:
+            logging.info("No orphaned files found")
+
+        # Delete/move orphaned files unless dry-run is set (pass torrents to avoid redundant API call)
         delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents, recycle_bin=recycle_bin)
-        operation_results["succeeded"].append("Orphaned file check")
+        operation_results["succeeded"].append(f"Orphaned files check: {len(orphaned_files)} files processed")
     except (KeyboardInterrupt, SystemExit):
         raise
-    except Exception:
-        logging.exception("Error during orphaned file check")
-        logging.error("Orphaned file check failed, continuing with other operations...")
-        operation_results["failed"].append("Orphaned file check")
+    except Exception as e:
+        logging.exception(f"Error checking orphaned files: {e}")
+        operation_results["failed"].append(f"Orphaned files check: {e}")
 
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:

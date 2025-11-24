@@ -266,21 +266,23 @@ def delete_orphaned_files(
                     # For cross-platform compatibility, we need to handle both Unix and Windows paths
                     # On Windows: C:\data\movie.mkv -> recycle_bin\C\data\movie.mkv
                     # On Unix: /mnt/data/movie.mkv -> recycle_bin/mnt/data/movie.mkv
-                    
+
                     # Get the absolute path
                     abs_file_path = file_path.resolve()
-                    
+
                     # For Windows, replace drive letter colon with underscore (C: -> C_)
                     # For Unix, just strip the leading slash
                     if abs_file_path.drive:
                         # Windows path with drive letter
-                        relative_path = Path(abs_file_path.drive.replace(':', '_')) / abs_file_path.relative_to(abs_file_path.anchor)
+                        relative_path = Path(abs_file_path.drive.replace(":", "_")) / abs_file_path.relative_to(
+                            abs_file_path.anchor
+                        )
                     else:
                         # Unix path
                         relative_path = abs_file_path.relative_to(abs_file_path.anchor)
-                    
+
                     dest_path = recycle_bin_path / relative_path
-                    
+
                     dest_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(file_path), str(dest_path))
                     logging.info(f"Moved orphaned file to recycle bin: {file_path} -> {dest_path}")
@@ -288,9 +290,9 @@ def delete_orphaned_files(
                     file_path.unlink()
                     logging.info(f"Deleted orphaned file: {file_path}")
                 deleted_files_count += 1
-            except Exception as e:
-                logging.error(f"Error processing {file_path}: {e}")
-                skipped_files.append((file_path, str(e)))
+            except Exception:
+                logging.exception(f"Error processing {file_path}")
+                skipped_files.append((file_path, "See logs for details"))
 
     # Determine which directories would be empty
     empty_dirs_to_delete = set()
@@ -336,7 +338,9 @@ def delete_orphaned_files(
             f"Dry-run: Would have {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories."
         )
     else:
-        logging.info(f"Successfully {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories.")
+        logging.info(
+            f"Successfully {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories."
+        )
 
     if skipped_files:
         logging.warning(f"Skipped {len(skipped_files)} files due to errors:")

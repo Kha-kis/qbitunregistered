@@ -237,20 +237,20 @@ def validate_config(config: Dict[str, Any]) -> None:
     if "apprise_url" in config and config["apprise_url"]:
         if not isinstance(config["apprise_url"], str):
             errors.append(f"'apprise_url' must be a string, got: {type(config['apprise_url']).__name__}")
-    
+
     # Validate Notifiarr settings - key and channel must be set together
     notifiarr_key = config.get("notifiarr_key")
     notifiarr_channel = config.get("notifiarr_channel")
-    
+
     if notifiarr_key and not notifiarr_channel:
         errors.append("'notifiarr_channel' must be set when 'notifiarr_key' is provided")
     if notifiarr_channel and not notifiarr_key:
         errors.append("'notifiarr_key' must be set when 'notifiarr_channel' is provided")
-    
+
     if notifiarr_key:
         if not isinstance(notifiarr_key, str):
             errors.append(f"'notifiarr_key' must be a string, got: {type(notifiarr_key).__name__}")
-    
+
     if notifiarr_channel:
         if not isinstance(notifiarr_channel, str):
             errors.append(f"'notifiarr_channel' must be a string, got: {type(notifiarr_channel).__name__}")

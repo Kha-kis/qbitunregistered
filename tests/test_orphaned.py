@@ -155,28 +155,28 @@ class TestRecycleBin:
         source_dir = tmp_path / "source"
         source_dir.mkdir()
         recycle_bin = tmp_path / "recycle_bin"
-        
+
         # Create a dummy file
         dummy_file = source_dir / "orphaned.mkv"
         dummy_file.write_text("dummy content")
-        
+
         orphaned_files = [str(dummy_file)]
-        
+
         # Run delete_orphaned_files with recycle bin
         delete_orphaned_files(orphaned_files, dry_run=False, client=mock_client, recycle_bin=str(recycle_bin))
-        
+
         # Verify file is moved
         assert not dummy_file.exists()
-        
+
         # Calculate expected destination path
         # The function uses relative_to(anchor), so for /tmp/pytest-of-user/pytest-X/test_recycle_bin_move0/source/orphaned.mkv
         # it should be recycle_bin / tmp / pytest-of-user ...
         # This depends on how relative_to(anchor) behaves.
         # On Unix, anchor is '/'. relative_to('/') returns the path without leading slash.
-        
+
         relative_path = dummy_file.relative_to(dummy_file.anchor)
         dest_path = recycle_bin / relative_path
-        
+
         assert dest_path.exists()
         assert dest_path.read_text() == "dummy content"
 
@@ -186,27 +186,28 @@ class TestRecycleBin:
         source_dir.mkdir()
         dummy_file = source_dir / "orphaned.mkv"
         dummy_file.write_text("dummy content")
-        
+
         orphaned_files = [str(dummy_file)]
-        
+
         delete_orphaned_files(orphaned_files, dry_run=False, client=mock_client, recycle_bin=None)
-        
+
         assert not dummy_file.exists()
 
     def test_dry_run_recycle_bin(self, mock_client, caplog, tmp_path):
         """Test dry run with recycle bin."""
         import logging
+
         caplog.set_level(logging.INFO)
-        
+
         source_dir = tmp_path / "source"
         source_dir.mkdir()
         dummy_file = source_dir / "orphaned.mkv"
         dummy_file.write_text("dummy content")
-        
+
         orphaned_files = [str(dummy_file)]
         recycle_bin = tmp_path / "recycle_bin"
-        
+
         delete_orphaned_files(orphaned_files, dry_run=True, client=mock_client, recycle_bin=str(recycle_bin))
-        
+
         assert dummy_file.exists()
         assert "Would move orphaned file to recycle bin" in caplog.text
