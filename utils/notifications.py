@@ -84,6 +84,8 @@ class NotificationManager:
                 title=title,
             )
             logging.info("Sent Apprise notification")
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except Exception:
             logging.exception("Failed to send Apprise notification")
 
@@ -121,8 +123,13 @@ class NotificationManager:
             error_body = ""
             try:
                 error_body = e.read().decode("utf-8")
+                # Sanitize error body to prevent credential exposure
+                if self.notifiarr_key and self.notifiarr_key in error_body:
+                    error_body = error_body.replace(self.notifiarr_key, "***REDACTED***")
             except Exception:
                 pass
             logging.error(f"Failed to send Notifiarr notification: HTTP {e.code} - {e.reason}. Details: {error_body}")
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except Exception:
             logging.exception("Failed to send Notifiarr notification")
