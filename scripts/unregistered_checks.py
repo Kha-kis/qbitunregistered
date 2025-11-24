@@ -1,6 +1,11 @@
 import logging
-from typing import List, Set, Tuple
+import sys
+from pathlib import Path
+from typing import List, Set, Tuple, Optional
 from tqdm import tqdm
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.file_operations import move_files_to_recycle_bin, get_torrent_file_paths  # noqa: E402
 
 
 def compile_patterns(unregistered: List[str]) -> Tuple[Set[str], Set[str]]:
@@ -94,31 +99,86 @@ def update_torrent_file_paths(torrent_file_paths, torrent):
     torrent_file_paths.setdefault(torrent.save_path, []).append(torrent.hash)
 
 
-def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents=None):
-    """Delete torrents with specific tags. Pass torrents to avoid redundant API call."""
+def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents=None, recycle_bin: Optional[str] = None):
+    """
+    Delete torrents with specific tags. Pass torrents to avoid redundant API call.
+
+    Args:
+        client: qBittorrent client instance
+        config: Configuration dictionary
+        use_delete_tags: Whether to use tag-based deletion
+        delete_tags: List of tags that trigger deletion
+        delete_files: Dictionary mapping tags to whether files should be deleted
+        dry_run: If True, only simulate the operation
+        torrents: Optional list of torrents (avoids redundant API call)
+        recycle_bin: Optional path to recycle bin directory
+    """
     if use_delete_tags:
         # Use provided torrents list to avoid redundant API call
         if torrents is None:
             torrents = client.torrents.info()
 
+        recycle_bin_path = Path(recycle_bin) if recycle_bin else None
+
         for torrent in torrents:
             torrent_deleted = False
             for tag in delete_tags:
                 if tag in torrent.tags:
-                    if delete_files.get(tag, False):
-                        if not dry_run:
-                            client.torrents.delete(torrent.hash, delete_files=True)
-                            logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash} and its files.")
+                    # Determine if we should delete files
+                    should_delete_files = delete_files.get(tag, False)
+
+                    if should_delete_files:
+                        # Files need to be deleted
+                        if recycle_bin_path:
+                            # Move files to recycle bin instead of permanent deletion
+                            if not dry_run:
+                                # Get file paths BEFORE deleting the torrent
+                                file_paths = get_torrent_file_paths(client, torrent.hash)
+
+                                if file_paths:
+                                    # Move files to recycle bin with hybrid structure
+                                    # Unregistered files go to: /recycle_bin/unregistered/{category}/[original_path]
+                                    category = torrent.category if torrent.category else "uncategorized"
+
+                                    success_count, failed = move_files_to_recycle_bin(
+                                        file_paths=file_paths,
+                                        recycle_bin_path=recycle_bin_path,
+                                        deletion_type="unregistered",
+                                        category=category,
+                                        dry_run=False
+                                    )
+
+                                    if failed:
+                                        logging.warning(f"Failed to move {len(failed)} files to recycle bin for torrent '{torrent.name}'")
+
+                                    logging.info(
+                                        f"Moved {success_count} files to recycle bin (unregistered/{category}) for torrent '{torrent.name}'"
+                                    )
+
+                                # Delete torrent WITHOUT files (we already moved them)
+                                client.torrents.delete(torrent.hash, delete_files=False)
+                                logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash}.")
+                            else:
+                                logging.info(
+                                    f"[Dry Run] Would move files to recycle bin and delete torrent '{torrent.name}' with hash {torrent.hash}."
+                                )
                         else:
-                            logging.info(
-                                f"[Dry Run] Would delete torrent '{torrent.name}' with hash {torrent.hash} and its files."
-                            )
+                            # No recycle bin - permanent deletion
+                            if not dry_run:
+                                client.torrents.delete(torrent.hash, delete_files=True)
+                                logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash} and its files.")
+                            else:
+                                logging.info(
+                                    f"[Dry Run] Would delete torrent '{torrent.name}' with hash {torrent.hash} and its files."
+                                )
                     else:
+                        # Delete torrent only, keep files
                         if not dry_run:
                             client.torrents.delete(torrent.hash, delete_files=False)
                             logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash}.")
                         else:
                             logging.info(f"[Dry Run] Would delete torrent '{torrent.name}' with hash {torrent.hash}.")
+
                     torrent_deleted = True
                     break  # Exit the inner loop after deleting the torrent
 
@@ -127,7 +187,7 @@ def delete_torrents_and_files(client, config, use_delete_tags, delete_tags, dele
                 continue
 
 
-def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run):
+def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run, recycle_bin: Optional[str] = None):
     """
     Check torrents for unregistered status and apply appropriate tags.
 
@@ -141,6 +201,7 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
         delete_tags: List of tags that trigger deletion
         delete_files: Dictionary mapping tags to delete_files boolean
         dry_run: If True, don't make actual changes
+        recycle_bin: Optional path to recycle bin directory
 
     Returns:
         Tuple of (torrent_file_paths, unregistered_counts_per_path)
@@ -206,21 +267,21 @@ def unregistered_checks(client, torrents, config, use_delete_tags, delete_tags, 
                 client.torrents_add_tags(torrent_hashes=default_tag_hashes, tags=[default_tag])
                 logging.info(f"Added tag '{default_tag}' to {len(default_tag_hashes)} torrents")
             except Exception as e:
-                logging.error(f"Failed to add tag '{default_tag}' in batch: {e}")
+                logging.exception(f"Failed to add tag '{default_tag}' in batch: {e}")
 
         if cross_seeding_tag_hashes:
             try:
                 client.torrents_add_tags(torrent_hashes=cross_seeding_tag_hashes, tags=[cross_seeding_tag])
                 logging.info(f"Added tag '{cross_seeding_tag}' to {len(cross_seeding_tag_hashes)} torrents")
             except Exception as e:
-                logging.error(f"Failed to add tag '{cross_seeding_tag}' in batch: {e}")
+                logging.exception(f"Failed to add tag '{cross_seeding_tag}' in batch: {e}")
     else:
         if default_tag_hashes:
             logging.info(f"[Dry Run] Would add tag '{default_tag}' to {len(default_tag_hashes)} torrents")
         if cross_seeding_tag_hashes:
             logging.info(f"[Dry Run] Would add tag '{cross_seeding_tag}' to {len(cross_seeding_tag_hashes)} torrents")
 
-    delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents)
+    delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents, recycle_bin)
 
     for tag, count in tag_counts.items():
         logging.info("Tag: %s, Count: %d", tag, count)

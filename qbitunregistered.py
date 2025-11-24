@@ -297,6 +297,7 @@ if args.unregistered:
             delete_tags=config.get("delete_tags", []),
             delete_files=config.get("delete_files", {}),
             dry_run=dry_run,
+            recycle_bin=config.get("recycle_bin"),
         )
         total_unregistered_count = sum(unregistered_counts.values())
         logging.info("Total unregistered count: %d", total_unregistered_count)

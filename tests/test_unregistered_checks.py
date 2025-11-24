@@ -1,5 +1,7 @@
 """Tests for unregistered checks functionality."""
 
+import pytest
+from unittest.mock import MagicMock
 from scripts.unregistered_checks import (
     compile_patterns,
     check_unregistered_message,
@@ -170,3 +172,220 @@ class TestPatternPerformance:
         # Results should be identical
         assert exact1 == exact2
         assert starts_with1 == starts_with2
+
+
+class TestUnregisteredRecycleBin:
+    """Test recycle bin functionality for unregistered torrents."""
+
+    @pytest.fixture
+    def mock_client(self):
+        client = MagicMock()
+        client.torrents.delete = MagicMock()
+        client.torrents_info = MagicMock(return_value=[])
+        client.torrents_files = MagicMock(return_value=[])
+        return client
+
+    @pytest.fixture
+    def config(self):
+        return {
+            "default_unregistered_tag": "unregistered",
+            "cross_seeding_tag": "unregistered:crossseeding",
+            "unregistered": ["unregistered"],
+        }
+
+    def test_unregistered_deletion_with_recycle_bin(self, mock_client, config, tmp_path):
+        """Test that unregistered torrent files are moved to recycle bin."""
+        from scripts.unregistered_checks import delete_torrents_and_files
+        from pathlib import Path
+
+        # Create test file structure
+        source_dir = tmp_path / "torrents"
+        source_dir.mkdir()
+        test_file = source_dir / "movie.mkv"
+        test_file.write_text("test content")
+
+        recycle_bin = tmp_path / "recycle_bin"
+
+        # Mock torrent
+        mock_torrent = MagicMock()
+        mock_torrent.name = "Test Movie"
+        mock_torrent.hash = "abc123"
+        mock_torrent.category = "movies"
+        mock_torrent.tags = "unregistered"
+        mock_torrent.save_path = str(source_dir)
+
+        # Mock torrents_info to return file list
+        mock_file = MagicMock()
+        mock_file.name = "movie.mkv"
+        mock_client.torrents_files.return_value = [mock_file]
+
+        mock_torrent_info = MagicMock()
+        mock_torrent_info.save_path = str(source_dir)
+        mock_client.torrents_info.return_value = [mock_torrent_info]
+
+        # Run deletion with recycle bin
+        delete_torrents_and_files(
+            client=mock_client,
+            config=config,
+            use_delete_tags=True,
+            delete_tags=["unregistered"],
+            delete_files={"unregistered": True},
+            dry_run=False,
+            torrents=[mock_torrent],
+            recycle_bin=str(recycle_bin)
+        )
+
+        # Verify torrent was deleted WITHOUT files
+        mock_client.torrents.delete.assert_called_once_with("abc123", delete_files=False)
+
+        # Verify file was moved to recycle bin with hybrid structure
+        # Should be: recycle_bin/unregistered/movies/[original_path]
+        expected_dest = recycle_bin / "unregistered" / "movies"
+        assert expected_dest.exists()
+
+        # File should be somewhere in the recycle bin
+        moved_files = list(recycle_bin.rglob("movie.mkv"))
+        assert len(moved_files) == 1
+        assert moved_files[0].read_text() == "test content"
+        assert not test_file.exists()
+
+    def test_unregistered_deletion_without_recycle_bin(self, mock_client, config):
+        """Test permanent deletion when no recycle bin is configured."""
+        from scripts.unregistered_checks import delete_torrents_and_files
+
+        mock_torrent = MagicMock()
+        mock_torrent.name = "Test Movie"
+        mock_torrent.hash = "abc123"
+        mock_torrent.tags = "unregistered"
+
+        delete_torrents_and_files(
+            client=mock_client,
+            config=config,
+            use_delete_tags=True,
+            delete_tags=["unregistered"],
+            delete_files={"unregistered": True},
+            dry_run=False,
+            torrents=[mock_torrent],
+            recycle_bin=None
+        )
+
+        # Verify torrent was deleted WITH files (permanent deletion)
+        mock_client.torrents.delete.assert_called_once_with("abc123", delete_files=True)
+
+    def test_unregistered_deletion_dry_run_with_recycle_bin(self, mock_client, config, tmp_path, caplog):
+        """Test dry run mode with recycle bin."""
+        import logging
+        from scripts.unregistered_checks import delete_torrents_and_files
+
+        caplog.set_level(logging.INFO)
+
+        recycle_bin = tmp_path / "recycle_bin"
+
+        mock_torrent = MagicMock()
+        mock_torrent.name = "Test Movie"
+        mock_torrent.hash = "abc123"
+        mock_torrent.category = "movies"
+        mock_torrent.tags = "unregistered"
+
+        delete_torrents_and_files(
+            client=mock_client,
+            config=config,
+            use_delete_tags=True,
+            delete_tags=["unregistered"],
+            delete_files={"unregistered": True},
+            dry_run=True,
+            torrents=[mock_torrent],
+            recycle_bin=str(recycle_bin)
+        )
+
+        # Verify nothing was actually deleted
+        mock_client.torrents.delete.assert_not_called()
+
+        # Verify dry run log message
+        assert "Would move files to recycle bin" in caplog.text
+
+    def test_category_based_organization(self, mock_client, config, tmp_path):
+        """Test that files are organized by category in recycle bin."""
+        from scripts.unregistered_checks import delete_torrents_and_files
+        from pathlib import Path
+
+        # Create test files for different categories
+        source_dir = tmp_path / "torrents"
+        source_dir.mkdir()
+
+        recycle_bin = tmp_path / "recycle_bin"
+
+        # Test multiple categories
+        test_cases = [
+            ("movies", "movie.mkv"),
+            ("tv", "show.mkv"),
+            ("", "other.mkv"),  # Empty category should become "uncategorized"
+        ]
+
+        for category, filename in test_cases:
+            test_file = source_dir / filename
+            test_file.write_text(f"content of {filename}")
+
+            mock_torrent = MagicMock()
+            mock_torrent.name = f"Test {filename}"
+            mock_torrent.hash = f"hash_{filename}"
+            mock_torrent.category = category
+            mock_torrent.tags = "unregistered"
+            mock_torrent.save_path = str(source_dir)
+
+            mock_file = MagicMock()
+            mock_file.name = filename
+            mock_client.torrents_files.return_value = [mock_file]
+
+            mock_torrent_info = MagicMock()
+            mock_torrent_info.save_path = str(source_dir)
+            mock_client.torrents_info.return_value = [mock_torrent_info]
+
+            delete_torrents_and_files(
+                client=mock_client,
+                config=config,
+                use_delete_tags=True,
+                delete_tags=["unregistered"],
+                delete_files={"unregistered": True},
+                dry_run=False,
+                torrents=[mock_torrent],
+                recycle_bin=str(recycle_bin)
+            )
+
+        # Verify directory structure
+        expected_dirs = [
+            recycle_bin / "unregistered" / "movies",
+            recycle_bin / "unregistered" / "tv",
+            recycle_bin / "unregistered" / "uncategorized",
+        ]
+
+        for expected_dir in expected_dirs:
+            assert expected_dir.exists(), f"Expected directory {expected_dir} to exist"
+
+    def test_torrent_without_files_deletion(self, mock_client, config, tmp_path):
+        """Test deletion when delete_files is False."""
+        from scripts.unregistered_checks import delete_torrents_and_files
+
+        recycle_bin = tmp_path / "recycle_bin"
+
+        mock_torrent = MagicMock()
+        mock_torrent.name = "Test Movie"
+        mock_torrent.hash = "abc123"
+        mock_torrent.tags = "unregistered"
+
+        delete_torrents_and_files(
+            client=mock_client,
+            config=config,
+            use_delete_tags=True,
+            delete_tags=["unregistered"],
+            delete_files={"unregistered": False},  # Don't delete files
+            dry_run=False,
+            torrents=[mock_torrent],
+            recycle_bin=str(recycle_bin)
+        )
+
+        # Verify torrent was deleted without files
+        mock_client.torrents.delete.assert_called_once_with("abc123", delete_files=False)
+
+        # Recycle bin should not be used
+        assert not recycle_bin.exists()

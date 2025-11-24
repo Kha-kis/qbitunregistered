@@ -5,13 +5,14 @@
 ## Features
 
 - **Orphaned File Checks**: Detect and report orphaned files to maintain a clean storage environment.
-
+- **Recycle Bin**: Safely move orphaned files to a recycle bin instead of permanent deletion, with automatic collision handling.
 - **Unregistered Checks**: Identify and handle unregistered torrents based on user-defined configurations.
 - **Tagging System**: Apply tags to torrents based on tracker source, age, and other criteria for easy organization.
 - **Seeding Management**: Implement seed time and seed ratio limits to optimize seeding strategy.
 - **Torrent Management**: Control torrent activity with pause, resume, and auto-management functions.
 - **Automatic Removal**: Automatically remove torrents that meet specified conditions to manage space and ratio.
 - **Hard Link Creation**: Generate hard links for completed downloads for better file management.
+- **Notifications**: Send operation summaries via Apprise or Notifiarr with automatic retry logic.
 - **Dry Run Mode**: Test configurations and script behavior without making actual changes to your setup.
 
 
@@ -169,6 +170,238 @@ Here's what you can specify when running `qbitunregistered`:
 - `--log-level`: Set logging verbosity (DEBUG, INFO, WARNING, ERROR). Overrides config.json setting.
 - `--log-file`: Write logs to specified file in addition to console. Useful for scheduled/cron runs.
 - `--yes`, `-y`: Skip confirmation prompt and proceed with operations automatically. Use with caution! Recommended for automation/cron jobs after testing with dry-run.
+
+## Recycle Bin Feature
+
+The recycle bin feature provides a safer alternative to permanent deletion for both orphaned files and unregistered torrent deletions. When enabled, files are moved to an organized recycle bin directory instead of being permanently deleted, allowing for easy recovery if needed.
+
+### Configuration
+
+Add the `recycle_bin` path to your `config.json`:
+
+```json
+{
+  "recycle_bin": "/path/to/recycle/bin"
+}
+```
+
+### What Gets Recycled?
+
+**✅ Orphaned Files** (from `--orphaned` operation)
+- Files detected by orphan scanning that aren't tracked by any torrent
+- Organized in: `/recycle_bin/orphaned/uncategorized/[original_path]`
+
+**✅ Unregistered Torrent Files** (from `--unregistered` operation)
+- When unregistered torrents are deleted with `delete_files=True`
+- Organized in: `/recycle_bin/unregistered/{category}/[original_path]`
+- Category is taken from the torrent's qBittorrent category
+
+**❌ Not Recycled:**
+- Torrent-only deletions (when `delete_files=False`)
+- Auto-removed torrents (uses qBittorrent's built-in deletion)
+- Hard link operations
+
+### Directory Structure (Hybrid Organization)
+
+The recycle bin uses a **hybrid structure** combining deletion type and category:
+
+```
+/recycle_bin/
+  ├── orphaned/              # Files from orphan scanning
+  │   └── uncategorized/     # Orphaned files have no category
+  │       └── [original full path structure]
+  │           ├── mnt/torrents/movies/movie.mkv
+  │           └── var/media/file.mkv
+  │
+  └── unregistered/          # Files from unregistered torrents
+      ├── movies/            # Organized by torrent category
+      │   └── [original full path structure]
+      ├── tv/
+      │   └── [original full path structure]
+      └── uncategorized/     # Torrents without a category
+          └── [original full path structure]
+```
+
+**Benefits of This Structure:**
+- **Easy identification**: Instantly know why a file was deleted
+- **Category organization**: Browse by content type (movies, tv, etc.)
+- **Safe recovery**: Preserved path structure makes restoration simple
+- **Audit trail**: Track deletion patterns by type and category
+
+### Behavior Details
+
+**Path Preservation:**
+- The original absolute directory structure is maintained within each category
+- Example (Unix): `/mnt/torrents/movies/file.mkv` → `/recycle_bin/orphaned/uncategorized/mnt/torrents/movies/file.mkv`
+- Example (Unregistered): Category "movies", file at `/data/Movie.mkv` → `/recycle_bin/unregistered/movies/data/Movie.mkv`
+
+**Windows Path Handling:**
+- Drive letters are converted to directory names (colon replaced with underscore)
+- Example: `C:\Torrents\file.mkv` → `C:\recycle_bin\unregistered\movies\C_\Torrents\file.mkv`
+- This ensures cross-platform compatibility and prevents path conflicts
+
+**File Collision Handling:**
+- If a file with the same name already exists in the recycle bin, a timestamp suffix is automatically added
+- Format: `filename_YYYYMMDD_HHMMSS.ext`
+- Example: `movie.mkv` → `movie_20250123_143045.mkv`
+- This prevents overwriting previously recycled files
+- Useful when the same file is deleted multiple times
+
+**Automatic Exclusion:**
+- The recycle bin directory is automatically excluded from orphan scanning
+- This prevents recycled files from being detected as orphaned again
+- No manual configuration needed for this exclusion
+
+**Validation:**
+- The recycle bin path must be an absolute path
+- Write permissions are validated at startup
+- Directory is created automatically if it doesn't exist
+- Invalid recycle bin configuration causes startup failure with clear error messages
+
+**Dry-Run Support:**
+- In dry-run mode, the script reports what would be moved without actually moving files
+- Shows the exact destination path including type and category
+- Use this to verify behavior before enabling actual file operations
+
+### Unregistered Torrent Handling
+
+When deleting unregistered torrents with `delete_files=True`:
+
+**With Recycle Bin Configured:**
+1. Script gets all file paths for the torrent
+2. Files are moved to `/recycle_bin/unregistered/{category}/[paths]`
+3. Torrent is deleted from qBittorrent WITHOUT deleting files
+4. Result: Files safely preserved in organized recycle bin, torrent removed
+
+**Without Recycle Bin:**
+1. Torrent is deleted with `delete_files=True`
+2. qBittorrent permanently deletes both torrent and files
+3. Result: Permanent deletion (original behavior)
+
+**Important Notes:**
+- Cross-seeded torrents are handled intelligently
+- Files are only moved once, even if multiple torrents reference them
+- If file paths cannot be retrieved, torrent is still deleted (logged as warning)
+
+### Example Usage
+
+```bash
+# Test with dry-run first (see what would be recycled)
+python qbitunregistered.py --orphaned --unregistered --dry-run
+
+# Run orphaned check with recycle bin
+python qbitunregistered.py --orphaned
+
+# Run unregistered check with recycle bin
+python qbitunregistered.py --unregistered
+
+# Browse recycle bin structure
+ls -R /path/to/recycle/bin
+
+# Example output:
+# /path/to/recycle/bin/
+#   orphaned/uncategorized/mnt/downloads/old_file.mkv
+#   unregistered/movies/data/Movie_2023.mkv
+#   unregistered/tv/media/Show_S01E01.mkv
+```
+
+### Restoring Files
+
+To restore a file from the recycle bin:
+
+```bash
+# Find the file
+find /path/to/recycle/bin -name "movie.mkv"
+
+# Restore to original location (example)
+# If file was at: /recycle_bin/unregistered/movies/mnt/data/movie.mkv
+# Restore to: /mnt/data/movie.mkv
+mv /path/to/recycle/bin/unregistered/movies/mnt/data/movie.mkv /mnt/data/
+```
+
+### Managing Recycle Bin Size
+
+The recycle bin will grow over time. Consider:
+
+**Manual Cleanup:**
+```bash
+# Delete files older than 30 days
+find /path/to/recycle/bin -type f -mtime +30 -delete
+
+# Delete empty directories
+find /path/to/recycle/bin -type d -empty -delete
+```
+
+**Automated Cleanup (Cron):**
+```bash
+# Add to crontab (runs weekly)
+0 2 * * 0 find /path/to/recycle/bin -type f -mtime +30 -delete
+```
+
+**Monitor Size:**
+```bash
+# Check recycle bin size
+du -sh /path/to/recycle/bin
+
+# Show breakdown by type
+du -sh /path/to/recycle/bin/*/
+```
+
+## Notification System
+
+qbitunregistered supports sending operation summaries via notifications using Apprise or Notifiarr.
+
+### Apprise Integration
+
+Configure any Apprise-supported service using a single URL:
+
+```json
+{
+  "apprise_url": "discord://webhook_id/webhook_token"
+}
+```
+
+Apprise supports 80+ notification services including Discord, Slack, Telegram, Email, and more. See [Apprise documentation](https://github.com/caronc/apprise) for URL formats.
+
+### Notifiarr Integration
+
+Configure Notifiarr for Discord notifications with custom formatting:
+
+```json
+{
+  "notifiarr_key": "your-api-key-here",
+  "notifiarr_channel": "1234567890123456789"
+}
+```
+
+**Requirements:**
+- Both `notifiarr_key` and `notifiarr_channel` must be provided together
+- Channel ID must be a valid Discord channel ID (17-20 digits)
+
+**Features:**
+- Color-coded notifications (green for success, red for failures)
+- Automatic retry with exponential backoff (3 attempts max)
+- Discord character limit handling (2000 chars, auto-truncation)
+- Credential sanitization in error logs
+
+### Notification Content
+
+Notifications include:
+- Operation summary (succeeded/failed counts)
+- List of completed operations
+- List of failed operations (if any)
+
+Example notification:
+```
+qbitunregistered Summary
+
+✅ Succeeded: 3
+  - Orphaned files check: 5 files processed
+  - Unregistered checks
+  - Tag by tracker
+
+❌ Failed: 0
+```
 
 ## Troubleshooting
 
