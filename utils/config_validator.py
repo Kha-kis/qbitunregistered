@@ -224,6 +224,11 @@ def validate_config(config: Dict[str, Any]) -> None:
             errors.append(f"'recycle_bin' must be a string, got: {type(recycle_bin).__name__}")
         else:
             recycle_bin_path = Path(recycle_bin)
+
+            # Must be absolute path for security (same as exclude_dirs requirement)
+            if not recycle_bin_path.is_absolute():
+                errors.append(f"'recycle_bin' must be an absolute path (security requirement): '{recycle_bin}'")
+
             try:
                 if recycle_bin_path.exists():
                     if not recycle_bin_path.is_dir():
@@ -257,9 +262,7 @@ def validate_config(config: Dict[str, Any]) -> None:
         elif not notifiarr_channel.isdigit():
             errors.append(f"'notifiarr_channel' must be a numeric Discord channel ID, got: '{notifiarr_channel}'")
         elif len(notifiarr_channel) < 17 or len(notifiarr_channel) > 20:
-            errors.append(
-                f"'notifiarr_channel' appears invalid (expected 17-20 digits, got {len(notifiarr_channel)} digits)"
-            )
+            errors.append(f"'notifiarr_channel' appears invalid (expected 17-20 digits, got {len(notifiarr_channel)} digits)")
 
     if errors:
         error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)

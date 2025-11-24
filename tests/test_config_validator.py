@@ -232,6 +232,20 @@ class TestConfigValidation:
                 validate_config(config)
             assert "is not writable" in str(exc_info.value)
 
+    def test_recycle_bin_must_be_absolute(self):
+        """Test that recycle bin must be an absolute path (security requirement)."""
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "recycle_bin": "relative/path/to/recycle",
+        }
+
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "must be an absolute path" in str(exc_info.value)
+        assert "security requirement" in str(exc_info.value)
+
 
 class TestExcludePatternValidation:
 
