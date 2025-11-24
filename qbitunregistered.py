@@ -259,7 +259,8 @@ if args.orphaned:
         recycle_bin = config.get("recycle_bin")
         exclude_dirs_for_scan = list(exclude_dirs)
         if recycle_bin:
-            exclude_dirs_for_scan.append(recycle_bin)
+            # Convert to absolute path to ensure proper exclusion
+            exclude_dirs_for_scan.append(str(Path(recycle_bin).resolve()))
 
         orphaned_files = check_files_on_disk(
             client,

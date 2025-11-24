@@ -256,6 +256,10 @@ def validate_config(config: Dict[str, Any]) -> None:
             errors.append(f"'notifiarr_channel' must be a string, got: {type(notifiarr_channel).__name__}")
         elif not notifiarr_channel.isdigit():
             errors.append(f"'notifiarr_channel' must be a numeric Discord channel ID, got: '{notifiarr_channel}'")
+        elif len(notifiarr_channel) < 17 or len(notifiarr_channel) > 20:
+            errors.append(
+                f"'notifiarr_channel' appears invalid (expected 17-20 digits, got {len(notifiarr_channel)} digits)"
+            )
 
     if errors:
         error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
