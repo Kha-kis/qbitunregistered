@@ -128,7 +128,9 @@ class NotificationManager:
                     error_body = error_body.replace(self.notifiarr_key, "***REDACTED***")
             except Exception:
                 pass
-            logging.error(f"Failed to send Notifiarr notification: HTTP {e.code} - {e.reason}. Details: {error_body}")
+            logging.exception(
+                f"Failed to send Notifiarr notification: HTTP {e.code} - {e.reason}. Details: {error_body}"
+            )
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception:

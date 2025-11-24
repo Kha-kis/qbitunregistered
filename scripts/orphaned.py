@@ -48,7 +48,7 @@ def _get_categories(client, *, cache_scope: int) -> Dict[str, Any]:
     """
     # Runtime assertion to prevent cache contamination
     assert cache_scope is not None, "cache_scope must be provided (use id(client))"
-    return client.torrent_categories.categories
+    return client.torrent_categories.categories  # type: ignore[no-any-return]
 
 
 def check_files_on_disk(
