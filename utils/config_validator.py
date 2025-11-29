@@ -314,9 +314,7 @@ def _validate_notifications(config: Dict[str, Any], errors: List[str]) -> None:
         elif not notifiarr_channel.isdigit():
             errors.append(f"'notifiarr_channel' must be a numeric Discord channel ID, got: '{notifiarr_channel}'")
         elif len(notifiarr_channel) < 17 or len(notifiarr_channel) > 20:
-            errors.append(
-                f"'notifiarr_channel' appears invalid (expected 17-20 digits, got {len(notifiarr_channel)} digits)"
-            )
+            errors.append(f"'notifiarr_channel' appears invalid (expected 17-20 digits, got {len(notifiarr_channel)} digits)")
 
 
 def validate_exclude_patterns(exclude_files: List[str], exclude_dirs: List[str]) -> None:

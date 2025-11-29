@@ -72,9 +72,7 @@ class NotificationManager:
             except Exception as e:
                 last_exc = e
                 if attempt < max_retries - 1:
-                    logging.warning(
-                        f"Notification attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {delay}s..."
-                    )
+                    logging.warning(f"Notification attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {delay}s...")
                     time.sleep(delay)
                     delay *= 2  # Exponential backoff
                 else:
@@ -207,7 +205,9 @@ class NotificationManager:
                 if self.notifiarr_key and self.notifiarr_key in error_body:
                     error_body = error_body.replace(self.notifiarr_key, "***REDACTED***")
             except Exception:
+                # If we can't read or sanitize the body, fall back to generic logging below.
                 pass
-            logging.exception(
-                f"Failed to send Notifiarr notification: HTTP {e.code} - {e.reason}. Details: {error_body}"
-            )
+            logging.exception(f"Failed to send Notifiarr notification: HTTP {e.code} - {e.reason}. Details: {error_body}")
+        except Exception as e:
+            # Generic connection or other unexpected errors should be logged but not crash the caller.
+            logging.exception(f"Failed to send Notifiarr notification: {e}")
