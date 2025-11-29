@@ -278,9 +278,9 @@ def delete_orphaned_files(
                     file_path.unlink()
                     logging.info(f"Deleted orphaned file: {file_path}")
                     deleted_files_count += 1
-                except Exception as e:
-                    logging.exception(f"Error processing {file_path}: {e}")
-                    skipped_files.append((file_path, str(e)))
+                except Exception:
+                    logging.exception(f"Error processing {file_path}")
+                    skipped_files.append((file_path, "see logs for details"))
 
     # Determine which directories would be empty
     empty_dirs_to_delete = set()
@@ -292,8 +292,8 @@ def delete_orphaned_files(
             except (PermissionError, FileNotFoundError) as e:
                 logging.warning(f"Cannot access directory {dir_path}: {e}")
                 break  # Stop checking this path and its parents
-            except Exception as e:
-                logging.exception(f"Unexpected error accessing directory {dir_path}: {e}")
+            except Exception:
+                logging.exception(f"Unexpected error accessing directory {dir_path}")
                 break
 
             remaining_files = existing_files - orphaned_files_set  # What's left after simulated deletion
@@ -316,8 +316,8 @@ def delete_orphaned_files(
                 dir_path.rmdir()
                 logging.info(f"Deleted empty directory: {dir_path}")
                 deleted_dirs_count += 1
-            except Exception as e:
-                logging.exception(f"Error deleting directory {dir_path}: {e}")
+            except Exception:
+                logging.exception(f"Error deleting directory {dir_path}")
 
     # Final Summary
     action = "moved to recycle bin" if recycle_bin else "deleted"

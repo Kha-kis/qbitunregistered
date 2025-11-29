@@ -300,15 +300,15 @@ def unregistered_checks(
             try:
                 client.torrents_add_tags(torrent_hashes=default_tag_hashes, tags=[default_tag])
                 logging.info(f"Added tag '{default_tag}' to {len(default_tag_hashes)} torrents")
-            except Exception as e:
-                logging.exception(f"Failed to add tag '{default_tag}' in batch: {e}")
+            except Exception:
+                logging.exception(f"Failed to add tag '{default_tag}' in batch")
 
         if cross_seeding_tag_hashes:
             try:
                 client.torrents_add_tags(torrent_hashes=cross_seeding_tag_hashes, tags=[cross_seeding_tag])
                 logging.info(f"Added tag '{cross_seeding_tag}' to {len(cross_seeding_tag_hashes)} torrents")
-            except Exception as e:
-                logging.exception(f"Failed to add tag '{cross_seeding_tag}' in batch: {e}")
+            except Exception:
+                logging.exception(f"Failed to add tag '{cross_seeding_tag}' in batch")
     else:
         if default_tag_hashes:
             logging.info(f"[Dry Run] Would add tag '{default_tag}' to {len(default_tag_hashes)} torrents")

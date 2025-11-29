@@ -226,6 +226,6 @@ class NotificationManager:
                 # If we can't read or sanitize the body, fall back to generic logging below.
                 pass
             logging.exception(f"Failed to send Notifiarr notification: HTTP {e.code} - {e.reason}. Details: {error_body}")
-        except Exception as e:
+        except Exception:
             # Generic connection or other unexpected errors should be logged but not crash the caller.
-            logging.exception(f"Failed to send Notifiarr notification: {e}")
+            logging.exception("Failed to send Notifiarr notification")

@@ -6,7 +6,7 @@ import sys
 import socket
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, List, Tuple, Optional, Type, cast
+from typing import Any, Dict, List, Tuple, Type, cast
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.cache import cached  # noqa: E402
