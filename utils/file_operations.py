@@ -195,8 +195,8 @@ def get_torrent_file_paths(client, torrent_hash: str) -> List[Path]:
 
         return file_paths
 
-    except Exception as e:
-        logging.exception(f"Error getting file paths for torrent {torrent_hash}: {e}")
+    except Exception:
+        logging.exception(f"Error getting file paths for torrent {torrent_hash}")
         return []
 
 
