@@ -16,6 +16,7 @@ Usage:
 The script will run continuously and execute qbitunregistered.py at the
 configured times. Press Ctrl+C to stop the scheduler.
 """
+import argparse
 import schedule
 import time
 import subprocess
@@ -54,39 +55,59 @@ def run_script():
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ERROR: Unexpected error running script: {type(e).__name__}: {e}")
 
 
-# Load configuration from config.json (relative to this script)
-try:
-    with open(CONFIG_PATH, "r") as config_file:
-        config = json.load(config_file)
-except FileNotFoundError:
-    print(f"Error: The configuration file {CONFIG_PATH} was not found.")
-    sys.exit(1)
-except json.JSONDecodeError:
-    print(f"Error: The configuration file {CONFIG_PATH} contains invalid JSON.")
-    sys.exit(1)
+def main():
+    """Main entry point for the scheduler."""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description="Scheduler for qbitunregistered script. Runs qbitunregistered.py at configured times."
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=CONFIG_PATH,
+        help=f"Path to the config.json file (default: {CONFIG_PATH})",
+    )
+    args = parser.parse_args()
 
-# Schedule the script to run at the specified times
-scheduled_times = config.get("scheduled_times", [])
-if not scheduled_times:
-    print("Warning: No scheduled_times found in config.json. Scheduler will not run any tasks.")
-    sys.exit(0)
+    config_path = args.config
 
-for scheduled_time in scheduled_times:
+    # Load configuration from config.json
     try:
-        schedule.every().day.at(scheduled_time).do(run_script)
-    except schedule.ScheduleValueError as e:
-        print(f"Error: Invalid time format '{scheduled_time}' in scheduled_times. {e}")
+        with open(config_path, "r") as config_file:
+            config = json.load(config_file)
+    except FileNotFoundError:
+        print(f"Error: The configuration file {config_path} was not found.")
+        sys.exit(1)
+    except json.JSONDecodeError:
+        print(f"Error: The configuration file {config_path} contains invalid JSON.")
         sys.exit(1)
 
-# Run the scheduler loop
-print(f"Scheduler started. Next runs scheduled at: {', '.join(scheduled_times)}")
-try:
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-except KeyboardInterrupt:
-    print("\nScheduler stopped by user")
-    sys.exit(0)
-except Exception as e:
-    print(f"Scheduler crashed with unexpected error: {e}")
-    sys.exit(1)
+    # Schedule the script to run at the specified times
+    scheduled_times = config.get("scheduled_times", [])
+    if not scheduled_times:
+        print("Warning: No scheduled_times found in config.json. Scheduler will not run any tasks.")
+        sys.exit(0)
+
+    for scheduled_time in scheduled_times:
+        try:
+            schedule.every().day.at(scheduled_time).do(run_script)
+        except schedule.ScheduleValueError as e:
+            print(f"Error: Invalid time format '{scheduled_time}' in scheduled_times. {e}")
+            sys.exit(1)
+
+    # Run the scheduler loop
+    print(f"Scheduler started. Next runs scheduled at: {', '.join(scheduled_times)}")
+    try:
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nScheduler stopped by user")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Scheduler crashed with unexpected error: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
