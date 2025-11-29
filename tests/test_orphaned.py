@@ -210,7 +210,7 @@ class TestRecycleBin:
 
     @pytest.mark.skipif(
         not __import__("sys").platform.startswith("win"),
-        reason="Windows-specific path handling cannot be fully tested on non-Windows platforms"
+        reason="Windows-specific path handling cannot be fully tested on non-Windows platforms",
     )
     def test_windows_path_handling(self, mock_client, tmp_path):
         """Test Windows path handling with drive letters.

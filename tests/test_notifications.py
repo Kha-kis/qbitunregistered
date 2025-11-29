@@ -245,6 +245,4 @@ class TestNotificationManager:
             # Verify the raw API key is NOT exposed in any log output
             # The retry mechanism logs generic messages without credentials
             all_log_output = caplog.text
-            assert "secret_key_12345" not in all_log_output, (
-                "Raw API key should not appear in any log messages"
-            )
+            assert "secret_key_12345" not in all_log_output, "Raw API key should not appear in any log messages"
