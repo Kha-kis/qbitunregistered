@@ -59,6 +59,9 @@ def _validate_host(config: Dict[str, Any], errors: List[str]) -> None:
         return
 
     host = config["host"]
+    if not isinstance(host, str):
+        # Non-string values are caught by _validate_required_fields
+        return
     if not host:
         return
 
@@ -225,10 +228,14 @@ def _validate_tracker_tags(config: Dict[str, Any], errors: List[str]) -> None:
 def _validate_target_dir(config: Dict[str, Any]) -> None:
     """Validate target_dir path format if present."""
     if "target_dir" in config and config["target_dir"]:
-        target_dir = Path(config["target_dir"])
+        value = config["target_dir"]
+        if not isinstance(value, (str, os.PathLike)):
+            logging.warning(f"target_dir must be a string or path-like object, got: {type(value).__name__}")
+            return
+        target_dir = Path(value)
         # Don't validate existence, just format
         if not target_dir.is_absolute():
-            logging.warning(f"target_dir should be an absolute path: {config['target_dir']}")
+            logging.warning(f"target_dir should be an absolute path: {value}")
 
 
 def _validate_scheduled_times(config: Dict[str, Any], errors: List[str]) -> None:

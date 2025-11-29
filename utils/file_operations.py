@@ -6,7 +6,7 @@ import sys
 import socket
 from pathlib import Path
 from datetime import datetime
-from typing import List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, cast
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.cache import cached  # noqa: E402
@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - defensive import
 
 
 @cached(ttl=300, key_prefix="torrent_files")
-def fetch_torrent_files(client, torrent_hash: str, *, cache_scope: int) -> list:
+def fetch_torrent_files(client, torrent_hash: str, *, cache_scope: int) -> List[Dict[str, Any]]:
     """
     Fetch file list for a torrent with TTL-based caching.
 
@@ -55,7 +55,7 @@ def fetch_torrent_files(client, torrent_hash: str, *, cache_scope: int) -> list:
     """
     # Runtime assertion to prevent cache contamination
     assert cache_scope is not None, "cache_scope must be provided (use id(client))"
-    return client.torrents_files(torrent_hash)
+    return cast(List[Dict[str, Any]], client.torrents_files(torrent_hash))
 
 
 def move_files_to_recycle_bin(
@@ -219,10 +219,11 @@ def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tu
     cross_seeded_torrents: List[str] = []
 
     # Define transient/network-related errors we treat conservatively
-    transient_errors: Tuple[type, ...] = (OSError, socket.timeout)
+    transient_error_list: List[type] = [OSError, socket.timeout]
     if qbittorrent_exceptions is not None:
         # APIConnectionError covers various underlying network issues from qbittorrent-api
-        transient_errors = transient_errors + (qbittorrent_exceptions.APIConnectionError,)  # type: ignore
+        transient_error_list.append(qbittorrent_exceptions.APIConnectionError)
+    transient_errors: Tuple[type, ...] = tuple(transient_error_list)
 
     try:
         # Get all torrents except the one being deleted

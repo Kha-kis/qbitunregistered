@@ -13,6 +13,16 @@ except ImportError:
     APPRISE_AVAILABLE = False
 
 
+class NotifiarrError(Exception):
+    """Raised when Notifiarr API returns a non-2xx response."""
+
+    def __init__(self, status: int, reason: str, body: str = "") -> None:
+        self.status = status
+        self.reason = reason
+        self.body = body
+        super().__init__(f"Notifiarr returned status {status}: {reason}")
+
+
 class NotificationManager:
     """
     Manages sending notifications via Apprise and Notifiarr.
@@ -189,12 +199,22 @@ class NotificationManager:
                 if 200 <= response.status < 300:
                     return  # Success
                 else:
-                    # Raise exception to trigger retry
-                    raise Exception(f"Notifiarr returned status code: {response.status}")
+                    # Read response body for diagnostics
+                    try:
+                        body = response.read().decode("utf-8")
+                    except Exception:
+                        body = ""
+                    raise NotifiarrError(response.status, response.reason, body)
 
         try:
             self._retry_with_backoff(send, reraise=True)
             logging.info("Sent Notifiarr notification")
+        except NotifiarrError as e:
+            # Sanitize response body to prevent credential exposure
+            error_body = e.body
+            if self.notifiarr_key and self.notifiarr_key in error_body:
+                error_body = error_body.replace(self.notifiarr_key, "***REDACTED***")
+            logging.exception(f"Failed to send Notifiarr notification: HTTP {e.status} - {e.reason}. Details: {error_body}")
         except urllib.error.HTTPError as e:
             error_body = ""
             try:
