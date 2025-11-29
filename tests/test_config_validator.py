@@ -188,6 +188,56 @@ class TestConfigValidation:
             validate_config(config)
         assert "'notifiarr_channel' must be a string" in str(exc_info.value)
 
+    def test_notifiarr_channel_must_be_numeric_and_valid_length(self):
+        """Test that notifiarr_channel must be numeric and correct length."""
+        # Non-numeric string
+        config_non_numeric = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "notifiarr_channel": "abc123",
+            "notifiarr_key": "dummy",
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config_non_numeric)
+        msg = str(exc_info.value)
+        assert "'notifiarr_channel' must be a numeric Discord channel ID" in msg
+
+        # Numeric but too short
+        config_short = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "notifiarr_channel": "123456789012345",  # 15 digits
+            "notifiarr_key": "dummy",
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config_short)
+        msg = str(exc_info.value)
+        assert "appears invalid (expected 17-20 digits" in msg
+
+    def test_notifiarr_key_and_channel_must_be_set_together(self):
+        """Test that Notifiarr key and channel are validated as a pair."""
+        base = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+        }
+
+        # Key without channel
+        config_key_only = {**base, "notifiarr_key": "dummy"}
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config_key_only)
+        msg = str(exc_info.value)
+        assert "'notifiarr_channel' must be set when 'notifiarr_key' is provided" in msg
+
+        # Channel without key
+        config_channel_only = {**base, "notifiarr_channel": "12345678901234567"}
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config_channel_only)
+        msg = str(exc_info.value)
+        assert "'notifiarr_key' must be set when 'notifiarr_channel' is provided" in msg
+
     def test_recycle_bin_not_dir(self, tmp_path):
         """Test that recycle bin path pointing to a file raises error."""
         file_path = tmp_path / "file.txt"

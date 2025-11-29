@@ -23,9 +23,26 @@ def validate_config(config: Dict[str, Any]) -> None:
     Raises:
         ConfigValidationError: If configuration is invalid
     """
-    errors = []
+    errors: List[str] = []
 
-    # Required fields
+    _validate_required_fields(config, errors)
+    _validate_host(config, errors)
+    _validate_basic_types(config, errors)
+    _validate_tracker_tags(config, errors)
+    _validate_target_dir(config)
+    _validate_scheduled_times(config, errors)
+    _validate_recycle_bin(config, errors)
+    _validate_notifications(config, errors)
+
+    if errors:
+        error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
+        raise ConfigValidationError(error_msg)
+
+    logging.info("Configuration validation passed")
+
+
+def _validate_required_fields(config: Dict[str, Any], errors: List[str]) -> None:
+    """Validate required connection fields like host/username/password."""
     required_fields = ["host", "username", "password"]
     for field in required_fields:
         if field not in config:
@@ -35,45 +52,55 @@ def validate_config(config: Dict[str, Any]) -> None:
         elif not config[field].strip():
             errors.append(f"Field '{field}' cannot be empty or whitespace-only")
 
-    # Validate host format
-    if "host" in config:
-        host = config["host"]
-        if host:
-            # Determine if this is a full URL (contains "://") or simple hostname:port format
-            if "://" in host:
-                # Parse as full URL (e.g., 'https://example.com:8080/qbittorrent')
-                parsed = urlparse(host)
 
-                # Validate scheme
-                if parsed.scheme not in ["http", "https"]:
-                    errors.append(f"Invalid host scheme: '{parsed.scheme}'. Use 'http' or 'https'")
+def _validate_host(config: Dict[str, Any], errors: List[str]) -> None:
+    """Validate qBittorrent host configuration."""
+    if "host" not in config:
+        return
 
-                # Validate netloc is present
-                if not parsed.netloc:
-                    errors.append(f"Invalid host URL: '{host}'. Missing hostname/netloc")
-            else:
-                # Treat as simple 'hostname:port' format (e.g., 'localhost:8080')
-                if ":" not in host:
-                    errors.append(
-                        f"Invalid host format: '{host}'. Expected 'hostname:port' or full URL like 'http://hostname:port/path'"
-                    )
-                else:
-                    # Validate simple 'hostname:port' format
-                    parts = host.split(":", 1)
-                    hostname = parts[0].strip()
+    host = config["host"]
+    if not host:
+        return
 
-                    # Check hostname is not empty
-                    if not hostname:
-                        errors.append(f"Invalid host format: '{host}'. Hostname cannot be empty")
+    # Determine if this is a full URL (contains "://") or simple hostname:port format
+    if "://" in host:
+        # Parse as full URL (e.g., 'https://example.com:8080/qbittorrent')
+        parsed = urlparse(host)
 
-                    # Validate port
-                    try:
-                        port = int(parts[1])
-                        if not (1 <= port <= 65535):
-                            errors.append(f"Invalid port number: {port}. Must be between 1 and 65535")
-                    except ValueError:
-                        errors.append(f"Invalid port in host: '{parts[1]}'. Must be a number")
+        # Validate scheme
+        if parsed.scheme not in ["http", "https"]:
+            errors.append(f"Invalid host scheme: '{parsed.scheme}'. Use 'http' or 'https'")
 
+        # Validate netloc is present
+        if not parsed.netloc:
+            errors.append(f"Invalid host URL: '{host}'. Missing hostname/netloc")
+    else:
+        # Treat as simple 'hostname:port' format (e.g., 'localhost:8080')
+        if ":" not in host:
+            errors.append(
+                f"Invalid host format: '{host}'. Expected 'hostname:port' or full URL like 'http://hostname:port/path'"
+            )
+            return
+
+        # Validate simple 'hostname:port' format
+        parts = host.split(":", 1)
+        hostname = parts[0].strip()
+
+        # Check hostname is not empty
+        if not hostname:
+            errors.append(f"Invalid host format: '{host}'. Hostname cannot be empty")
+
+        # Validate port
+        try:
+            port = int(parts[1])
+            if not (1 <= port <= 65535):
+                errors.append(f"Invalid port number: {port}. Must be between 1 and 65535")
+        except ValueError:
+            errors.append(f"Invalid port in host: '{parts[1]}'. Must be a number")
+
+
+def _validate_basic_types(config: Dict[str, Any], errors: List[str]) -> None:
+    """Validate basic scalar/list/dict configuration fields."""
     # Validate dry_run is boolean
     if "dry_run" in config and not isinstance(config["dry_run"], bool):
         errors.append(f"'dry_run' must be a boolean, got: {type(config['dry_run']).__name__}")
@@ -120,124 +147,149 @@ def validate_config(config: Dict[str, Any]) -> None:
         if not isinstance(config["delete_files"], dict):
             errors.append(f"'delete_files' must be a dictionary, got: {type(config['delete_files']).__name__}")
 
-    # Validate tracker_tags structure
-    if "tracker_tags" in config:
-        if not isinstance(config["tracker_tags"], dict):
-            errors.append(f"'tracker_tags' must be a dictionary, got: {type(config['tracker_tags']).__name__}")
-        elif config["tracker_tags"]:  # Only iterate if non-empty
-            for tracker_name, tracker_config in config["tracker_tags"].items():
-                if not isinstance(tracker_config, dict):
-                    errors.append(f"tracker_tags['{tracker_name}'] must be a dictionary")
-                    continue
 
-                if "tag" in tracker_config and not isinstance(tracker_config["tag"], str):
-                    errors.append(f"tracker_tags['{tracker_name}']['tag'] must be a string")
+def _validate_tracker_tags(config: Dict[str, Any], errors: List[str]) -> None:
+    """Validate tracker_tags structure and limits."""
+    tracker_tags = config.get("tracker_tags")
+    if tracker_tags is None:
+        return
 
-                # Validate seed limits with appropriate type checking
-                # seed_time_limit: Integer only (minutes)
-                # seed_ratio_limit: Integer or float (upload:download ratio)
-                if "seed_time_limit" in tracker_config:
-                    value = tracker_config["seed_time_limit"]
-                    # qBittorrent API: -2 = use global, -1 = no limit, >=0 = specific minutes
-                    # Upper bound: 1 year = 525,600 minutes (525600)
-                    MAX_SEED_TIME_MINUTES = 525600  # 1 year
-                    if not isinstance(value, int) or (value < -2):
-                        errors.append(
-                            f"tracker_tags['{tracker_name}']['seed_time_limit'] must be an integer >= -2 "
-                            f"(-2 = use global, -1 = no limit, 0+ = minutes)"
-                        )
-                    elif value > MAX_SEED_TIME_MINUTES:
-                        errors.append(
-                            f"tracker_tags['{tracker_name}']['seed_time_limit'] exceeds maximum allowed "
-                            f"value of {MAX_SEED_TIME_MINUTES} minutes (1 year). Got: {value}"
-                        )
-                    # Warn about potentially confusing edge case
-                    elif value == 0:
-                        logging.warning(
-                            f"tracker_tags['{tracker_name}']['seed_time_limit'] is 0, which means "
-                            "torrents will stop seeding immediately. Use -1 for unlimited seeding."
-                        )
+    if not isinstance(tracker_tags, dict):
+        errors.append(f"'tracker_tags' must be a dictionary, got: {type(tracker_tags).__name__}")
+        return
 
-                if "seed_ratio_limit" in tracker_config:
-                    value = tracker_config["seed_ratio_limit"]
-                    # qBittorrent API: -2 = use global, -1 = no limit, >=0 = specific ratio
-                    # Upper bound: 100.0 (seeding 100x the download size is exceptionally high)
-                    MAX_SEED_RATIO = 100.0
-                    if not isinstance(value, (int, float)) or (value < -2):
-                        errors.append(
-                            f"tracker_tags['{tracker_name}']['seed_ratio_limit'] must be a number >= -2 "
-                            f"(-2 = use global, -1 = no limit, 0+ = ratio)"
-                        )
-                    elif value > MAX_SEED_RATIO:
-                        errors.append(
-                            f"tracker_tags['{tracker_name}']['seed_ratio_limit'] exceeds maximum allowed "
-                            f"value of {MAX_SEED_RATIO}. Got: {value}"
-                        )
-                    # Warn about potentially confusing edge case
-                    elif value == 0:
-                        logging.warning(
-                            f"tracker_tags['{tracker_name}']['seed_ratio_limit'] is 0, which means "
-                            "torrents will stop seeding immediately. Use -1 for unlimited seeding."
-                        )
+    if not tracker_tags:
+        return
 
-    # Validate target_dir if present
+    for tracker_name, tracker_config in tracker_tags.items():
+        if not isinstance(tracker_config, dict):
+            errors.append(f"tracker_tags['{tracker_name}'] must be a dictionary")
+            continue
+
+        if "tag" in tracker_config and not isinstance(tracker_config["tag"], str):
+            errors.append(f"tracker_tags['{tracker_name}']['tag'] must be a string")
+
+        # Validate seed limits with appropriate type checking
+        # seed_time_limit: Integer only (minutes)
+        # seed_ratio_limit: Integer or float (upload:download ratio)
+        if "seed_time_limit" in tracker_config:
+            value = tracker_config["seed_time_limit"]
+            # qBittorrent API: -2 = use global, -1 = no limit, >=0 = specific minutes
+            # Upper bound: 1 year = 525,600 minutes (525600)
+            MAX_SEED_TIME_MINUTES = 525600  # 1 year
+            if not isinstance(value, int) or (value < -2):
+                errors.append(
+                    f"tracker_tags['{tracker_name}']['seed_time_limit'] must be an integer >= -2 "
+                    f"(-2 = use global, -1 = no limit, 0+ = minutes)"
+                )
+            elif value > MAX_SEED_TIME_MINUTES:
+                errors.append(
+                    f"tracker_tags['{tracker_name}']['seed_time_limit'] exceeds maximum allowed "
+                    f"value of {MAX_SEED_TIME_MINUTES} minutes (1 year). Got: {value}"
+                )
+            # Warn about potentially confusing edge case
+            elif value == 0:
+                logging.warning(
+                    f"tracker_tags['{tracker_name}']['seed_time_limit'] is 0, which means "
+                    "torrents will stop seeding immediately. Use -1 for unlimited seeding."
+                )
+
+        if "seed_ratio_limit" in tracker_config:
+            value = tracker_config["seed_ratio_limit"]
+            # qBittorrent API: -2 = use global, -1 = no limit, >=0 = specific ratio
+            # Upper bound: 100.0 (seeding 100x the download size is exceptionally high)
+            MAX_SEED_RATIO = 100.0
+            if not isinstance(value, (int, float)) or (value < -2):
+                errors.append(
+                    f"tracker_tags['{tracker_name}']['seed_ratio_limit'] must be a number >= -2 "
+                    f"(-2 = use global, -1 = no limit, 0+ = ratio)"
+                )
+            elif value > MAX_SEED_RATIO:
+                errors.append(
+                    f"tracker_tags['{tracker_name}']['seed_ratio_limit'] exceeds maximum allowed "
+                    f"value of {MAX_SEED_RATIO}. Got: {value}"
+                )
+            # Warn about potentially confusing edge case
+            elif value == 0:
+                logging.warning(
+                    f"tracker_tags['{tracker_name}']['seed_ratio_limit'] is 0, which means "
+                    "torrents will stop seeding immediately. Use -1 for unlimited seeding."
+                )
+
+
+def _validate_target_dir(config: Dict[str, Any]) -> None:
+    """Validate target_dir path format if present."""
     if "target_dir" in config and config["target_dir"]:
         target_dir = Path(config["target_dir"])
         # Don't validate existence, just format
         if not target_dir.is_absolute():
             logging.warning(f"target_dir should be an absolute path: {config['target_dir']}")
 
-    # Validate scheduled_times format
-    if "scheduled_times" in config:
-        # Type was already validated above in the list validation
-        if isinstance(config["scheduled_times"], list) and config["scheduled_times"]:
-            for time_str in config["scheduled_times"]:
-                if not isinstance(time_str, str):
-                    errors.append(f"scheduled_times must contain strings, got: {type(time_str).__name__}")
-                    continue
 
-                # Basic format check (HH:MM or HH:MM:SS)
-                parts = time_str.split(":")
-                if len(parts) not in [2, 3]:
-                    errors.append(f"Invalid time format in scheduled_times: '{time_str}'. Expected 'HH:MM' or 'HH:MM:SS'")
-                    continue
+def _validate_scheduled_times(config: Dict[str, Any], errors: List[str]) -> None:
+    """Validate scheduled_times entries if present."""
+    if "scheduled_times" not in config:
+        return
 
-                try:
-                    hour = int(parts[0])
-                    minute = int(parts[1])
-                    if len(parts) == 3:
-                        second = int(parts[2])
-                        if not (0 <= second <= 59):
-                            errors.append(f"Invalid seconds in scheduled_times: '{time_str}'")
+    scheduled_times = config["scheduled_times"]
+    # Type was already validated above in the list validation
+    if isinstance(scheduled_times, list) and scheduled_times:
+        for time_str in scheduled_times:
+            if not isinstance(time_str, str):
+                errors.append(f"scheduled_times must contain strings, got: {type(time_str).__name__}")
+                continue
 
-                    if not (0 <= hour <= 23):
-                        errors.append(f"Invalid hour in scheduled_times: '{time_str}'")
-                    if not (0 <= minute <= 59):
-                        errors.append(f"Invalid minutes in scheduled_times: '{time_str}'")
-                except ValueError:
-                    errors.append(f"Invalid time format in scheduled_times: '{time_str}'")
-
-    # Validate recycle_bin if present
-    recycle_bin = config.get("recycle_bin")
-    if recycle_bin:
-        if not isinstance(recycle_bin, str):
-            errors.append(f"'recycle_bin' must be a string, got: {type(recycle_bin).__name__}")
-        else:
-            recycle_bin_path = Path(recycle_bin)
-
-            # Must be absolute path for security (same as exclude_dirs requirement)
-            if not recycle_bin_path.is_absolute():
-                errors.append(f"'recycle_bin' must be an absolute path (security requirement): '{recycle_bin}'")
+            # Basic format check (HH:MM or HH:MM:SS)
+            parts = time_str.split(":")
+            if len(parts) not in [2, 3]:
+                errors.append(f"Invalid time format in scheduled_times: '{time_str}'. Expected 'HH:MM' or 'HH:MM:SS'")
+                continue
 
             try:
-                if recycle_bin_path.exists():
-                    if not recycle_bin_path.is_dir():
-                        errors.append(f"Recycle bin path '{recycle_bin}' is not a directory.")
-                    elif not os.access(recycle_bin_path, os.W_OK):
-                        errors.append(f"Recycle bin path '{recycle_bin}' is not writable.")
-            except OSError as e:
-                errors.append(f"Invalid recycle bin path '{recycle_bin}': {e}")
+                hour = int(parts[0])
+                minute = int(parts[1])
+                if len(parts) == 3:
+                    second = int(parts[2])
+                    if not (0 <= second <= 59):
+                        errors.append(f"Invalid seconds in scheduled_times: '{time_str}'")
 
+                if not (0 <= hour <= 23):
+                    errors.append(f"Invalid hour in scheduled_times: '{time_str}'")
+                if not (0 <= minute <= 59):
+                    errors.append(f"Invalid minutes in scheduled_times: '{time_str}'")
+            except ValueError:
+                errors.append(f"Invalid time format in scheduled_times: '{time_str}'")
+
+
+def _validate_recycle_bin(config: Dict[str, Any], errors: List[str]) -> None:
+    """Validate recycle_bin configuration if present."""
+    recycle_bin = config.get("recycle_bin")
+    if not recycle_bin:
+        return
+
+    if not isinstance(recycle_bin, str):
+        errors.append(f"'recycle_bin' must be a string, got: {type(recycle_bin).__name__}")
+        return
+
+    recycle_bin_path = Path(recycle_bin)
+
+    # Must be absolute path for security (same as exclude_dirs requirement)
+    if not recycle_bin_path.is_absolute():
+        errors.append(f"'recycle_bin' must be an absolute path (security requirement): '{recycle_bin}'")
+        return
+
+    try:
+        if recycle_bin_path.exists():
+            if not recycle_bin_path.is_dir():
+                errors.append(f"Recycle bin path '{recycle_bin}' is not a directory.")
+            elif not os.access(recycle_bin_path, os.W_OK):
+                errors.append(f"Recycle bin path '{recycle_bin}' is not writable.")
+    except OSError as e:
+        errors.append(f"Invalid recycle bin path '{recycle_bin}': {e}")
+
+
+def _validate_notifications(config: Dict[str, Any], errors: List[str]) -> None:
+    """Validate notification-related configuration (Apprise and Notifiarr)."""
     # Validate notification settings
     if "apprise_url" in config and config["apprise_url"]:
         if not isinstance(config["apprise_url"], str):
@@ -262,13 +314,9 @@ def validate_config(config: Dict[str, Any]) -> None:
         elif not notifiarr_channel.isdigit():
             errors.append(f"'notifiarr_channel' must be a numeric Discord channel ID, got: '{notifiarr_channel}'")
         elif len(notifiarr_channel) < 17 or len(notifiarr_channel) > 20:
-            errors.append(f"'notifiarr_channel' appears invalid (expected 17-20 digits, got {len(notifiarr_channel)} digits)")
-
-    if errors:
-        error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
-        raise ConfigValidationError(error_msg)
-
-    logging.info("Configuration validation passed")
+            errors.append(
+                f"'notifiarr_channel' appears invalid (expected 17-20 digits, got {len(notifiarr_channel)} digits)"
+            )
 
 
 def validate_exclude_patterns(exclude_files: List[str], exclude_dirs: List[str]) -> None:

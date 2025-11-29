@@ -20,6 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 26 comprehensive tests for impact analysis
 
 ### Changed
+- **Configuration Validation**:
+  - Refactored `utils/config_validator.validate_config` into focused helper functions for easier maintenance and testing
+  - Added stricter validation for Notifiarr settings:
+    - `notifiarr_key` and `notifiarr_channel` must be provided together
+    - `notifiarr_channel` must be a numeric Discord channel ID string (17–20 digits)
+  - Added validation for `recycle_bin` configuration (absolute path requirement, directory and writability checks)
+
+### Fixed
+- **Notification Reliability & Security**:
+  - Improved `NotificationManager` retry logic with an explicit `reraise` option
+  - Ensured Notifiarr HTTP error responses are surfaced to logging while sanitizing API keys from error bodies
+  - Added tests around retry behavior and credential redaction for Notifiarr notifications
+
+### Changed
 - Operations now show preview before execution unless `--yes` flag is used
 - Improved user feedback with clearer understanding of pending changes
 

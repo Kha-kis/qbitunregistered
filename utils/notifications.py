@@ -40,7 +40,14 @@ class NotificationManager:
             else:
                 logging.warning("Apprise URL configured but 'apprise' module not found. Install it with: pip install apprise")
 
-    def _retry_with_backoff(self, func: Callable, max_retries: int = 3, initial_delay: float = 1.0) -> bool:
+    def _retry_with_backoff(
+        self,
+        func: Callable[[], None],
+        max_retries: int = 3,
+        initial_delay: float = 1.0,
+        *,
+        reraise: bool = False,
+    ) -> bool:
         """
         Retry a function with exponential backoff.
 
@@ -50,9 +57,12 @@ class NotificationManager:
             initial_delay: Initial delay in seconds (doubles after each retry)
 
         Returns:
-            True if function succeeded, False otherwise
+            True if function succeeded, False otherwise.
+            If reraise is True, the last exception will be raised after all retries fail.
         """
         delay = initial_delay
+        last_exc: Optional[BaseException] = None
+
         for attempt in range(max_retries):
             try:
                 func()
@@ -60,13 +70,19 @@ class NotificationManager:
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception as e:
+                last_exc = e
                 if attempt < max_retries - 1:
-                    logging.warning(f"Notification attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {delay}s...")
+                    logging.warning(
+                        f"Notification attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {delay}s..."
+                    )
                     time.sleep(delay)
                     delay *= 2  # Exponential backoff
                 else:
                     logging.exception(f"Notification failed after {max_retries} attempts")
-                    return False
+
+        if reraise and last_exc is not None:
+            raise last_exc
+
         return False
 
     def send_summary(self, operation_results: Dict[str, List[str]]) -> None:
@@ -113,7 +129,9 @@ class NotificationManager:
 
         def send():
             assert self.apprise_obj is not None  # For type checker in closure
-            self.apprise_obj.notify(body=body, title=title)
+            result = self.apprise_obj.notify(body=body, title=title)
+            if result is False:
+                raise RuntimeError("Apprise notify returned False")
 
         if self._retry_with_backoff(send):
             logging.info("Sent Apprise notification")
@@ -177,7 +195,7 @@ class NotificationManager:
                     raise Exception(f"Notifiarr returned status code: {response.status}")
 
         try:
-            if self._retry_with_backoff(send):
+            if self._retry_with_backoff(send, reraise=True):
                 logging.info("Sent Notifiarr notification")
             else:
                 logging.error("Failed to send Notifiarr notification after all retries")
@@ -190,4 +208,6 @@ class NotificationManager:
                     error_body = error_body.replace(self.notifiarr_key, "***REDACTED***")
             except Exception:
                 pass
-            logging.exception(f"Failed to send Notifiarr notification: HTTP {e.code} - {e.reason}. Details: {error_body}")
+            logging.exception(
+                f"Failed to send Notifiarr notification: HTTP {e.code} - {e.reason}. Details: {error_body}"
+            )

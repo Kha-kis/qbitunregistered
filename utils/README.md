@@ -376,13 +376,17 @@ Configure Notifiarr for Discord notifications with custom formatting:
 
 **Requirements:**
 - Both `notifiarr_key` and `notifiarr_channel` must be provided together
-- Channel ID must be a valid Discord channel ID (17-20 digits)
+- `notifiarr_key` must be a non-empty string
+- `notifiarr_channel` must be a valid Discord channel ID:
+  - Provided as a string
+  - Contains only digits
+  - Length between 17 and 20 characters (inclusive)
 
 **Features:**
 - Color-coded notifications (green for success, red for failures)
 - Automatic retry with exponential backoff (3 attempts max)
 - Discord character limit handling (2000 chars, auto-truncation)
-- Credential sanitization in error logs
+- Credential sanitization in error logs (API keys are redacted if returned in error bodies)
 
 ### Notification Content
 

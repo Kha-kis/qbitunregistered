@@ -242,7 +242,38 @@ class TestNotificationManager:
         with patch("time.sleep"):
             manager.send_summary(operation_results)
 
-            # Verify the raw API key is NOT exposed in any log output
-            # The retry mechanism logs generic messages without credentials
-            all_log_output = caplog.text
-            assert "secret_key_12345" not in all_log_output, "Raw API key should not appear in any log messages"
+        # Verify the raw API key is NOT exposed in any log output
+        # The retry mechanism logs generic messages without credentials,
+        # and HTTP error details are sanitized.
+        all_log_output = caplog.text
+        assert "secret_key_12345" not in all_log_output, "Raw API key should not appear in any log messages"
+
+    def test_retry_with_backoff_reraise_false(self):
+        """_retry_with_backoff should not re-raise when reraise=False (default)."""
+        config = {}
+        manager = NotificationManager(config)
+
+        call_count = {"n": 0}
+
+        def failing():
+            call_count["n"] += 1
+            raise RuntimeError("temporary failure")
+
+        with patch("time.sleep"):
+            result = manager._retry_with_backoff(failing, max_retries=3)
+
+        assert result is False
+        # Should have attempted exactly max_retries times
+        assert call_count["n"] == 3
+
+    def test_retry_with_backoff_reraise_true(self):
+        """_retry_with_backoff should re-raise last exception when reraise=True."""
+        config = {}
+        manager = NotificationManager(config)
+
+        def always_fail():
+            raise ValueError("permanent failure")
+
+        with patch("time.sleep"):
+            with pytest.raises(ValueError):
+                manager._retry_with_backoff(always_fail, max_retries=2, reraise=True)
