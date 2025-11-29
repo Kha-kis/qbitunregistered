@@ -25,11 +25,17 @@ jobs:
       issues: read
       id-token: write
 
+    env:
+      CLAUDE_CODE_VERSION: 'latest'
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Debug Environment
+        run: echo "Installing Claude Code version: $CLAUDE_CODE_VERSION"
 
       - name: Run Claude Code Review
         id: claude-review
