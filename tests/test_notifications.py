@@ -245,4 +245,11 @@ class TestNotificationManager:
             # Verify credential was sanitized
             assert mock_log.called
             log_message = mock_log.call_args[0][0]
-            assert "secret_key_12345" not in log_message or "***REDACTED***" in log_message
+            # Ensure raw secret is NOT present in log message
+            assert "secret_key_12345" not in log_message, (
+                "Raw API key should not appear in log messages"
+            )
+            # Ensure redaction marker IS present
+            assert "***REDACTED***" in log_message, (
+                "Redaction marker should be present when credentials are sanitized"
+            )

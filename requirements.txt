@@ -12,4 +12,5 @@ pytest>=7.4.0
 pytest-cov>=4.1.0
 
 # Notification dependencies
-apprise>=1.0.0
+# Using ~= to pin to 1.9.x series for stability while allowing patch updates
+apprise~=1.9

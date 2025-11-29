@@ -171,7 +171,16 @@ def get_torrent_file_paths(client, torrent_hash: str) -> List[Path]:
         file_paths = []
 
         for file_info in files:
-            file_path = save_path / file_info.name
+            # Handle both dict and object forms from qBittorrent API
+            if isinstance(file_info, dict):
+                name = file_info.get("name")
+            else:
+                name = getattr(file_info, "name", None)
+
+            if not name:
+                continue
+
+            file_path = save_path / name
             if file_path.exists():
                 file_paths.append(file_path)
             else:
@@ -198,7 +207,7 @@ def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tu
 
     Security:
         - Uses resolved paths for accurate comparison
-        - Only checks active torrents (not paused/stopped)
+        - Checks all torrents regardless of state to prevent data loss
     """
     if not file_paths:
         return False, []
@@ -223,7 +232,16 @@ def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tu
                 torrent_files = fetch_torrent_files(client, torrent.hash, cache_scope=id(client))
 
                 for file_info in torrent_files:
-                    file_path = (torrent_save_path / file_info.name).resolve()
+                    # Handle both dict and object forms from qBittorrent API
+                    if isinstance(file_info, dict):
+                        name = file_info.get("name")
+                    else:
+                        name = getattr(file_info, "name", None)
+
+                    if not name:
+                        continue
+
+                    file_path = (torrent_save_path / name).resolve()
 
                     # Check if this file is in our list
                     if file_path in file_paths_set:
