@@ -139,16 +139,16 @@ jobs:
       - name: Validate config example
         run: |
           python -c "
-          from utils.config_validator import ConfigValidator
+          from utils.config_validator import validate_config, ConfigValidationError
           import json
           with open('config.json.example') as f:
               config = json.load(f)
-          validator = ConfigValidator()
-          errors = validator.validate(config)
-          if errors:
-              print('Config validation errors:', errors)
+          try:
+              validate_config(config)
+              print('Config example is valid')
+          except ConfigValidationError as e:
+              print('Config validation errors:', e)
               exit(1)
-          print('Config example is valid')
           "
 
       - name: Test dry-run mode
