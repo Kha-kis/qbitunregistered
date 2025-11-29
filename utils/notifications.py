@@ -146,7 +146,7 @@ class NotificationManager:
         else:
             logging.error("Failed to send Apprise notification after all retries")
 
-    def _send_notifiarr(self, title: str, body: str, has_failures: bool = False) -> None:
+    def _send_notifiarr(self, title: str, body: str, has_failures: bool = False) -> None:  # noqa: C901
         """
         Sends notification via Notifiarr Passthrough API using urllib with retry logic.
 

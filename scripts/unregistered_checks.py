@@ -99,7 +99,7 @@ def update_torrent_file_paths(torrent_file_paths, torrent):
     torrent_file_paths.setdefault(torrent.save_path, []).append(torrent.hash)
 
 
-def delete_torrents_and_files(
+def delete_torrents_and_files(  # noqa: C901
     client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents=None, recycle_bin: Optional[str] = None
 ):
     """
@@ -219,7 +219,7 @@ def delete_torrents_and_files(
                 continue
 
 
-def unregistered_checks(
+def unregistered_checks(  # noqa: C901
     client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run, recycle_bin: Optional[str] = None
 ):
     """

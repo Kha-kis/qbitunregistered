@@ -51,7 +51,7 @@ def _get_categories(client, *, cache_scope: int) -> Dict[str, Any]:
     return client.torrent_categories.categories
 
 
-def check_files_on_disk(
+def check_files_on_disk(  # noqa: C901
     client, torrents: List, exclude_file_patterns: Optional[List[str]] = None, exclude_dirs: Optional[List[str]] = None
 ) -> List[str]:
     """
@@ -201,7 +201,7 @@ def check_files_on_disk(
     return orphaned_files
 
 
-def delete_orphaned_files(
+def delete_orphaned_files(  # noqa: C901
     orphaned_files: List[str], dry_run: bool, client, torrents: Optional[List] = None, recycle_bin: Optional[str] = None
 ) -> None:
     """

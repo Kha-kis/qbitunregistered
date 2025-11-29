@@ -198,7 +198,7 @@ def get_torrent_file_paths(client, torrent_hash: str) -> List[Path]:
         return []
 
 
-def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tuple[bool, List[str]]:
+def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tuple[bool, List[str]]:  # noqa: C901
     """
     Check if any of the given file paths are being used by other active torrents.
 
