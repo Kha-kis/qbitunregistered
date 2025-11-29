@@ -76,7 +76,9 @@ class TestNotificationManager:
         call_args = mock_urlopen.call_args
         req = call_args[0][0]
         assert req.full_url == "https://notifiarr.com/api/v1/notification/passthrough"
-        assert req.headers["X-api-key"] == "test_key"
+        # Header names are case-sensitive in the Request object's headers dict,
+        # so we assert against the exact key used in utils.notifications.
+        assert req.headers["X-API-Key"] == "test_key"
 
         import json
 

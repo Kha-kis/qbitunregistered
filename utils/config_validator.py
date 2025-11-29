@@ -119,6 +119,11 @@ def _validate_basic_types(config: Dict[str, Any], errors: List[str]) -> None:
         if not isinstance(config["log_file"], str):
             errors.append(f"'log_file' must be a string path, got: {type(config['log_file']).__name__}")
 
+    # Validate target_dir is a string if provided
+    if "target_dir" in config and config["target_dir"]:
+        if not isinstance(config["target_dir"], str):
+            errors.append(f"'target_dir' must be a string path, got: {type(config['target_dir']).__name__}")
+
     # Validate tags are strings
     for tag_field in ["default_unregistered_tag", "cross_seeding_tag", "other_issues_tag"]:
         if tag_field in config and not isinstance(config[tag_field], str):

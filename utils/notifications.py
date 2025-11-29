@@ -193,10 +193,8 @@ class NotificationManager:
                     raise Exception(f"Notifiarr returned status code: {response.status}")
 
         try:
-            if self._retry_with_backoff(send, reraise=True):
-                logging.info("Sent Notifiarr notification")
-            else:
-                logging.error("Failed to send Notifiarr notification after all retries")
+            self._retry_with_backoff(send, reraise=True)
+            logging.info("Sent Notifiarr notification")
         except urllib.error.HTTPError as e:
             error_body = ""
             try:

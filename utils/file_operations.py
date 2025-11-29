@@ -3,12 +3,19 @@
 import logging
 import shutil
 import sys
+import socket
 from pathlib import Path
 from datetime import datetime
 from typing import List, Tuple, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.cache import cached  # noqa: E402
+
+try:
+    # qbittorrent-api specific exceptions (may not be available in all contexts, e.g. some tests)
+    from qbittorrentapi import exceptions as qbittorrent_exceptions  # type: ignore
+except Exception:  # pragma: no cover - defensive import
+    qbittorrent_exceptions = None  # type: ignore
 
 
 @cached(ttl=300, key_prefix="torrent_files")
@@ -197,17 +204,11 @@ def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tu
     """
     Check if any of the given file paths are being used by other active torrents.
 
-    Args:
-        client: qBittorrent client instance
-        file_paths: List of file paths to check
-        exclude_hash: Hash of the torrent being deleted (to exclude from check)
-
-    Returns:
-        Tuple of (is_cross_seeded, list_of_cross_seeded_torrent_names)
-
-    Security:
-        - Uses resolved paths for accurate comparison
-        - Checks all torrents regardless of state to prevent data loss
+    Error handling strategy:
+        - Transient connection/server issues (e.g. APIConnectionError, socket timeouts)
+          are treated as "potentially cross-seeded" to avoid accidental data loss.
+        - Programming errors or unexpected states are not swallowed and will bubble up,
+          making failures visible instead of silently skipping safety checks.
     """
     if not file_paths:
         return False, []
@@ -215,7 +216,13 @@ def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tu
     # Build set of resolved file paths for O(1) lookup
     file_paths_set = {path.resolve() for path in file_paths}
 
-    cross_seeded_torrents = []
+    cross_seeded_torrents: List[str] = []
+
+    # Define transient/network-related errors we treat conservatively
+    transient_errors: Tuple[type, ...] = (OSError, socket.timeout)
+    if qbittorrent_exceptions is not None:
+        # APIConnectionError covers various underlying network issues from qbittorrent-api
+        transient_errors = transient_errors + (qbittorrent_exceptions.APIConnectionError,)  # type: ignore
 
     try:
         # Get all torrents except the one being deleted
@@ -252,13 +259,23 @@ def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tu
                         break  # Found a match, no need to check other files in this torrent
 
             except Exception as e:
-                logging.debug(f"Error checking torrent {torrent.hash} for cross-seeding: {e}")
+                # Per-torrent anomalies shouldn't break the whole scan; log and continue.
+                logging.debug(
+                    "Error checking torrent %s for cross-seeding: %s",
+                    getattr(torrent, "hash", "<unknown>"),
+                    e,
+                )
                 continue
 
         is_cross_seeded = len(cross_seeded_torrents) > 0
         return is_cross_seeded, cross_seeded_torrents
 
-    except Exception as e:
-        logging.exception(f"Error during cross-seeding check: {e}")
-        # On error, assume not cross-seeded to avoid blocking legitimate deletions
-        return False, []
+    except transient_errors as e:
+        # On transient network/server errors, be conservative and prevent file removal.
+        logging.exception("Error during cross-seeding check (treated as transient): %s", e)
+        logging.warning(
+            "Cross-seeding safety check failed due to connection/server error. "
+            "Treating files as potentially cross-seeded to avoid data loss; "
+            "torrents may still be removed without deleting files."
+        )
+        return True, []

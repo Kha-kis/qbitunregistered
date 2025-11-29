@@ -130,16 +130,17 @@ class TestCheckCrossSeeding:
         assert len(torrents) == 0
 
     def test_error_handling(self):
-        """Test that errors during check don't crash and return safe default."""
+        """Test that transient errors during check don't crash and prevent file deletion."""
         mock_client = MagicMock()
-        mock_client.torrents_info.side_effect = Exception("API Error")
+        # Simulate a transient connection-like error
+        mock_client.torrents_info.side_effect = ConnectionError("API Error")
 
         test_files = [Path("/data/movies/movie.mkv")]
 
-        # Should not raise exception and return safe default (not cross-seeded)
+        # Should not raise exception and should signal "potentially cross-seeded"
         is_cross_seeded, torrents = check_cross_seeding(mock_client, test_files, exclude_hash="exclude123")
 
-        assert not is_cross_seeded
+        assert is_cross_seeded
         assert len(torrents) == 0
 
 
