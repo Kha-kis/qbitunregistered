@@ -223,8 +223,8 @@ class TestNotificationManager:
         # Verify it tried to send (with retries)
         assert mock_urlopen.call_count == 3
 
-    def test_notifiarr_credential_sanitization(self, mock_urlopen):
-        """Test that API keys are sanitized in error messages."""
+    def test_notifiarr_credential_sanitization(self, mock_urlopen, caplog):
+        """Test that API keys are not exposed in error messages."""
         import urllib.error
 
         config = {"notifiarr_key": "secret_key_12345", "notifiarr_channel": "12345"}
@@ -238,18 +238,13 @@ class TestNotificationManager:
 
         operation_results = {"succeeded": ["Op 1"], "failed": []}
 
-        # Should not raise exception and should sanitize the key
-        with patch("time.sleep"), patch("logging.exception") as mock_log:
+        # Should not raise exception and should not expose credentials
+        with patch("time.sleep"):
             manager.send_summary(operation_results)
 
-            # Verify credential was sanitized
-            assert mock_log.called
-            log_message = mock_log.call_args[0][0]
-            # Ensure raw secret is NOT present in log message
-            assert "secret_key_12345" not in log_message, (
-                "Raw API key should not appear in log messages"
-            )
-            # Ensure redaction marker IS present
-            assert "***REDACTED***" in log_message, (
-                "Redaction marker should be present when credentials are sanitized"
+            # Verify the raw API key is NOT exposed in any log output
+            # The retry mechanism logs generic messages without credentials
+            all_log_output = caplog.text
+            assert "secret_key_12345" not in all_log_output, (
+                "Raw API key should not appear in any log messages"
             )

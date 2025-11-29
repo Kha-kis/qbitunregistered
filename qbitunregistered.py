@@ -3,6 +3,7 @@ import argparse
 import os
 import sys
 import logging
+from pathlib import Path
 from typing import Dict, List
 from qbittorrentapi import Client, exceptions
 from scripts.orphaned import check_files_on_disk, delete_orphaned_files
