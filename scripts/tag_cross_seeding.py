@@ -6,31 +6,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.cache import cached  # noqa: E402
+from utils.file_operations import fetch_torrent_files  # noqa: E402
 from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
-
-
-@cached(ttl=300, key_prefix="torrent_files")
-def _fetch_torrent_files(client: QBittorrentClient, torrent_hash: str, *, cache_scope: int) -> list:
-    """
-    Fetch file list for a torrent with caching.
-
-    Args:
-        client: qBittorrent client instance
-        torrent_hash: Torrent hash
-        cache_scope: REQUIRED - Unique identifier to scope cache per client.
-                     Always pass id(client) to prevent cache contamination
-                     across different client instances.
-
-    Returns:
-        List of file dictionaries
-
-    Raises:
-        AssertionError: If cache_scope is None (programming error)
-    """
-    # Runtime assertion to prevent cache contamination
-    assert cache_scope is not None, "cache_scope must be provided (use id(client))"
-    return client.torrents_files(torrent_hash)
 
 
 def tag_cross_seeds(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
@@ -66,7 +43,7 @@ def tag_cross_seeds(client: QBittorrentClient, torrents: Sequence[TorrentInfo], 
 
                 # Fetch file list for this torrent (cached to reduce API calls)
                 try:
-                    torrent_files = _fetch_torrent_files(client, torrent.hash, cache_scope=id(client))
+                    torrent_files = fetch_torrent_files(client, torrent.hash, cache_scope=id(client))
                 except Exception as e:
                     logging.error(f"Failed to fetch files for torrent '{torrent.name}': {e}")
                     errors += 1

@@ -152,9 +152,152 @@ class TestConfigValidation:
             validate_config(config)
         assert "must be an integer >= -2" in str(exc_info.value)
 
+    def test_invalid_apprise_url(self):
+        """Test that invalid apprise_url type raises error."""
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "apprise_url": 123,  # Should be string
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "'apprise_url' must be a string" in str(exc_info.value)
+
+    def test_invalid_notifiarr_key(self):
+        """Test that invalid notifiarr_key type raises error."""
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "notifiarr_key": 123,  # Should be string
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "'notifiarr_key' must be a string" in str(exc_info.value)
+
+    def test_invalid_notifiarr_channel(self):
+        """Test that invalid notifiarr_channel type raises error."""
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "notifiarr_channel": 123,  # Should be string
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "'notifiarr_channel' must be a string" in str(exc_info.value)
+
+    def test_notifiarr_channel_must_be_numeric_and_valid_length(self):
+        """Test that notifiarr_channel must be numeric and correct length."""
+        # Non-numeric string
+        config_non_numeric = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "notifiarr_channel": "abc123",
+            "notifiarr_key": "dummy",
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config_non_numeric)
+        msg = str(exc_info.value)
+        assert "'notifiarr_channel' must be a numeric Discord channel ID" in msg
+
+        # Numeric but too short
+        config_short = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "notifiarr_channel": "123456789012345",  # 15 digits
+            "notifiarr_key": "dummy",
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config_short)
+        msg = str(exc_info.value)
+        assert "appears invalid (expected 17-20 digits" in msg
+
+    def test_notifiarr_key_and_channel_must_be_set_together(self):
+        """Test that Notifiarr key and channel are validated as a pair."""
+        base = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+        }
+
+        # Key without channel
+        config_key_only = {**base, "notifiarr_key": "dummy"}
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config_key_only)
+        msg = str(exc_info.value)
+        assert "'notifiarr_channel' must be set when 'notifiarr_key' is provided" in msg
+
+        # Channel without key
+        config_channel_only = {**base, "notifiarr_channel": "12345678901234567"}
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config_channel_only)
+        msg = str(exc_info.value)
+        assert "'notifiarr_key' must be set when 'notifiarr_channel' is provided" in msg
+
+    def test_recycle_bin_not_dir(self, tmp_path):
+        """Test that recycle bin path pointing to a file raises error."""
+        file_path = tmp_path / "file.txt"
+        file_path.touch()
+
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "recycle_bin": str(file_path),
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "is not a directory" in str(exc_info.value)
+
+    def test_recycle_bin_does_not_exist_ok(self, tmp_path):
+        """Test that non-existent recycle bin path is allowed (will be created later)."""
+        non_existent_path = tmp_path / "does_not_exist"
+
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "recycle_bin": str(non_existent_path),
+        }
+        # Should not raise exception
+        validate_config(config)
+
+    def test_recycle_bin_not_writable(self, tmp_path):
+        """Test that non-writable recycle bin raises error."""
+        from unittest.mock import patch
+
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "recycle_bin": str(tmp_path),
+        }
+
+        with patch("os.access", return_value=False):
+            with pytest.raises(ConfigValidationError) as exc_info:
+                validate_config(config)
+            assert "is not writable" in str(exc_info.value)
+
+    def test_recycle_bin_must_be_absolute(self):
+        """Test that recycle bin must be an absolute path (security requirement)."""
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "recycle_bin": "relative/path/to/recycle",
+        }
+
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "must be an absolute path" in str(exc_info.value)
+        assert "security requirement" in str(exc_info.value)
+
 
 class TestExcludePatternValidation:
-    """Test exclude pattern validation."""
 
     def test_validate_dangerous_pattern(self, caplog):
         """Test that dangerous patterns generate warnings."""

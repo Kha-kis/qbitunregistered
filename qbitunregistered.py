@@ -3,6 +3,7 @@ import argparse
 import os
 import sys
 import logging
+from pathlib import Path
 from typing import Dict, List
 from qbittorrentapi import Client, exceptions
 from scripts.orphaned import check_files_on_disk, delete_orphaned_files
@@ -17,6 +18,7 @@ from scripts.tag_cross_seeding import tag_cross_seeds
 from scripts.tag_by_age import tag_by_age
 from utils.config_validator import validate_config, validate_exclude_patterns, ConfigValidationError
 from utils.cache import log_cache_stats
+from utils.notifications import NotificationManager
 
 # Exit codes for different failure types
 EXIT_SUCCESS = 0
@@ -32,6 +34,15 @@ parser.add_argument(
     action="store_true",
     help="If set, check for orphaned files on disk and delete them unless --dry-run is specified.",
 )
+parser.add_argument(
+    "--recycle-bin",
+    type=str,
+    default=None,
+    help="Path to the recycle bin directory. If set, orphaned files will be moved here instead of being deleted.",
+)
+parser.add_argument("--apprise-url", type=str, help="Apprise URL for notifications.")
+parser.add_argument("--notifiarr-key", type=str, help="Notifiarr API Key.")
+parser.add_argument("--notifiarr-channel", type=str, help="Notifiarr Discord Channel ID.")
 parser.add_argument("--unregistered", action="store_true", help="If set, perform unregistered checks.")
 parser.add_argument(
     "--dry-run", action="store_true", help="If set, the script will only print actions without executing them."
@@ -99,10 +110,16 @@ args = parser.parse_args()
 config["host"] = args.host or config.get("host")
 config["username"] = args.username or config.get("username")
 config["password"] = args.password or config.get("password")
+config["recycle_bin"] = args.recycle_bin or config.get("recycle_bin")
 target_dir = args.target_dir or config.get("target_dir", None)
 dry_run = args.dry_run if args.dry_run is not None else config.get("dry_run", False)
 exclude_files = args.exclude_files if args.exclude_files else config.get("exclude_files", [])
 exclude_dirs = args.exclude_dirs if args.exclude_dirs else config.get("exclude_dirs", [])
+
+# Notification configuration
+config["apprise_url"] = args.apprise_url or config.get("apprise_url")
+config["notifiarr_key"] = args.notifiarr_key or config.get("notifiarr_key")
+config["notifiarr_channel"] = args.notifiarr_channel or config.get("notifiarr_channel")
 
 # Determine log level (CLI arg > config.json > default INFO)
 log_level_str = args.log_level or config.get("log_level", "INFO")
@@ -239,18 +256,36 @@ if operations_to_run and not args.yes:
 # Run orphaned check if --orphaned argument is passed
 if args.orphaned:
     try:
-        orphaned_files = check_files_on_disk(client, torrents, exclude_file_patterns=exclude_files, exclude_dirs=exclude_dirs)
-        logging.info("Total orphaned files: %d", len(orphaned_files))
+        # Avoid treating recycle bin contents as orphaned on subsequent runs
+        recycle_bin = config.get("recycle_bin")
+        exclude_dirs_for_scan = list(exclude_dirs)
+        if recycle_bin:
+            # Convert to absolute path to ensure proper exclusion
+            exclude_dirs_for_scan.append(str(Path(recycle_bin).resolve()))
 
-        # Delete orphaned files unless dry-run is set (pass torrents to avoid redundant API call)
-        delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents)
-        operation_results["succeeded"].append("Orphaned file check")
+        orphaned_files = check_files_on_disk(
+            client,
+            torrents,
+            exclude_file_patterns=exclude_files,
+            exclude_dirs=exclude_dirs_for_scan,
+        )
+        logging.info(f"Found {len(orphaned_files)} orphaned files")
+
+        if orphaned_files:
+            logging.info("Orphaned files:")
+            for file in orphaned_files:
+                logging.info(f"  - {file}")
+        else:
+            logging.info("No orphaned files found")
+
+        # Delete/move orphaned files unless dry-run is set (pass torrents to avoid redundant API call)
+        delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents, recycle_bin=recycle_bin)
+        operation_results["succeeded"].append(f"Orphaned files check: {len(orphaned_files)} files processed")
     except (KeyboardInterrupt, SystemExit):
         raise
-    except Exception:
-        logging.exception("Error during orphaned file check")
-        logging.error("Orphaned file check failed, continuing with other operations...")
-        operation_results["failed"].append("Orphaned file check")
+    except Exception as e:
+        logging.exception("Error checking orphaned files")
+        operation_results["failed"].append(f"Orphaned files check: {e}")
 
 # Run unregistered checks if --unregistered argument is passed
 if args.unregistered:
@@ -263,6 +298,7 @@ if args.unregistered:
             delete_tags=config.get("delete_tags", []),
             delete_files=config.get("delete_files", {}),
             dry_run=dry_run,
+            recycle_bin=config.get("recycle_bin"),
         )
         total_unregistered_count = sum(unregistered_counts.values())
         logging.info("Total unregistered count: %d", total_unregistered_count)
@@ -395,6 +431,10 @@ else:
     logging.info("✗ Failed: None")
 
 logging.info("=" * 60)
+
+# Send notifications
+notification_manager = NotificationManager(config)
+notification_manager.send_summary(operation_results)
 
 # Clean up client connection
 try:

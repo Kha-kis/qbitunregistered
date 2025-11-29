@@ -97,5 +97,17 @@
   },
 
   "//": "List of times (24-hour format) to schedule the script to run daily. Example: ['09:00', '15:00', '21:00']",
-  "scheduled_times": []
+  "scheduled_times": [],
+
+  "//": "Path to the recycle bin directory. If set, orphaned files will be moved here instead of being deleted.",
+  "recycle_bin": "/path/to/recycle/bin",
+
+  "//": "Apprise URL for notifications (e.g., discord://webhook_id/webhook_token).",
+  "apprise_url": "",
+
+  "//": "Notifiarr API Key for notifications.",
+  "notifiarr_key": "",
+
+  "//": "Notifiarr Discord Channel ID for notifications.",
+  "notifiarr_channel": ""
 }

@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.cache import cached  # noqa: E402
+from utils.file_operations import move_files_to_recycle_bin  # noqa: E402
 
 
 @cached(ttl=300, key_prefix="app_default_save_path")
@@ -50,11 +51,14 @@ def _get_categories(client, *, cache_scope: int) -> Dict[str, Any]:
     return client.torrent_categories.categories
 
 
-def check_files_on_disk(
+def check_files_on_disk(  # noqa: C901
     client, torrents: List, exclude_file_patterns: Optional[List[str]] = None, exclude_dirs: Optional[List[str]] = None
 ) -> List[str]:
     """
     Identifies orphaned files on disk that are not associated with any active torrents in qBittorrent.
+
+    Returns:
+        List of orphaned file paths as strings
     """
     # Avoid mutable default arguments - create fresh lists if None
     exclude_file_patterns = exclude_file_patterns or []
@@ -197,7 +201,9 @@ def check_files_on_disk(
     return orphaned_files
 
 
-def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torrents: Optional[List] = None):
+def delete_orphaned_files(  # noqa: C901
+    orphaned_files: List[str], dry_run: bool, client, torrents: Optional[List] = None, recycle_bin: Optional[str] = None
+) -> None:
     """
     Deletes orphaned files and removes empty directories, while preserving active save paths.
     If dry-run is enabled, it logs what would be deleted without actually deleting files.
@@ -207,6 +213,7 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
         dry_run: If True, only log actions without deleting
         client: qBittorrent client instance
         torrents: Optional list of torrents (avoids redundant API call if provided)
+        recycle_bin: Optional path to move files to instead of deleting
     """
     deleted_files_count = 0
     skipped_files = []
@@ -237,23 +244,43 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
     # Track directories that will become empty
     potential_empty_dirs = set()
 
+    # Collect all parent directories for later cleanup
     for file_path in orphaned_files_set:
         parent_dir = file_path.parent
         while parent_dir != parent_dir.parent:  # Add parent and all ancestor directories
             potential_empty_dirs.add(parent_dir)
             parent_dir = parent_dir.parent
 
-        if dry_run:
-            logging.info(f"Would delete orphaned file: {file_path}")
-            deleted_files_count += 1
-        else:
-            try:
-                file_path.unlink()
-                logging.info(f"Deleted orphaned file: {file_path}")
+    # Handle recycle bin or deletion
+    if recycle_bin:
+        recycle_bin_path = Path(recycle_bin)
+
+        # Use shared utility for moving files to recycle bin with hybrid structure
+        # Orphaned files go to: /recycle_bin/orphaned/uncategorized/[original_path]
+        success_count, failed = move_files_to_recycle_bin(
+            file_paths=list(orphaned_files_set),
+            recycle_bin_path=recycle_bin_path,
+            deletion_type="orphaned",
+            category="uncategorized",  # Orphaned files don't have a category
+            dry_run=dry_run,
+        )
+
+        deleted_files_count = success_count
+        skipped_files = failed
+    else:
+        # Permanent deletion (no recycle bin)
+        for file_path in orphaned_files_set:
+            if dry_run:
+                logging.info(f"Would delete orphaned file: {file_path}")
                 deleted_files_count += 1
-            except Exception as e:
-                logging.error(f"Error deleting {file_path}: {e}")
-                skipped_files.append((file_path, str(e)))
+            else:
+                try:
+                    file_path.unlink()
+                    logging.info(f"Deleted orphaned file: {file_path}")
+                    deleted_files_count += 1
+                except Exception:
+                    logging.exception(f"Error processing {file_path}")
+                    skipped_files.append((file_path, "see logs for details"))
 
     # Determine which directories would be empty
     empty_dirs_to_delete = set()
@@ -265,8 +292,8 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
             except (PermissionError, FileNotFoundError) as e:
                 logging.warning(f"Cannot access directory {dir_path}: {e}")
                 break  # Stop checking this path and its parents
-            except Exception as e:
-                logging.error(f"Unexpected error accessing directory {dir_path}: {e}")
+            except Exception:
+                logging.exception(f"Unexpected error accessing directory {dir_path}")
                 break
 
             remaining_files = existing_files - orphaned_files_set  # What's left after simulated deletion
@@ -289,16 +316,19 @@ def delete_orphaned_files(orphaned_files: List[str], dry_run: bool, client, torr
                 dir_path.rmdir()
                 logging.info(f"Deleted empty directory: {dir_path}")
                 deleted_dirs_count += 1
-            except Exception as e:
-                logging.error(f"Error deleting directory {dir_path}: {e}")
+            except Exception:
+                logging.exception(f"Error deleting directory {dir_path}")
 
     # Final Summary
+    action = "moved to recycle bin" if recycle_bin else "deleted"
     if dry_run:
         logging.info(
-            f"Dry-run: Would have deleted {deleted_files_count} orphaned files and {deleted_dirs_count} empty directories."
+            f"Dry-run: Would have {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories."
         )
     else:
-        logging.info(f"Deleted {deleted_files_count} orphaned files and {deleted_dirs_count} empty directories.")
+        logging.info(
+            f"Successfully {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories."
+        )
 
     if skipped_files:
         logging.warning(f"Skipped {len(skipped_files)} files due to errors:")

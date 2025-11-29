@@ -10,3 +10,7 @@ tqdm>=4.66.3  # Minimum version required for CVE fix
 # Testing dependencies
 pytest>=7.4.0
 pytest-cov>=4.1.0
+
+# Notification dependencies
+# Using ~= to pin to 1.9.x series for stability while allowing patch updates
+apprise~=1.9
