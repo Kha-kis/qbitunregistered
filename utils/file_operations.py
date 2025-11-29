@@ -6,7 +6,7 @@ import sys
 import socket
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, List, Tuple, Optional, cast
+from typing import Any, Dict, List, Tuple, Optional, Type, cast
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.cache import cached  # noqa: E402
@@ -219,11 +219,11 @@ def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tu
     cross_seeded_torrents: List[str] = []
 
     # Define transient/network-related errors we treat conservatively
-    transient_error_list: List[type] = [OSError, socket.timeout]
+    transient_error_list: List[Type[BaseException]] = [OSError, socket.timeout]
     if qbittorrent_exceptions is not None:
         # APIConnectionError covers various underlying network issues from qbittorrent-api
         transient_error_list.append(qbittorrent_exceptions.APIConnectionError)
-    transient_errors: Tuple[type, ...] = tuple(transient_error_list)
+    transient_errors: Tuple[Type[BaseException], ...] = tuple(transient_error_list)
 
     try:
         # Get all torrents except the one being deleted
@@ -259,6 +259,9 @@ def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tu
                         )
                         break  # Found a match, no need to check other files in this torrent
 
+            except transient_errors:
+                # Propagate transient errors so they are handled by the outer block.
+                raise
             except Exception as e:
                 # Per-torrent anomalies shouldn't break the whole scan; log and continue.
                 logging.debug(
@@ -271,9 +274,9 @@ def check_cross_seeding(client, file_paths: List[Path], exclude_hash: str) -> Tu
         is_cross_seeded = len(cross_seeded_torrents) > 0
         return is_cross_seeded, cross_seeded_torrents
 
-    except transient_errors as e:
+    except transient_errors:
         # On transient network/server errors, be conservative and prevent file removal.
-        logging.exception("Error during cross-seeding check (treated as transient): %s", e)
+        logging.exception("Error during cross-seeding check (treated as transient)")
         logging.warning(
             "Cross-seeding safety check failed due to connection/server error. "
             "Treating files as potentially cross-seeded to avoid data loss; "
