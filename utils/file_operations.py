@@ -2,14 +2,12 @@
 
 import logging
 import shutil
-import sys
 import socket
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Type, cast
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.cache import cached  # noqa: E402
+from utils.cache import cached
 
 try:
     # qbittorrent-api specific exceptions (may not be available in all contexts, e.g. some tests)
