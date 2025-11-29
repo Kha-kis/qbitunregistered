@@ -35,7 +35,7 @@ jobs:
           fetch-depth: 1
 
       - name: Debug Environment
-        run: echo "Installing Claude Code version: $CLAUDE_CODE_VERSION"
+        run: 'echo "Installing Claude Code version: $CLAUDE_CODE_VERSION"'
 
       - name: Run Claude Code Review
         id: claude-review
