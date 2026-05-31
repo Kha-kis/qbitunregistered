@@ -50,7 +50,9 @@ parser.add_argument(
 parser.add_argument("--host", type=str, help="The host and port where qBittorrent is running.")
 parser.add_argument("--username", type=str, help="The username for logging into qBittorrent Web UI.")
 parser.add_argument("--password", type=str, help="The password for logging into qBittorrent Web UI.")
-parser.add_argument("--api-key", type=str, help="API key for qBittorrent Web UI (qBittorrent v5.2.0+). Alternative to username/password.")
+parser.add_argument(
+    "--api-key", type=str, help="API key for qBittorrent Web UI (qBittorrent v5.2.0+). Alternative to username/password."
+)
 parser.add_argument("--tag-by-tracker", action="store_true", help="If set, perform tagging based on the associated tracker.")
 parser.add_argument(
     "--seeding-management", action="store_true", help="If set, apply seed time and seed ratio limits based on tracker tags."
