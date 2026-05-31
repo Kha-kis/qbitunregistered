@@ -31,7 +31,7 @@ class TestConfigValidation:
         assert "Missing required field: 'host'" in str(exc_info.value)
 
     def test_missing_username(self):
-        """Test that missing username raises error."""
+        """Test that missing username raises error when no api_key is set."""
         config = {
             "host": "localhost:8080",
             "password": "password",
@@ -41,7 +41,7 @@ class TestConfigValidation:
         assert "Missing required field: 'username'" in str(exc_info.value)
 
     def test_missing_password(self):
-        """Test that missing password raises error."""
+        """Test that missing password raises error when no api_key is set."""
         config = {
             "host": "localhost:8080",
             "username": "admin",
@@ -49,6 +49,43 @@ class TestConfigValidation:
         with pytest.raises(ConfigValidationError) as exc_info:
             validate_config(config)
         assert "Missing required field: 'password'" in str(exc_info.value)
+
+    def test_valid_config_with_api_key(self):
+        """Test that api_key alone (no username/password) passes validation."""
+        config = {
+            "host": "localhost:8080",
+            "api_key": "qbt_abc123",
+        }
+        validate_config(config)
+
+    def test_api_key_does_not_require_username_password(self):
+        """Test that api_key makes username and password optional."""
+        config = {
+            "host": "localhost:8080",
+            "api_key": "qbt_abc123",
+            "dry_run": True,
+        }
+        validate_config(config)
+
+    def test_empty_api_key_raises_error(self):
+        """Test that an empty api_key string raises an error."""
+        config = {
+            "host": "localhost:8080",
+            "api_key": "   ",
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "'api_key' cannot be empty or whitespace-only" in str(exc_info.value)
+
+    def test_invalid_api_key_type(self):
+        """Test that a non-string api_key raises an error."""
+        config = {
+            "host": "localhost:8080",
+            "api_key": 12345,
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "Field 'api_key' must be a string" in str(exc_info.value)
 
     def test_invalid_host_format(self):
         """Test that invalid host format raises error."""

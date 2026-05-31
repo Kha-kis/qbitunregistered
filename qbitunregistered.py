@@ -50,6 +50,7 @@ parser.add_argument(
 parser.add_argument("--host", type=str, help="The host and port where qBittorrent is running.")
 parser.add_argument("--username", type=str, help="The username for logging into qBittorrent Web UI.")
 parser.add_argument("--password", type=str, help="The password for logging into qBittorrent Web UI.")
+parser.add_argument("--api-key", type=str, help="API key for qBittorrent Web UI (qBittorrent v5.2.0+). Alternative to username/password.")
 parser.add_argument("--tag-by-tracker", action="store_true", help="If set, perform tagging based on the associated tracker.")
 parser.add_argument(
     "--seeding-management", action="store_true", help="If set, apply seed time and seed ratio limits based on tracker tags."
@@ -108,6 +109,7 @@ args = parser.parse_args()
 
 # Override configuration with command-line arguments if provided
 config["host"] = args.host or config.get("host")
+config["api_key"] = args.api_key or config.get("api_key")
 config["username"] = args.username or config.get("username")
 config["password"] = args.password or config.get("password")
 config["recycle_bin"] = args.recycle_bin or config.get("recycle_bin")
@@ -162,7 +164,13 @@ validate_exclude_patterns(exclude_files, exclude_dirs)
 
 # Connect to qBittorrent client
 try:
-    client = Client(host=config["host"], username=config["username"], password=config["password"])
+    client_kwargs = {"host": config["host"]}
+    if config.get("api_key"):
+        client_kwargs["api_key"] = config["api_key"]
+    else:
+        client_kwargs["username"] = config["username"]
+        client_kwargs["password"] = config["password"]
+    client = Client(**client_kwargs)
 except exceptions.APIConnectionError as e:
     logging.error(f"Failed to connect to qBittorrent: {e}")
     sys.exit(EXIT_CONNECTION_ERROR)
