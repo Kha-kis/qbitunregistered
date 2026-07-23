@@ -5,7 +5,7 @@ import sys
 import logging
 from pathlib import Path
 from typing import Dict, List
-from qbittorrentapi import Client, exceptions
+from qbittorrentapi import exceptions
 from scripts.orphaned import check_files_on_disk, delete_orphaned_files
 from scripts.unregistered_checks import unregistered_checks
 from scripts.tag_by_tracker import tag_by_tracker
@@ -16,9 +16,15 @@ from scripts.auto_tmm import apply_auto_tmm_per_torrent
 from scripts.create_hardlinks import create_hard_links
 from scripts.tag_cross_seeding import tag_cross_seeds
 from scripts.tag_by_age import tag_by_age
-from utils.config_validator import validate_config, validate_exclude_patterns, ConfigValidationError
+from utils.config_validator import (
+    validate_config,
+    validate_exclude_patterns,
+    resolve_dry_run,
+    ConfigValidationError,
+)
 from utils.cache import log_cache_stats
 from utils.notifications import NotificationManager
+from utils.qbittorrent_client import create_client
 
 # Exit codes for different failure types
 EXIT_SUCCESS = 0
@@ -45,7 +51,10 @@ parser.add_argument("--notifiarr-key", type=str, help="Notifiarr API Key.")
 parser.add_argument("--notifiarr-channel", type=str, help="Notifiarr Discord Channel ID.")
 parser.add_argument("--unregistered", action="store_true", help="If set, perform unregistered checks.")
 parser.add_argument(
-    "--dry-run", action="store_true", help="If set, the script will only print actions without executing them."
+    "--dry-run",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help="Enable or disable dry-run mode. Overrides the value from the configuration file.",
 )
 parser.add_argument("--host", type=str, help="The host and port where qBittorrent is running.")
 parser.add_argument("--username", type=str, help="The username for logging into qBittorrent Web UI.")
@@ -116,7 +125,8 @@ config["username"] = args.username or config.get("username")
 config["password"] = args.password or config.get("password")
 config["recycle_bin"] = args.recycle_bin or config.get("recycle_bin")
 target_dir = args.target_dir or config.get("target_dir", None)
-dry_run = args.dry_run if args.dry_run is not None else config.get("dry_run", False)
+dry_run = resolve_dry_run(args.dry_run, config)
+config["dry_run"] = dry_run
 exclude_files = args.exclude_files if args.exclude_files else config.get("exclude_files", [])
 exclude_dirs = args.exclude_dirs if args.exclude_dirs else config.get("exclude_dirs", [])
 
@@ -166,13 +176,7 @@ validate_exclude_patterns(exclude_files, exclude_dirs)
 
 # Connect to qBittorrent client
 try:
-    client_kwargs = {"host": config["host"]}
-    if config.get("api_key"):
-        client_kwargs["api_key"] = config["api_key"]
-    else:
-        client_kwargs["username"] = config["username"]
-        client_kwargs["password"] = config["password"]
-    client = Client(**client_kwargs)
+    client = create_client(config)
 except exceptions.APIConnectionError as e:
     logging.error(f"Failed to connect to qBittorrent: {e}")
     sys.exit(EXIT_CONNECTION_ERROR)
