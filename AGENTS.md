@@ -22,8 +22,10 @@ python -m pip install --upgrade pip "setuptools>=83"
 python -m pip install -e ".[dev]" build bandit pip-audit
 ```
 
-- Put dependency metadata and tool configuration in `pyproject.toml`. Refresh
-  and commit `uv.lock` whenever dependency metadata changes.
+- Prefer the standard library and existing dependencies. Add a third-party
+  dependency only when it materially simplifies a required behavior. Put
+  dependency metadata and tool configuration in `pyproject.toml`, then refresh
+  and commit `uv.lock`.
 
 ## Repository map
 
@@ -52,10 +54,16 @@ Do not edit generated output under `build/`, `dist/`, `*.egg-info/`,
 - Preserve CLI flags, JSON fields, exit codes, installed console commands, and
   root compatibility wrappers unless a task explicitly authorizes a breaking
   change.
+- Make the smallest coherent change that solves the current task. Avoid
+  speculative abstractions, configuration, hooks, and unrelated refactors.
 - Keep orchestration in `cli.py` and focused behavior in the relevant package
-  module. Reuse the protocols in `qbitunregistered/types.py` at API boundaries.
+  module. Keep functions single-purpose when practical, and split distinct
+  responsibilities when doing so improves safety or testability. Reuse the
+  protocols in `qbitunregistered/types.py` at API boundaries.
 - Use `pathlib.Path` for filesystem paths, structured logging for operator
-  feedback, and type hints on new or changed public interfaces.
+  feedback, descriptive names, and type hints on new or changed public
+  interfaces. Document public APIs and comment on why non-obvious logic exists,
+  not what each line does.
 - Do not swallow `KeyboardInterrupt` or `SystemExit`. Handle expected failures
   narrowly and include actionable context without exposing secrets.
 - Prefer batched qBittorrent calls. Cache data only within one execution and
