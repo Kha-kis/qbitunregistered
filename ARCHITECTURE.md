@@ -6,10 +6,6 @@
 
 The installable package has a centralized CLI coordinator that orchestrates specialized operation modules.
 
-For substantial Python implementation or review work, use the project agent in
-`.claude/agents/python-pro.md`. It is tailored to this repository's packaging,
-testing, scheduler, credential, and destructive-operation constraints.
-
 ## Architecture Principles
 
 1. **Separation of Concerns**: Each module handles a specific domain (tagging, orphaned files, seeding limits)

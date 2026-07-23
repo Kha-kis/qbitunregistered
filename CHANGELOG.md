@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Installable `qbitunregistered` and `qbitunregistered-scheduler` console commands
 - Package-build smoke testing in CI
-- Project-specific Claude `python-pro` agent for Python implementation and review
+- Project-specific Codex `python-pro` agent and `AGENTS.md` guidance for Python implementation and review
 - **qBittorrent 5.2 API-key authentication** as an alternative to username/password credentials
 - Tracker error status support for qBittorrent WebAPI v2.13+
 - **Dry-Run Impact Preview**: New impact analysis system that shows what will happen before executing operations
@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pyproject.toml` is the single source for runtime and development dependencies
 - Added a generated `uv.lock` for reproducible development environments
 - GitHub Actions use the current Node 24 action releases
+- Removed Claude-specific workflows and configuration; Codex review now uses
+  repository guidance from `AGENTS.md`
 - **Python 3.11+ required** to align with supported Python releases and current `qbittorrent-api`
 - **qbittorrent-api 2026.5.3+ required** for native API-key authentication
 - **Configuration Validation**:

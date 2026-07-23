@@ -146,7 +146,7 @@ We follow PEP 8 with some modifications:
 - **Docstrings**: Use Google-style docstrings for all public functions/classes
 - **Comments**: Explain *why*, not *what* (code should be self-explanatory)
 - **README**: Update for user-facing changes
-- **CLAUDE.md**: Update for architecture changes
+- **ARCHITECTURE.md**: Update for architecture changes
 
 ### Example Function
 
@@ -291,7 +291,7 @@ Releases are managed by maintainers:
 
 - **Issues**: Check existing issues or create a new one
 - **Discussions**: Use GitHub Discussions for questions
-- **Documentation**: See README.md and CLAUDE.md
+- **Documentation**: See README.md, AGENTS.md, and ARCHITECTURE.md
 
 ## Code of Conduct
 
