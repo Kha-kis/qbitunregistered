@@ -1,5 +1,5 @@
 """
-Caching utilities for qBittorrent API responses.
+Caching utilities for qbitunregistered API responses.
 
 Provides in-memory caching with TTL (time-to-live) to reduce redundant API calls
 within a single script execution.

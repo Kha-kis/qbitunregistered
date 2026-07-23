@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 import pytest
-from utils.config_validator import (
+from qbitunregistered.config import (
     validate_config,
     validate_exclude_patterns,
     resolve_dry_run,

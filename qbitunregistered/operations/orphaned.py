@@ -3,11 +3,9 @@ import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fnmatch import translate
-import sys
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.cache import cached  # noqa: E402
-from utils.file_operations import move_files_to_recycle_bin  # noqa: E402
+from qbitunregistered.cache import cached
+from qbitunregistered.file_operations import move_files_to_recycle_bin
 
 
 @cached(ttl=300, key_prefix="app_default_save_path")

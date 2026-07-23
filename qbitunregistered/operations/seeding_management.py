@@ -1,13 +1,9 @@
 import logging
 from typing import Dict, Any, Optional
 from collections import defaultdict
-from utils.tracker_matcher import match_tracker_url
-from utils.cache import cached
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import QBittorrentClient  # noqa: E402
+from qbitunregistered.tracker_matcher import match_tracker_url
+from qbitunregistered.cache import cached
+from qbitunregistered.types import QBittorrentClient
 
 
 @cached(ttl=300, key_prefix="tracker_config")

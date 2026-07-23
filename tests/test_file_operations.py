@@ -3,13 +3,13 @@
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
-from utils.file_operations import (
+from qbitunregistered.file_operations import (
     check_cross_seeding,
     move_files_to_recycle_bin,
     get_torrent_file_paths,
     fetch_torrent_files,
 )
-from utils.cache import get_cache
+from qbitunregistered.cache import get_cache
 
 
 class TestCheckCrossSeeding:

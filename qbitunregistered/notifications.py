@@ -1,3 +1,5 @@
+"""Notification integrations for qbitunregistered."""
+
 import logging
 import json
 import urllib.request
@@ -195,7 +197,8 @@ class NotificationManager:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
             # Keep notification I/O bounded so the main script doesn't hang
-            with urllib.request.urlopen(req, timeout=10) as response:
+            # The destination is the fixed HTTPS Notifiarr endpoint above.
+            with urllib.request.urlopen(req, timeout=10) as response:  # nosec B310
                 if 200 <= response.status < 300:
                     return  # Success
                 else:

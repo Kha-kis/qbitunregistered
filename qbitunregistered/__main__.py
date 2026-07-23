@@ -1,4 +1,4 @@
-"""Compatibility wrapper for running qbitunregistered from a source checkout."""
+"""Run qbitunregistered with ``python -m qbitunregistered``."""
 
 from qbitunregistered.cli import main
 

@@ -1,12 +1,9 @@
 import logging
 from typing import Dict, Any, Sequence
 from collections import defaultdict
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from scripts.seeding_management import find_tracker_config  # noqa: E402
-from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
+from qbitunregistered.operations.seeding_management import find_tracker_config
+from qbitunregistered.types import TorrentInfo, QBittorrentClient
 
 
 def tag_by_tracker(

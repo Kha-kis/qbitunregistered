@@ -2,12 +2,9 @@ import logging
 from collections import defaultdict
 from typing import Sequence
 from tqdm import tqdm
-from pathlib import Path
-import sys
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.file_operations import fetch_torrent_files  # noqa: E402
-from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
+from qbitunregistered.file_operations import fetch_torrent_files
+from qbitunregistered.types import TorrentInfo, QBittorrentClient
 
 
 def tag_cross_seeds(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:

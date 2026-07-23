@@ -1,6 +1,6 @@
 # qbitunregistered
 
-`qbitunregistered` is a powerful Python script for automating and managing a range of tasks in qBittorrent. It's designed to streamline the management of torrents with features for handling orphaned files, unregistered torrents, and more, all customizable through command-line arguments and a configuration file.
+`qbitunregistered` automates common qBittorrent maintenance tasks, including orphan cleanup, unregistered torrent handling, tagging, seeding limits, and notifications.
 
 ## Features
 
@@ -20,17 +20,20 @@
 
 - Python 3.11 or newer installed on your system.
 - qBittorrent with Web UI access.
-- Dependencies from `requirements.txt` installed.
 
 ## Installation
 
-Clone the repository and install the required Python packages:
+Clone the repository, create a virtual environment, and install the application:
 
 ```bash
-git clone https://github.com/your-username/qbitunregistered.git
+git clone https://github.com/Kha-kis/qbitunregistered.git
 cd qbitunregistered
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install .
 ```
+
+This installs the `qbitunregistered` and `qbitunregistered-scheduler` commands.
 
 ## Upgrading
 
@@ -50,9 +53,9 @@ If you're upgrading from an older version:
    - macOS (Homebrew): `brew install python@3.11`
    - Windows: Download from [python.org](https://www.python.org/downloads/)
 
-3. **Update dependencies:**
+3. **Reinstall the application:**
    ```bash
-   pip install -r requirements.txt --upgrade
+   python -m pip install --upgrade .
    ```
 
 4. **Key Changes in This Version:**
@@ -140,7 +143,7 @@ sudo chown cronuser:cronuser config.json
 chmod 600 config.json
 
 # Example cron entry (runs daily at 2 AM)
-0 2 * * * cd /path/to/qbitunregistered && /usr/bin/python3 qbitunregistered.py --unregistered --log-file /var/log/qbitunregistered.log
+0 2 * * * /path/to/.venv/bin/qbitunregistered --config /path/to/config.json --unregistered --yes --log-file /var/log/qbitunregistered.log
 ```
 
 **Best Practices:**
@@ -151,11 +154,24 @@ chmod 600 config.json
 
 ## Usage
 
-Execute the script with Python, appending any command-line arguments you wish to use:
+Run the installed command with the operations you want:
 
 ```bash
-python qbitunregistered.py --option1 --option2
+qbitunregistered --config config.json --unregistered --dry-run
 ```
+
+Use `python -m qbitunregistered` if you prefer module execution. The root
+`qbitunregistered.py` script remains as a compatibility wrapper.
+
+To run the built-in scheduler, set `scheduled_times` in the configuration and
+pass that same file to the scheduler:
+
+```bash
+qbitunregistered-scheduler --config /absolute/path/to/config.json
+```
+
+Scheduled runs add `--yes` automatically, so test the same operations in
+dry-run mode before enabling the scheduler.
 
 ### Command-Line Arguments
 
@@ -300,13 +316,13 @@ When deleting unregistered torrents with `delete_files=True`:
 
 ```bash
 # Test with dry-run first (see what would be recycled)
-python qbitunregistered.py --orphaned --unregistered --dry-run
+qbitunregistered --orphaned --unregistered --dry-run
 
 # Run orphaned check with recycle bin
-python qbitunregistered.py --orphaned
+qbitunregistered --orphaned
 
 # Run unregistered check with recycle bin
-python qbitunregistered.py --unregistered
+qbitunregistered --unregistered
 
 # Browse recycle bin structure
 ls -R /path/to/recycle/bin

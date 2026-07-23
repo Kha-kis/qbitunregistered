@@ -4,10 +4,8 @@ import re
 from typing import Sequence
 from pathlib import Path
 from tqdm import tqdm
-import sys
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import TorrentInfo  # noqa: E402
+from qbitunregistered.types import TorrentInfo
 
 
 def _sanitize_category_name(category: str) -> str:

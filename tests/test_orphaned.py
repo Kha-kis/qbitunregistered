@@ -4,7 +4,7 @@ from pathlib import Path
 from fnmatch import fnmatch
 from unittest.mock import MagicMock, patch
 import pytest
-from scripts.orphaned import delete_orphaned_files
+from qbitunregistered.operations.orphaned import delete_orphaned_files
 
 
 class TestFileExclusionPatterns:

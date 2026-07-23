@@ -1,7 +1,7 @@
 """Tests for caching functionality."""
 
 import time
-from utils.cache import SimpleCache, cached, get_cache, clear_cache
+from qbitunregistered.cache import SimpleCache, cached, get_cache, clear_cache
 
 
 class TestSimpleCache:

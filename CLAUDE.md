@@ -4,7 +4,11 @@
 
 **qbitunregistered** is a comprehensive Python automation tool for managing torrents in qBittorrent. It provides a modular, extensible architecture for handling torrent lifecycle management including orphaned file detection, unregistered torrent identification, intelligent tagging, and seeding management.
 
-The application follows a **plugin-like pattern** with a centralized coordinator (main script) that orchestrates specialized modules for different operational concerns.
+The installable package has a centralized CLI coordinator that orchestrates specialized operation modules.
+
+For substantial Python implementation or review work, use the project agent in
+`.claude/agents/python-pro.md`. It is tailored to this repository's packaging,
+testing, scheduler, credential, and destructive-operation constraints.
 
 ## Architecture Principles
 
@@ -18,7 +22,7 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 
 ## Core Components
 
-### 1. Main Orchestrator: `qbitunregistered.py`
+### 1. Main Orchestrator: `qbitunregistered/cli.py`
 
 **Responsibility**: Central coordinator that orchestrates all operations
 **Key Patterns**:
@@ -46,9 +50,9 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - Torrents fetched once and passed to all modules (avoid redundant API calls)
 - Operation results tracked for summary reporting
 
-### 2. Utility Modules
+### 2. Application Modules
 
-#### `utils/types.py` - Protocol Definitions
+#### `qbitunregistered/types.py` - Protocol Definitions
 **Purpose**: Type hints without coupling to qbittorrent-api implementation
 
 **Key Protocols**:
@@ -59,7 +63,7 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 
 **Design Pattern**: Runtime checkable protocols allow type checking while remaining agnostic to concrete implementations.
 
-#### `utils/config_validator.py` - Configuration Management
+#### `qbitunregistered/config_validator.py` - Configuration Management
 **Purpose**: Validates all configuration before execution
 
 **Validation Scope**:
@@ -74,7 +78,7 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 
 **Error Handling**: Collects all errors and reports them together for better user experience.
 
-#### `utils/cache.py` - API Call Caching
+#### `qbitunregistered/cache.py` - API Call Caching
 **Purpose**: In-memory caching with TTL to reduce redundant API calls
 
 **Design**:
@@ -99,7 +103,7 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - Cache size
 - Hit rate percentage
 
-#### `utils/tracker_matcher.py` - Tracker Matching
+#### `qbitunregistered/tracker_matcher.py` - Tracker Matching
 **Purpose**: Match tracker URLs against configured patterns
 
 **Matching Strategy**:
@@ -109,15 +113,11 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 
 **Design Pattern**: Decouples tracker identification from seeding management and tagging logic.
 
-#### `utils/rate_limiter.py` - Rate Limiting (Unused)
-**Purpose**: Token bucket rate limiter for API calls
-
-**Current Status**: Not used in production code due to aggressive batching optimization.
 **Future Use Cases**: Long-running daemon mode, rate-limited external services, environments with strict API quotas.
 
 ### 3. Script Modules (Operations)
 
-#### `scripts/unregistered_checks.py` - Identify & Handle Unregistered Torrents
+#### `qbitunregistered/operations/unregistered_checks.py` - Identify & Handle Unregistered Torrents
 
 **Core Responsibility**: Detect and manage torrents with unregistered tracker messages
 
@@ -141,7 +141,7 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - `process_torrent()`: Count unregistered trackers per torrent
 - `delete_torrents_and_files()`: Batch delete with tag-based filtering
 
-#### `scripts/orphaned.py` - Detect & Delete Orphaned Files
+#### `qbitunregistered/operations/orphaned.py` - Detect & Delete Orphaned Files
 
 **Core Responsibility**: Find files on disk not associated with any torrent
 
@@ -164,7 +164,7 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - File patterns: glob syntax (e.g., `*.tmp`, `*.part`, `*.!qB`)
 - Directory patterns: exact paths (for performance, must be absolute)
 
-#### `scripts/tag_by_tracker.py` - Tagging by Tracker
+#### `qbitunregistered/operations/tag_by_tracker.py` - Tagging by Tracker
 
 **Core Responsibility**: Apply tags based on torrent tracker source
 
@@ -181,7 +181,7 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 
 **Share Limits Integration**: Applies seed_time_limit and seed_ratio_limit from tracker config.
 
-#### `scripts/seeding_management.py` - Apply Seed Limits
+#### `qbitunregistered/operations/seeding_management.py` - Apply Seed Limits
 
 **Core Responsibility**: Enforce seed time and ratio limits per tracker
 
@@ -198,25 +198,25 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - `-1`: No limit
 - `0+`: Specific limit (minutes for time, ratio for ratio)
 
-#### `scripts/tag_by_age.py` - Tagging by Torrent Age
+#### `qbitunregistered/operations/tag_by_age.py` - Tagging by Torrent Age
 
 **Core Responsibility**: Tag torrents based on completion age
 
 **Time Buckets**: Configurable age thresholds for categorizing torrents
 
-#### `scripts/tag_cross_seeding.py` - Cross-Seeding Detection
+#### `qbitunregistered/operations/tag_cross_seeding.py` - Cross-Seeding Detection
 
 **Core Responsibility**: Identify and tag torrents seeding on multiple trackers
 
 **Detection**: Analyzes tracker count and status to identify cross-seeding patterns
 
-#### `scripts/auto_remove.py` - Automatic Removal
+#### `qbitunregistered/operations/auto_remove.py` - Automatic Removal
 
 **Core Responsibility**: Remove completed torrents matching criteria
 
 **Criteria**: Based on completion status and optional tag filters
 
-#### `scripts/auto_tmm.py` - Automatic Torrent Management
+#### `qbitunregistered/operations/auto_tmm.py` - Automatic Torrent Management
 
 **Core Responsibility**: Enable Auto TMM for torrents with category changes
 
@@ -226,13 +226,13 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - `save_path_changed_tmm_enabled`: When save path changes
 - `category_changed_tmm_enabled`: When category changes
 
-#### `scripts/create_hardlinks.py` - Hard Link Creation
+#### `qbitunregistered/operations/create_hardlinks.py` - Hard Link Creation
 
 **Core Responsibility**: Create hard links for completed torrents in target directory
 
 **Use Cases**: Organize completed downloads without duplicating storage
 
-#### `scripts/torrent_management.py` - Basic Control
+#### `qbitunregistered/operations/torrent_management.py` - Basic Control
 
 **Core Responsibility**: Pause/resume operations
 
@@ -240,14 +240,14 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - `pause_torrents()`: Pause all torrents
 - `resume_torrents()`: Resume all torrents
 
-### 4. Scheduler: `scheduler.py`
+### 4. Scheduler: `qbitunregistered/scheduler.py`
 
-**Purpose**: Run qbitunregistered.py on a schedule
+**Purpose**: Run the installed application on a schedule
 
 **Architecture**:
-- Loads scheduled_times from config.json
+- Loads `scheduled_times` from the selected configuration file
 - Uses `schedule` library for cron-like scheduling
-- Executes qbitunregistered.py as subprocess with 1-hour timeout
+- Executes `python -m qbitunregistered --config <path> --yes` with a 1-hour timeout
 - Captures and logs output
 - Runs continuously until interrupted
 
@@ -516,7 +516,7 @@ for tag, hashes in torrents_by_tag.items():
 
 ### Adding New Operations
 
-1. Create new module in `scripts/`:
+1. Create new module in `qbitunregistered/operations/`:
 ```python
 def new_operation(client, torrents, config, dry_run=False):
     # Implementation
@@ -579,4 +579,3 @@ OPERATION SUMMARY
 3. **Advanced Filtering**: Additional tag/filter combinations
 4. **Performance Tuning**: Configurable cache TTLs and batch sizes
 5. **Metrics Export**: Prometheus-style metrics output
-

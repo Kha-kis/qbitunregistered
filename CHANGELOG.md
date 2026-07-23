@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Installable `qbitunregistered` and `qbitunregistered-scheduler` console commands
+- Package-build smoke testing in CI
+- Project-specific Claude `python-pro` agent for Python implementation and review
 - **qBittorrent 5.2 API-key authentication** as an alternative to username/password credentials
 - Tracker error status support for qBittorrent WebAPI v2.13+
 - **Dry-Run Impact Preview**: New impact analysis system that shows what will happen before executing operations
@@ -18,20 +21,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Detailed operation summaries with affected torrent counts
   - New `--yes` / `-y` flag to skip confirmation prompt (for automation/cron)
   - Non-interactive environment detection (prevents hangs in CI/CD)
-  - New module `utils/impact_analyzer.py` with `ImpactSummary` class
+  - New module `qbitunregistered.impact` with `ImpactSummary` class
   - 26 comprehensive tests for impact analysis
 
 ### Changed
+- Application modules now live in the installable `qbitunregistered` package
+- `pyproject.toml` is the single source for runtime and development dependencies
+- Added a generated `uv.lock` for reproducible development environments
+- GitHub Actions use the current Node 24 action releases
 - **Python 3.11+ required** to align with supported Python releases and current `qbittorrent-api`
 - **qbittorrent-api 2026.5.3+ required** for native API-key authentication
 - **Configuration Validation**:
-  - Refactored `utils/config_validator.validate_config` into focused helper functions for easier maintenance and testing
+  - Refactored `qbitunregistered.config.validate_config` into focused helper functions for easier maintenance and testing
   - Added stricter validation for Notifiarr settings:
     - `notifiarr_key` and `notifiarr_channel` must be provided together
     - `notifiarr_channel` must be a numeric Discord channel ID string (17–20 digits)
   - Added validation for `recycle_bin` configuration (absolute path requirement, directory and writability checks)
 
 ### Fixed
+- Scheduler runs now forward the selected configuration path to the application
+- Tracker-tag impact preview now uses the same URL matcher as the real operation
+- Unregistered impact preview now requires the same tracker error statuses as the real operation
 - Empty or omitted API keys now fall back to username/password authentication
 - Configuration-based `dry_run` is no longer overridden by the CLI argument's default value
 - **Notification Reliability & Security**:

@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import MagicMock
-from scripts.unregistered_checks import (
+from qbitunregistered.operations.unregistered_checks import (
     compile_patterns,
     check_unregistered_message,
     process_torrent,
@@ -211,7 +211,7 @@ class TestUnregisteredRecycleBin:
 
     def test_unregistered_deletion_with_recycle_bin(self, mock_client, config, tmp_path):
         """Test that unregistered torrent files are moved to recycle bin."""
-        from scripts.unregistered_checks import delete_torrents_and_files
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
         from pathlib import Path
 
         # Create test file structure
@@ -272,7 +272,7 @@ class TestUnregisteredRecycleBin:
 
     def test_unregistered_deletion_without_recycle_bin(self, mock_client, config):
         """Test permanent deletion when no recycle bin is configured."""
-        from scripts.unregistered_checks import delete_torrents_and_files
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
 
         mock_torrent = MagicMock()
         mock_torrent.name = "Test Movie"
@@ -296,7 +296,7 @@ class TestUnregisteredRecycleBin:
     def test_unregistered_deletion_dry_run_with_recycle_bin(self, mock_client, config, tmp_path, caplog):
         """Test dry run mode with recycle bin."""
         import logging
-        from scripts.unregistered_checks import delete_torrents_and_files
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
 
         caplog.set_level(logging.INFO)
 
@@ -327,7 +327,7 @@ class TestUnregisteredRecycleBin:
 
     def test_category_based_organization(self, mock_client, config, tmp_path):
         """Test that files are organized by category in recycle bin."""
-        from scripts.unregistered_checks import delete_torrents_and_files
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
         from pathlib import Path
 
         # Create test files for different categories
@@ -390,7 +390,7 @@ class TestUnregisteredRecycleBin:
 
     def test_torrent_without_files_deletion(self, mock_client, config, tmp_path):
         """Test deletion when delete_files is False."""
-        from scripts.unregistered_checks import delete_torrents_and_files
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
 
         recycle_bin = tmp_path / "recycle_bin"
 
@@ -418,7 +418,7 @@ class TestUnregisteredRecycleBin:
 
     def test_cross_seeding_detection_prevents_file_move(self, mock_client, config, tmp_path):
         """Test that cross-seeding detection prevents file deletion."""
-        from scripts.unregistered_checks import delete_torrents_and_files
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
 
         recycle_bin = tmp_path / "recycle_bin"
 
@@ -479,7 +479,7 @@ class TestUnregisteredRecycleBin:
 
     def test_no_cross_seeding_allows_file_move(self, mock_client, config, tmp_path):
         """Test that files are moved when no cross-seeding is detected."""
-        from scripts.unregistered_checks import delete_torrents_and_files
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
 
         recycle_bin = tmp_path / "recycle_bin"
 

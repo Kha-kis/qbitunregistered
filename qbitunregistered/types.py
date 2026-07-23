@@ -1,5 +1,5 @@
 """
-Type definitions for qbitunregistered.
+Shared type definitions for qbitunregistered.
 
 Provides Protocol classes for type hints to improve IDE support and type checking
 without tight coupling to qbittorrent-api implementation details.

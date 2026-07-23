@@ -1,11 +1,9 @@
 import logging
-import sys
 from pathlib import Path
 from typing import List, Set, Tuple, Optional
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.file_operations import move_files_to_recycle_bin, get_torrent_file_paths, check_cross_seeding  # noqa: E402
+from qbitunregistered.file_operations import move_files_to_recycle_bin, get_torrent_file_paths, check_cross_seeding
 
 
 def compile_patterns(unregistered: List[str]) -> Tuple[Set[str], Set[str]]:

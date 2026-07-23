@@ -1,14 +1,9 @@
 """Tests for notification manager."""
 
-import sys
 import pytest
 from unittest.mock import MagicMock, patch
 
-# Mock apprise module if not installed
-if "apprise" not in sys.modules:
-    sys.modules["apprise"] = MagicMock()
-
-from utils.notifications import NotificationManager
+from qbitunregistered.notifications import NotificationManager
 
 
 class TestNotificationManager:
@@ -16,10 +11,8 @@ class TestNotificationManager:
 
     @pytest.fixture
     def mock_apprise(self):
-        # Since we mocked the module, we can just return the mock class
-        mock_instance = sys.modules["apprise"].Apprise.return_value
-        mock_instance.reset_mock()
-        return mock_instance
+        with patch("qbitunregistered.notifications.apprise.Apprise") as apprise_class:
+            yield apprise_class.return_value
 
     @pytest.fixture
     def mock_urlopen(self):

@@ -2,9 +2,10 @@
 
 import pytest
 from unittest.mock import Mock, patch
-from utils.impact_analyzer import (
+from qbitunregistered.impact import (
     ImpactSummary,
     analyze_impact,
+    _analyze_tag_by_tracker,
     _analyze_unregistered,
     _analyze_pause,
     _analyze_resume,
@@ -194,7 +195,7 @@ class TestAnalyzeImpact:
 
         assert summary.is_empty()
 
-    @patch("utils.impact_analyzer._analyze_pause")
+    @patch("qbitunregistered.impact._analyze_pause")
     def test_analyze_pause_operation(self, mock_analyze):
         """Test analyzing pause operation."""
         mock_client = Mock()
@@ -205,7 +206,7 @@ class TestAnalyzeImpact:
 
         mock_analyze.assert_called_once()
 
-    @patch("utils.impact_analyzer._analyze_resume")
+    @patch("qbitunregistered.impact._analyze_resume")
     def test_analyze_resume_operation(self, mock_analyze):
         """Test analyzing resume operation."""
         mock_client = Mock()
@@ -244,6 +245,7 @@ class TestAnalyzeUnregistered:
         mock_tracker = Mock()
         mock_tracker.msg = "not registered"
         mock_tracker.url = "http://tracker.example.com"
+        mock_tracker.status = 4
         # Also support dict-style access for backward compatibility
         mock_tracker.get = lambda k, d=None: {"msg": "not registered", "url": "http://tracker.example.com"}.get(k, d)
 
@@ -276,6 +278,7 @@ class TestAnalyzeUnregistered:
         mock_tracker = Mock()
         mock_tracker.msg = "not registered"
         mock_tracker.url = "http://tracker.example.com"
+        mock_tracker.status = 4
         mock_tracker.get = lambda k, d=None: {"msg": "not registered", "url": "http://tracker.example.com"}.get(k, d)
 
         mock_client.torrents_trackers.return_value = [mock_tracker]
@@ -308,11 +311,13 @@ class TestAnalyzeUnregistered:
         mock_tracker1 = Mock()
         mock_tracker1.msg = "not registered"
         mock_tracker1.url = "http://tracker1.example.com"
+        mock_tracker1.status = 4
         mock_tracker1.get = lambda k, d=None: {"msg": "not registered", "url": "http://tracker1.example.com"}.get(k, d)
 
         mock_tracker2 = Mock()
         mock_tracker2.msg = "Working"
         mock_tracker2.url = "http://tracker2.example.com"
+        mock_tracker2.status = 2
         mock_tracker2.get = lambda k, d=None: {"msg": "Working", "url": "http://tracker2.example.com"}.get(k, d)
 
         mock_client.torrents_trackers.return_value = [mock_tracker1, mock_tracker2]
@@ -330,6 +335,47 @@ class TestAnalyzeUnregistered:
         # Should use cross-seeding tag
         assert len(summary.torrents_to_tag["unregistered:crossseeding"]) == 1
         assert len(summary.torrents_to_tag.get("unregistered", [])) == 0
+
+    def test_analyze_unregistered_ignores_non_error_tracker_status(self):
+        """Preview only matches statuses handled by the real operation."""
+        mock_client = Mock()
+        mock_torrent = Mock(hash="hash1")
+        mock_tracker = Mock(msg="not registered", url="http://tracker.example.com", status=2)
+        mock_tracker.get = lambda key, default=None: {
+            "msg": "not registered",
+            "url": "http://tracker.example.com",
+            "status": 2,
+        }.get(key, default)
+        mock_client.torrents_trackers.return_value = [mock_tracker]
+        summary = ImpactSummary()
+
+        _analyze_unregistered(
+            mock_client,
+            [mock_torrent],
+            {"unregistered": ["not registered"]},
+            summary,
+        )
+
+        assert summary.is_empty()
+
+
+class TestAnalyzeTagByTracker:
+    """Tests for tracker-tag impact analysis."""
+
+    def test_matches_configured_tracker(self):
+        mock_client = Mock()
+        mock_client.torrents_trackers.return_value = [{"url": "https://tracker.example.com/announce"}]
+        torrent = Mock(hash="hash1")
+        summary = ImpactSummary()
+
+        _analyze_tag_by_tracker(
+            mock_client,
+            [torrent],
+            {"tracker_tags": {"tracker.example.com": {"tag": "example"}}},
+            summary,
+        )
+
+        assert summary.torrents_to_tag["example"] == ["hash1"]
 
 
 class TestAnalyzePauseResume:
@@ -406,6 +452,7 @@ class TestImpactAnalyzerIntegration:
         mock_tracker = Mock()
         mock_tracker.msg = "not registered"
         mock_tracker.url = "http://tracker.example.com"
+        mock_tracker.status = 4
         mock_tracker.get = lambda k, d=None: {"msg": "not registered", "url": "http://tracker.example.com"}.get(k, d)
 
         mock_client.torrents_trackers.return_value = [mock_tracker]

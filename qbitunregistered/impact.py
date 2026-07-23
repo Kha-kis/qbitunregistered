@@ -8,7 +8,7 @@ import logging
 from typing import Dict, List, Any
 from collections import defaultdict
 
-from utils.types import TorrentInfo, QBittorrentClient
+from qbitunregistered.types import TorrentInfo, QBittorrentClient
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +317,7 @@ def _analyze_unregistered(
         config: Configuration dict
         summary: ImpactSummary to update
     """
-    from scripts.unregistered_checks import (
+    from qbitunregistered.operations.unregistered_checks import (
         compile_patterns,
         check_unregistered_message,
     )
@@ -343,7 +343,10 @@ def _analyze_unregistered(
         try:
             trackers = _fetch_trackers(client, torrent.hash)
             unregistered_trackers = sum(
-                1 for t in trackers if check_unregistered_message(t, exact_patterns, starts_with_patterns)
+                1
+                for tracker in trackers
+                if check_unregistered_message(tracker, exact_patterns, starts_with_patterns)
+                and (tracker.get("status") if isinstance(tracker, dict) else getattr(tracker, "status", None)) in (4, 5)
             )
 
             if unregistered_trackers > 0:
@@ -417,7 +420,7 @@ def _analyze_tag_by_tracker(
         config: Configuration dict
         summary: ImpactSummary to update
     """
-    from utils.tracker_matcher import find_tracker_domain
+    from qbitunregistered.tracker_matcher import match_tracker_url
 
     def _fetch_trackers(cli, torrent_hash):
         """Fetch trackers for a torrent."""
@@ -439,9 +442,9 @@ def _analyze_tag_by_tracker(
                 if not url or not url.startswith("http"):
                     continue
 
-                domain = find_tracker_domain(url)
-                if domain in tracker_tags:
-                    tag = tracker_tags[domain].get("tag")
+                tracker_config = match_tracker_url(url, tracker_tags)
+                if tracker_config:
+                    tag = tracker_config.get("tag")
                     if tag:
                         summary.add_tagging(tag, torrent.hash)
                         break

@@ -14,21 +14,23 @@ Thank you for your interest in contributing to qbitunregistered! This document p
 
 1. **Clone the repository**:
 ```bash
-git clone https://github.com/your-username/qbitunregistered.git
+git clone https://github.com/Kha-kis/qbitunregistered.git
 cd qbitunregistered
 ```
 
 2. **Create a virtual environment**:
 ```bash
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
 3. **Install dependencies**:
 ```bash
-pip install -r requirements.txt
-pip install -e ".[dev]"  # Install dev dependencies
+python -m pip install -e ".[dev]"
 ```
+
+If you use [uv](https://docs.astral.sh/uv/), `uv sync --extra dev` installs the
+same development environment from the committed cross-platform lockfile.
 
 4. **Run tests to verify setup**:
 ```bash
@@ -68,7 +70,7 @@ pytest tests/ -v --cov
 # Run linting
 flake8 .
 black --check .
-mypy qbitunregistered.py scripts/ utils/
+mypy qbitunregistered/
 ```
 
 4. **Format code**:
@@ -150,7 +152,7 @@ We follow PEP 8 with some modifications:
 
 ```python
 from typing import Dict, List, Any
-from utils.types import TorrentInfo, QBittorrentClient
+from qbitunregistered.types import TorrentInfo, QBittorrentClient
 
 
 def process_torrents(
@@ -210,7 +212,7 @@ tests/
 
 ```python
 import pytest
-from utils.cache import SimpleCache
+from qbitunregistered.cache import SimpleCache
 
 
 class TestSimpleCache:

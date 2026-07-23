@@ -1,5 +1,5 @@
 """
-Tracker URL matching utility for qBittorrent tracker configuration.
+Tracker URL matching for qBittorrent tracker configuration.
 
 This module provides functionality to match tracker URLs against configured
 tracker patterns and retrieve associated configuration.

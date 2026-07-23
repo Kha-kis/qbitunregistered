@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Type, cast
 
-from utils.cache import cached
+from qbitunregistered.cache import cached
 
 try:
     # qbittorrent-api specific exceptions (may not be available in all contexts, e.g. some tests)

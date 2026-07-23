@@ -1,6 +1,6 @@
 """Tests for qBittorrent client construction."""
 
-from utils.qbittorrent_client import build_client_kwargs, create_client
+from qbitunregistered.client import build_client_kwargs, create_client
 
 
 def test_missing_api_key_uses_username_password():
