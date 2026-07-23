@@ -70,8 +70,21 @@ pytest tests/ -v --cov
 # Run linting
 flake8 .
 black --check .
+basedpyright
 mypy qbitunregistered/
 ```
+
+BasedPyright is the project language-server and primary type-analysis engine.
+Run `uv run basedpyright` for a non-interactive project check. Editors and
+other LSP clients can start it with:
+
+```bash
+uv run basedpyright-langserver --stdio
+```
+
+The language-server command waits for LSP messages on standard input, so use it
+through an editor or LSP client rather than as an interactive shell command.
+Mypy remains an advisory compatibility check.
 
 4. **Format code**:
 ```bash
@@ -263,7 +276,7 @@ pytest -m "not slow"
 
 All PRs and pushes trigger our CI pipeline:
 
-1. **Linting**: flake8, black, mypy
+1. **Linting**: flake8, black, BasedPyright, and advisory mypy
 2. **Tests**: pytest with coverage
 3. **Security**: safety, bandit scans
 4. **Smoke tests**: Basic functionality checks

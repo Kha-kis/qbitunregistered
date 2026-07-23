@@ -6,11 +6,11 @@ tracker patterns and retrieve associated configuration.
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 
-def match_tracker_url(tracker_url: str, tracker_tags_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def match_tracker_url(tracker_url: str | None, tracker_tags_config: dict[str, Any] | None) -> dict[str, Any] | None:
     """
     Match a tracker URL against configured tracker patterns.
 
@@ -61,7 +61,7 @@ def match_tracker_url(tracker_url: str, tracker_tags_config: Dict[str, Any]) -> 
         # If we successfully extracted a domain, use domain-based matching
         if domain:
             for tracker_key, tracker_config in tracker_tags_config.items():
-                if tracker_key.lower() in domain:
+                if tracker_key.lower() in domain and isinstance(tracker_config, dict):
                     return tracker_config
             return None
     except Exception:
@@ -73,7 +73,7 @@ def match_tracker_url(tracker_url: str, tracker_tags_config: Dict[str, Any]) -> 
     # (e.g., "** [DHT] **", "** [PeX] **", "** [LSD] **")
     tracker_url_lower = tracker_url.lower()
     for tracker_key, tracker_config in tracker_tags_config.items():
-        if tracker_key.lower() in tracker_url_lower:
+        if tracker_key.lower() in tracker_url_lower and isinstance(tracker_config, dict):
             return tracker_config
 
     return None

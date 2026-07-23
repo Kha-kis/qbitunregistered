@@ -49,6 +49,19 @@ python -m pip install -e ".[dev]" build bandit pip-audit
 Do not edit generated output under `build/`, `dist/`, `*.egg-info/`,
 `__pycache__/`, `.pytest_cache/`, or `.mypy_cache/`.
 
+When available, use the BasedPyright analysis engine for Python navigation,
+references, and diagnostics. The project check and language-server commands
+are:
+
+```bash
+uv run basedpyright
+uv run basedpyright-langserver --stdio
+```
+
+The language-server command speaks LSP over standard input/output and waits for
+an editor or other LSP client; use the CLI command for a non-interactive project
+check.
+
 ## Implementation rules
 
 - Preserve CLI flags, JSON fields, exit codes, installed console commands, and
@@ -110,6 +123,7 @@ uv run pytest tests/test_config_validator.py
 uv run pytest tests/test_config_validator.py::TestConfigValidation::test_empty_api_key_uses_username_password
 uv run black --check qbitunregistered/config.py tests/test_config_validator.py
 uv run flake8 qbitunregistered/config.py tests/test_config_validator.py
+uv run basedpyright
 uv run mypy qbitunregistered/config.py --ignore-missing-imports
 ```
 
@@ -124,9 +138,11 @@ Before completing substantive Python changes, run the full relevant CI checks:
 uv run black --check .
 uv run flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv/
 uv run pytest --cov=qbitunregistered --cov-report=term-missing --cov-fail-under=60
+uv run basedpyright
 uv run mypy qbitunregistered --ignore-missing-imports
 ```
 
+BasedPyright is the required project type check for substantive Python changes.
 Mypy is advisory in CI; report its findings honestly and improve changed
 interfaces incrementally. For dependency, security, packaging, or entry-point
 changes, also run:

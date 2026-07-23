@@ -163,15 +163,24 @@ qbitunregistered --config config.json --unregistered --dry-run
 Use `python -m qbitunregistered` if you prefer module execution. The root
 `qbitunregistered.py` script remains as a compatibility wrapper.
 
-To run the built-in scheduler, set `scheduled_times` in the configuration and
-pass that same file to the scheduler:
+To run the built-in scheduler, set both `scheduled_times` and
+`scheduled_operations` in the configuration, then pass that same file to the
+scheduler:
+
+```json
+{
+  "scheduled_times": ["09:00", "21:00"],
+  "scheduled_operations": ["unregistered", "orphaned"]
+}
+```
 
 ```bash
 qbitunregistered-scheduler --config /absolute/path/to/config.json
 ```
 
-Scheduled runs add `--yes` automatically, so test the same operations in
-dry-run mode before enabling the scheduler.
+Scheduled runs forward those operation flags and add `--yes` automatically.
+The scheduler rejects configured times with no operations. Test the same
+operations with `"dry_run": true` before enabling real scheduled mutations.
 
 ### Command-Line Arguments
 
@@ -184,7 +193,7 @@ Here's what you can specify when running `qbitunregistered`:
 - `--host`: Specify the host and port where qBittorrent is running.
 - `--username`: Your username for logging into the qBittorrent Web UI.
 - `--password`: Your password for logging into the qBittorrent Web UI.
-- `--api-key`: API key for qBittorrent v5.2.0 or newer. Takes precedence over username/password.
+- `--api-key`: API key for qBittorrent v5.2.0 or newer. A non-blank value takes precedence over username/password; an explicitly blank value selects username/password fallback.
 - `--tag-by-tracker`: Perform tagging based on the associated tracker.
 - `--seeding-management`: Apply seed time and seed ratio limits based on tracker tags.
 - `--auto-tmm`: Enable Automatic Torrent Management (auto TMM).
@@ -198,7 +207,18 @@ Here's what you can specify when running `qbitunregistered`:
 - `--exclude-dirs`: Exclude directories from being scanned for orphaned files. Full paths should be specified, and wildcards can be used to match multiple directories (e.g., `/path/to/exclude/*`). Multiple paths can be specified separated by spaces.
 - `--log-level`: Set logging verbosity (DEBUG, INFO, WARNING, ERROR). Overrides config.json setting.
 - `--log-file`: Write logs to specified file in addition to console. Useful for scheduled/cron runs.
-- `--yes`, `-y`: Skip confirmation prompt and proceed with operations automatically. Use with caution! Recommended for automation/cron jobs after testing with dry-run.
+- `--yes`, `-y`: Skip impact analysis and confirmation and proceed with operations automatically. Use with caution and only after testing the same operation set with dry-run.
+
+Without `--yes`, every selected non-dry-run operation is previewed and requires
+confirmation. If any target cannot be analyzed reliably, execution aborts
+before mutation. Orphaned-file targets and hard-link destinations shown in the
+preview are reused for execution so the confirmed list is the list processed.
+Orphan plans also bind each path to its device, inode, type, size, and
+modification time; missing, modified, substituted, or symlinked targets are
+preserved. Unregistered previews distinguish torrent-only deletion,
+cross-seeded-file preservation, recycling, and permanent deletion. Before
+file mutation, execution refreshes qBittorrent's ownership state without the
+preview cache and aborts if it changed.
 
 ## Recycle Bin Feature
 
@@ -273,8 +293,13 @@ The recycle bin uses a **hybrid structure** combining deletion type and category
 - If a file with the same name already exists in the recycle bin, a timestamp suffix is automatically added
 - Format: `filename_YYYYMMDD_HHMMSS.ext`
 - Example: `movie.mkv` → `movie_20250123_143045.mkv`
+- Repeated collisions in the same second add a numeric suffix and never overwrite
+  an existing recycled file
 - This prevents overwriting previously recycled files
 - Useful when the same file is deleted multiple times
+- If qBittorrent cannot remove an unregistered torrent after its files are
+  recycled, the application restores those files without overwriting any path
+  created concurrently.
 
 **Automatic Exclusion:**
 - The recycle bin directory is automatically excluded from orphan scanning
@@ -294,7 +319,13 @@ The recycle bin uses a **hybrid structure** combining deletion type and category
 
 ### Unregistered Torrent Handling
 
-When deleting unregistered torrents with `delete_files=True`:
+File removal for unregistered torrents requires all three controls:
+`use_delete_tags: true`, an exact tag in `delete_tags`, and
+`use_delete_files: true` with a boolean `true` value for that tag in
+`delete_files`. qBittorrent's comma-separated tags are matched exactly, not as
+substrings.
+
+When those controls authorize file removal:
 
 **With Recycle Bin Configured:**
 1. Script gets all file paths for the torrent
@@ -303,14 +334,17 @@ When deleting unregistered torrents with `delete_files=True`:
 4. Result: Files safely preserved in organized recycle bin, torrent removed
 
 **Without Recycle Bin:**
-1. Torrent is deleted with `delete_files=True`
-2. qBittorrent permanently deletes both torrent and files
-3. Result: Permanent deletion (original behavior)
+1. The script resolves the torrent's files and scans all other torrents for shared ownership
+2. Only after that complete scan succeeds is the torrent deleted with `delete_files=True`
+3. qBittorrent permanently deletes both torrent and files
 
 **Important Notes:**
-- Cross-seeded torrents are handled intelligently
-- Files are only moved once, even if multiple torrents reference them
-- If file paths cannot be retrieved, torrent is still deleted (logged as warning)
+- Cross-seeded files are preserved and the torrent is removed without deleting files
+- A failed, incomplete, or malformed file/ownership check aborts deletion of that torrent
+- Missing files are treated as an unsafe state, not as an empty torrent
+- The same ownership checks protect recycle-bin and permanent-deletion modes
+- If any file for one unregistered torrent fails to move, earlier moves for that
+  torrent are rolled back and the torrent is preserved
 
 ### Example Usage
 

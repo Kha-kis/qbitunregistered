@@ -13,7 +13,7 @@ The installable package has a centralized CLI coordinator that orchestrates spec
 3. **Type Safety**: Protocol-based type hints decouple from qbittorrent-api implementation details
 4. **In-Memory Caching**: Single-execution caching reduces redundant API calls within one script run
 5. **Configuration-Driven**: All behavior controlled via JSON config with CLI overrides
-6. **Error Resilience**: Operations fail gracefully with comprehensive logging; one module failure doesn't block others
+6. **Fail-Closed Safety**: Preview and file-ownership uncertainty aborts destructive work
 7. **Dry-Run Support**: All operations support dry-run mode for safe testing
 
 ## Core Components
@@ -34,10 +34,10 @@ The installable package has a centralized CLI coordinator that orchestrates spec
 3. Setup logging (console + optional file)
 4. Connect to qBittorrent API
 5. Fetch all torrents once (reused by all modules)
-6. Execute enabled operations (orphaned check, unregistered check, tagging, etc.)
-7. Log cache statistics
-8. Report operation summary
-9. Logout and cleanup
+6. Build a complete impact preview for every selected operation unless `--yes` explicitly bypasses it
+7. Require confirmation for non-dry-run execution and reuse confirmed filesystem plans
+8. Execute enabled operations (orphaned check, unregistered check, tagging, etc.)
+9. Log cache statistics, report the summary, and clean up
 ```
 
 **Key Features**:
@@ -137,6 +137,13 @@ The installable package has a centralized CLI coordinator that orchestrates spec
 - `process_torrent()`: Count unregistered trackers per torrent
 - `delete_torrents_and_files()`: Batch delete with tag-based filtering
 
+Deletion impact and execution share an immutable plan. One complete torrent
+snapshot and one file-list read per torrent build a path-to-owner index, so
+cross-seed checks do not rescan every torrent for every deletion candidate.
+The plan records torrent-only, shared-file preservation, recycle, or permanent
+deletion explicitly. File-mutating execution validates planned file identities
+and refreshes the full ownership snapshot without cache before mutation.
+
 #### `qbitunregistered/operations/orphaned.py` - Detect & Delete Orphaned Files
 
 **Core Responsibility**: Find files on disk not associated with any torrent
@@ -154,7 +161,8 @@ The installable package has a centralized CLI coordinator that orchestrates spec
 3. Build set of all files referenced by torrents
 4. Scan disk directories
 5. Identify orphaned files using glob pattern exclusions
-6. Delete or report based on dry-run flag
+6. Capture device, inode, type, size, and modification time for each target
+7. Delete or report from that same immutable plan
 
 **Exclude Patterns**:
 - File patterns: glob syntax (e.g., `*.tmp`, `*.part`, `*.!qB`)
@@ -228,6 +236,10 @@ The installable package has a centralized CLI coordinator that orchestrates spec
 
 **Use Cases**: Organize completed downloads without duplicating storage
 
+Impact analysis builds the exact source-to-destination plan without filesystem
+mutation. Execution reuses that confirmed plan and fails closed if source
+inspection is uncertain or multiple sources map to one destination.
+
 #### `qbitunregistered/operations/torrent_management.py` - Basic Control
 
 **Core Responsibility**: Pause/resume operations
@@ -241,9 +253,11 @@ The installable package has a centralized CLI coordinator that orchestrates spec
 **Purpose**: Run the installed application on a schedule
 
 **Architecture**:
-- Loads `scheduled_times` from the selected configuration file
+- Loads and validates `scheduled_times` plus `scheduled_operations` from the selected configuration file
 - Uses `schedule` library for cron-like scheduling
-- Executes `python -m qbitunregistered --config <path> --yes` with a 1-hour timeout
+- Maps each configured operation to its CLI flag and executes
+  `python -m qbitunregistered --config <path> <operation flags> --yes` with a
+  1-hour timeout
 - Captures and logs output
 - Runs continuously until interrupted
 
@@ -266,6 +280,7 @@ The installable package has a centralized CLI coordinator that orchestrates spec
   "other_issues_tag": "issue",                          // General issue tag
 
   "use_delete_tags": false,            // Enable tag-based deletion
+  "use_delete_files": false,           // Global gate for filesystem deletion
   "delete_tags": ["unregistered"],     // Tags to delete
   "delete_files": {
     "unregistered": false              // Whether to delete files too
@@ -291,14 +306,16 @@ The installable package has a centralized CLI coordinator that orchestrates spec
     }
   },
 
-  "scheduled_times": ["09:00", "15:00"]    // For scheduler.py
+  "scheduled_times": ["09:00", "15:00"],   // For scheduler.py
+  "scheduled_operations": ["unregistered", "orphaned"]
 }
 ```
 
 ### CLI Override System
 
 - Command-line arguments override config.json values
-- Pattern: `arg.value or config.get('key')`
+- Explicitly provided CLI values replace configuration values, including blank
+  values where blank has defined behavior (such as API-key credential fallback)
 - Supports:
   - Host, username, password
   - Target directory
@@ -357,7 +374,7 @@ Main Script
 
 ### Design Principles
 
-1. **Per-Operation Isolation**: One operation's failure doesn't block others
+1. **Preflight Safety**: Incomplete impact analysis aborts all operations before mutation
 2. **Comprehensive Logging**: All errors logged with context and recommendations
 3. **Result Tracking**: Operations marked as succeeded/failed in summary
 4. **Exit Codes**: CLI-friendly exit codes for scripting and CI/CD
@@ -371,6 +388,15 @@ Main Script
 ### Error Recovery
 
 - Configuration validation happens early (before connection)
+- File discovery and cross-seed ownership scans raise a distinct safety failure;
+  callers do not interpret that failure as an empty result
+- Unregistered recycle-bin moves are all-or-nothing: a partial failure rolls
+  prior files back before the torrent is preserved
+- A qBittorrent deletion failure after a successful recycle move restores the
+  moved files, refusing to overwrite a path created concurrently
+- Final ownership revalidation closes the preview-to-execution interval, but
+  qBittorrent provides no transaction spanning its final response and the
+  subsequent deletion request; that short external race remains unavoidable
 - Connection tested before operations begin
 - Each operation wrapped in try-except with specific logging
 - Cache cleanup failures are non-critical (debug-level logging)

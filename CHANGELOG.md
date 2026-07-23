@@ -8,9 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Validated `scheduled_operations` configuration so the built-in scheduler
+  forwards an explicit maintenance operation set
 - Installable `qbitunregistered` and `qbitunregistered-scheduler` console commands
 - Package-build smoke testing in CI
 - Codex-compatible `AGENTS.md` guidance for Python implementation and review
+- BasedPyright development dependency, project configuration, language-server
+  instructions, and required CI type analysis
 - **qBittorrent 5.2 API-key authentication** as an alternative to username/password credentials
 - Tracker error status support for qBittorrent WebAPI v2.13+
 - **Dry-Run Impact Preview**: New impact analysis system that shows what will happen before executing operations
@@ -26,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Application modules now live in the installable `qbitunregistered` package
+- Auto-remove batches all completed torrent hashes into one qBittorrent API
+  call and reports batch failures to the operation summary
 - `pyproject.toml` is the single source for runtime and development dependencies
 - Added a generated `uv.lock` for reproducible development environments
 - GitHub Actions use the current Node 24 action releases
@@ -41,6 +47,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added validation for `recycle_bin` configuration (absolute path requirement, directory and writability checks)
 
 ### Fixed
+- Invalid non-boolean `dry_run` configuration now fails before connecting or
+  mutating, while explicit `--dry-run` and `--no-dry-run` still take precedence
+- Impact analysis now covers every mutating flag, shows concrete orphaned,
+  auto-remove, and hard-link targets, reuses confirmed filesystem plans, and
+  aborts on analyzer failure or conflicting hard-link destinations
+- Orphan cleanup now binds previewed paths to immutable file identities and
+  refuses missing, modified, substituted, non-regular, or symlinked targets
+- Unregistered preview and execution now share one ownership/deletion plan,
+  report the exact file action, build one per-run ownership index, and refresh
+  qBittorrent ownership state before file mutation
+- Unregistered deletion now matches comma-separated tags exactly, validates
+  every `delete_files` value, and honors the global `use_delete_files` gate
+- Permanent deletion now performs the same fail-closed file discovery and
+  cross-seed ownership scan as recycle-bin deletion
+- Recycle-bin moves refuse destination overwrites, reject non-regular sources,
+  and roll back earlier files when an unregistered torrent cannot be moved
+  completely; files are also restored if the subsequent torrent deletion fails
+- Hard-link planning rejects symlinked files that resolve outside the torrent
+  content directory
+- Tracker caches are isolated by client, and an explicitly blank CLI API key
+  correctly selects username/password authentication
 - Scheduler runs now forward the selected configuration path to the application
 - The root scheduler compatibility wrapper again defaults to its adjacent
   `config.json`, preserving existing cron and systemd setups

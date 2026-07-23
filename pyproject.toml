@@ -22,6 +22,7 @@ dev = [
     "flake8>=6.0.0",
     "black>=23.0.0",
     "mypy>=1.0.0",
+    "basedpyright>=1.31.4",
     "types-requests>=2.31.0",
 ]
 
@@ -57,6 +58,18 @@ exclude = [
     "venv/",
     ".venv/",
 ]
+
+[tool.basedpyright]
+include = ["qbitunregistered"]
+exclude = [
+    "build",
+    "dist",
+    "venv",
+    ".venv",
+]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+reportMissingTypeStubs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

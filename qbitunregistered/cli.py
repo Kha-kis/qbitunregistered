@@ -4,9 +4,13 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import cast
 from qbittorrentapi import exceptions
-from qbitunregistered.operations.orphaned import check_files_on_disk, delete_orphaned_files
+from qbitunregistered.operations.orphaned import (
+    build_orphan_file_plan,
+    check_files_on_disk,
+    delete_orphaned_files,
+)
 from qbitunregistered.operations.unregistered_checks import unregistered_checks
 from qbitunregistered.operations.tag_by_tracker import tag_by_tracker
 from qbitunregistered.operations.seeding_management import apply_seed_limits
@@ -25,6 +29,7 @@ from qbitunregistered.config import (
 from qbitunregistered.cache import log_cache_stats
 from qbitunregistered.notifications import NotificationManager
 from qbitunregistered.client import create_client
+from qbitunregistered.types import QBittorrentClient, TorrentInfo
 
 # Exit codes for different failure types
 EXIT_SUCCESS = 0
@@ -91,10 +96,28 @@ parser.add_argument(
 )
 
 
-def main(argv=None) -> int:
+def _selected_operations(args: argparse.Namespace) -> list[str]:
+    """Return impact operation names for every selected mutating flag."""
+    operation_flags = (
+        ("orphaned", "orphaned"),
+        ("unregistered", "unregistered"),
+        ("tag_by_tracker", "tag_by_tracker"),
+        ("seeding_management", "seeding_management"),
+        ("auto_tmm", "auto_tmm"),
+        ("pause_torrents", "pause"),
+        ("resume_torrents", "resume"),
+        ("auto_remove", "auto_remove"),
+        ("create_hard_links", "create_hard_links"),
+        ("tag_by_age", "tag_by_age"),
+        ("tag_by_cross_seed", "tag_cross_seeding"),
+    )
+    return [operation for attribute, operation in operation_flags if getattr(args, attribute)]
+
+
+def main(argv: list[str] | None = None) -> int:
     """Run qbitunregistered and return a process exit code."""
     # Parse command-line arguments
-    pre_args, unknown = parser.parse_known_args(argv)
+    pre_args, _unknown = parser.parse_known_args(argv)
 
     # Load configuration from config.json
     config_file_path = os.path.abspath(pre_args.config)
@@ -113,30 +136,40 @@ def main(argv=None) -> int:
         print(f"ERROR: Failed to read configuration file: {e}")
         sys.exit(EXIT_CONFIG_ERROR)
 
-    # Ensure target_dir is provided if required
-    if pre_args.create_hard_links and not pre_args.target_dir and not config.get("target_dir"):
-        logging.error("Error: --target-dir is required when --create-hard-links is specified and not present in config.json.")
-        sys.exit(EXIT_CONFIG_ERROR)
-
     # Re-parse arguments now that configuration has been loaded
     args = parser.parse_args(argv)
 
     # Override configuration with command-line arguments if provided
-    config["host"] = args.host or config.get("host")
-    config["api_key"] = args.api_key or config.get("api_key")
-    config["username"] = args.username or config.get("username")
-    config["password"] = args.password or config.get("password")
-    config["recycle_bin"] = args.recycle_bin or config.get("recycle_bin")
-    target_dir = args.target_dir or config.get("target_dir", None)
-    dry_run = resolve_dry_run(args.dry_run, config)
-    config["dry_run"] = dry_run
+    for field in ("host", "api_key", "username", "password", "recycle_bin"):
+        cli_value = getattr(args, field)
+        if cli_value is not None:
+            config[field] = cli_value
+    target_dir = args.target_dir if args.target_dir is not None else config.get("target_dir")
+    if target_dir is not None:
+        config["target_dir"] = target_dir
     exclude_files = args.exclude_files if args.exclude_files else config.get("exclude_files", [])
     exclude_dirs = args.exclude_dirs if args.exclude_dirs else config.get("exclude_dirs", [])
+    config["exclude_files"] = exclude_files
+    config["exclude_dirs"] = exclude_dirs
 
     # Notification configuration
-    config["apprise_url"] = args.apprise_url or config.get("apprise_url")
-    config["notifiarr_key"] = args.notifiarr_key or config.get("notifiarr_key")
-    config["notifiarr_channel"] = args.notifiarr_channel or config.get("notifiarr_channel")
+    for field in ("apprise_url", "notifiarr_key", "notifiarr_channel"):
+        cli_value = getattr(args, field)
+        if cli_value is not None:
+            config[field] = cli_value
+
+    try:
+        dry_run = resolve_dry_run(args.dry_run, config)
+        config["dry_run"] = dry_run
+        validate_config(config)
+        validate_exclude_patterns(exclude_files, exclude_dirs)
+    except ConfigValidationError as error:
+        print(f"ERROR: Configuration validation failed: {error}")
+        raise SystemExit(EXIT_CONFIG_ERROR) from error
+
+    if args.create_hard_links and not target_dir:
+        print("ERROR: --target-dir is required when --create-hard-links is selected.")
+        raise SystemExit(EXIT_CONFIG_ERROR)
 
     # Determine log level (CLI arg > config.json > default INFO)
     log_level_str = args.log_level or config.get("log_level", "INFO")
@@ -146,7 +179,7 @@ def main(argv=None) -> int:
     log_file = args.log_file or config.get("log_file", None)
 
     # Configure logging BEFORE any operations
-    log_handlers = []
+    log_handlers: list[logging.Handler] = []
 
     # Console handler (always present)
     console_handler = logging.StreamHandler()
@@ -167,26 +200,16 @@ def main(argv=None) -> int:
     # Apply logging configuration
     logging.basicConfig(level=log_level, handlers=log_handlers, force=True)  # Override any existing config
 
-    # Validate configuration after CLI overrides are applied
-    try:
-        validate_config(config)
-    except ConfigValidationError as e:
-        logging.error(f"Configuration validation failed: {e}")
-        sys.exit(EXIT_CONFIG_ERROR)
-
-    # Validate exclude patterns
-    validate_exclude_patterns(exclude_files, exclude_dirs)
-
     # Connect to qBittorrent client
     try:
-        client = create_client(config)
+        client = cast(QBittorrentClient, create_client(config))
     except exceptions.APIConnectionError as e:
         logging.error(f"Failed to connect to qBittorrent: {e}")
         sys.exit(EXIT_CONNECTION_ERROR)
 
     # Define torrents
     try:
-        torrents = client.torrents.info()
+        torrents = cast(list[TorrentInfo], list(client.torrents.info()))
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception:
@@ -200,29 +223,16 @@ def main(argv=None) -> int:
     # No manual clearing needed on startup.
 
     # Track operation results for summary
-    operation_results: Dict[str, List[str]] = {"succeeded": [], "failed": []}
+    operation_results: dict[str, list[str]] = {"succeeded": [], "failed": []}
 
     # ============================================================
     # IMPACT PREVIEW (if not using --yes flag)
     # ============================================================
-    # Collect operations to analyze
-    operations_to_run = []
-    if args.orphaned:
-        operations_to_run.append("orphaned")
-    if args.unregistered:
-        operations_to_run.append("unregistered")
-    if args.tag_by_tracker:
-        operations_to_run.append("tag_by_tracker")
-    if args.tag_by_age:
-        operations_to_run.append("tag_by_age")
-    if args.tag_by_cross_seed:
-        operations_to_run.append("tag_cross_seeding")
-    if args.auto_remove:
-        operations_to_run.append("auto_remove")
-    if args.pause_torrents:
-        operations_to_run.append("pause")
-    if args.resume_torrents:
-        operations_to_run.append("resume")
+    operations_to_run = _selected_operations(args)
+    impact_summary = None
+
+    if not operations_to_run:
+        logging.warning("No operations selected. Choose an operation flag such as --unregistered or --orphaned.")
 
     # Show impact preview if there are operations to run and not in --yes mode
     if operations_to_run and not args.yes:
@@ -233,38 +243,38 @@ def main(argv=None) -> int:
             impact_summary = analyze_impact(client, torrents, config, operations_to_run)
 
             # Show preview
-            print(impact_summary.format_summary(show_details=False))
+            print(impact_summary.format_summary(show_details=True))
 
-            # If not in dry-run mode and there are actual changes, prompt for confirmation
-            if not dry_run and not impact_summary.is_empty():
+            # Every selected non-dry-run operation requires explicit confirmation,
+            # including operations whose current target set is empty.
+            if not dry_run:
                 try:
                     response = input("\n🔍 Proceed with these changes? [y/N]: ").strip().lower()
                     if response not in ["y", "yes"]:
                         logging.info("Operation aborted by user")
                         client.auth_log_out()
-                        sys.exit(EXIT_SUCCESS)
-                    else:
-                        logging.info("User confirmed, proceeding with operations...")
+                        return EXIT_SUCCESS
+                    logging.info("User confirmed, proceeding with operations...")
                 except EOFError:
-                    # Handle non-interactive environments (like CI/CD without --yes flag)
                     logging.warning("Non-interactive environment detected. Use --yes flag to skip confirmation.")
                     logging.info("Operation aborted (no confirmation in non-interactive mode)")
                     client.auth_log_out()
-                    sys.exit(EXIT_SUCCESS)
+                    return EXIT_SUCCESS
             elif dry_run:
                 logging.info("Dry-run mode: no actual changes will be made")
-            elif impact_summary.is_empty():
-                logging.info("No operations to perform")
         except (KeyboardInterrupt, SystemExit):
-            logging.info("Operation cancelled by user")
             try:
                 client.auth_log_out()
             except Exception:
                 pass
-            sys.exit(EXIT_SUCCESS)
-        except Exception as e:
-            logging.warning(f"Could not generate impact preview: {e}")
-            logging.warning("Continuing with operations...")
+            raise
+        except Exception:
+            logging.exception("Impact analysis failed; aborting before any operation")
+            try:
+                client.auth_log_out()
+            except Exception:
+                pass
+            return EXIT_GENERAL_ERROR
 
     # ============================================================
     # RUN OPERATIONS
@@ -280,12 +290,17 @@ def main(argv=None) -> int:
                 # Convert to absolute path to ensure proper exclusion
                 exclude_dirs_for_scan.append(str(Path(recycle_bin).resolve()))
 
-            orphaned_files = check_files_on_disk(
-                client,
-                torrents,
-                exclude_file_patterns=exclude_files,
-                exclude_dirs=exclude_dirs_for_scan,
-            )
+            if impact_summary is not None and impact_summary.orphan_file_plan is not None:
+                orphan_plan = impact_summary.orphan_file_plan
+            else:
+                orphaned_files = check_files_on_disk(
+                    client,
+                    torrents,
+                    exclude_file_patterns=exclude_files,
+                    exclude_dirs=exclude_dirs_for_scan,
+                )
+                orphan_plan = build_orphan_file_plan(orphaned_files)
+            orphaned_files = [str(path) for path in orphan_plan.paths]
             logging.info(f"Found {len(orphaned_files)} orphaned files")
 
             if orphaned_files:
@@ -296,7 +311,14 @@ def main(argv=None) -> int:
                 logging.info("No orphaned files found")
 
             # Delete/move orphaned files unless dry-run is set (pass torrents to avoid redundant API call)
-            delete_orphaned_files(orphaned_files, dry_run, client, torrents=torrents, recycle_bin=recycle_bin)
+            delete_orphaned_files(
+                orphaned_files,
+                dry_run,
+                client,
+                torrents=torrents,
+                recycle_bin=recycle_bin,
+                plan=orphan_plan,
+            )
             operation_results["succeeded"].append(f"Orphaned files check: {len(orphaned_files)} files processed")
         except (KeyboardInterrupt, SystemExit):
             raise
@@ -311,11 +333,12 @@ def main(argv=None) -> int:
                 client,
                 torrents,
                 config,
-                use_delete_tags=config.get("use_delete_tags", False),
-                delete_tags=config.get("delete_tags", []),
-                delete_files=config.get("delete_files", {}),
+                use_delete_tags=cast(bool, config.get("use_delete_tags", False)),
+                delete_tags=cast(list[str], config.get("delete_tags", [])),
+                delete_files=cast(dict[str, bool], config.get("delete_files", {})),
                 dry_run=dry_run,
                 recycle_bin=config.get("recycle_bin"),
+                deletion_plan=(impact_summary.unregistered_deletion_plan if impact_summary is not None else None),
             )
             total_unregistered_count = sum(unregistered_counts.values())
             logging.info("Total unregistered count: %d", total_unregistered_count)
@@ -417,7 +440,12 @@ def main(argv=None) -> int:
     # Run the create_hard_links function if --create-hard-links argument is passed
     if args.create_hard_links:
         try:
-            create_hard_links(target_dir, torrents, dry_run=dry_run)
+            create_hard_links(
+                cast(str, target_dir),
+                torrents,
+                dry_run=dry_run,
+                planned_links=impact_summary.hard_link_plan if impact_summary is not None else None,
+            )
             operation_results["succeeded"].append("Create hard links")
         except (KeyboardInterrupt, SystemExit):
             raise

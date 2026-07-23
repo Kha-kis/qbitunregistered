@@ -118,9 +118,10 @@ class TestAutoRemove:
         # Run auto remove
         auto_remove(client, torrents, dry_run=False)
 
-        # Should have tried to delete 2 completed torrents
+        # Should delete all completed torrents in one API call.
         delete_calls = [call for call in client.api_calls if call[0] == "delete"]
-        assert len(delete_calls) == 2
+        assert len(delete_calls) == 1
+        assert delete_calls[0][1] == ["hash1", "hash2"]
 
     def test_dry_run_no_deletion(self):
         """Test that dry_run mode doesn't delete torrents."""
@@ -307,6 +308,28 @@ class TestTrackerTagging:
             tag_by_tracker(client, [MockTorrent("one", "hash1")], {}, dry_run=True)
 
         client.torrents_add_tags.assert_not_called()
+
+    def test_tracker_cache_is_isolated_by_client(self):
+        from qbitunregistered.cache import clear_cache
+        from qbitunregistered.operations.seeding_management import find_tracker_config
+
+        clear_cache()
+        torrent = Mock(hash="same-hash")
+        first_client = Mock()
+        second_client = Mock()
+        first_client.torrents_trackers.return_value = [{"url": "https://first.example/announce"}]
+        second_client.torrents_trackers.return_value = [{"url": "https://second.example/announce"}]
+        config = {
+            "tracker_tags": {
+                "first.example": {"tag": "first"},
+                "second.example": {"tag": "second"},
+            }
+        }
+
+        assert find_tracker_config(first_client, torrent, config) == {"tag": "first"}
+        assert find_tracker_config(second_client, torrent, config) == {"tag": "second"}
+        first_client.torrents_trackers.assert_called_once()
+        second_client.torrents_trackers.assert_called_once()
 
 
 class TestCrossSeedTagging:

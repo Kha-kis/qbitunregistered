@@ -1,11 +1,29 @@
 import os
 import logging
 import re
+import stat
+from dataclasses import dataclass
 from typing import Sequence
 from pathlib import Path
 from tqdm import tqdm
 
 from qbitunregistered.types import TorrentInfo
+
+
+class HardLinkPlanningError(RuntimeError):
+    """Raised when hard-link targets cannot be derived safely."""
+
+
+@dataclass(frozen=True)
+class PlannedHardLink:
+    """A read-only source-to-destination hard-link operation."""
+
+    source: Path
+    target: Path
+    source_device: int
+    source_inode: int
+    source_size: int
+    source_mtime_ns: int
 
 
 def _sanitize_category_name(category: str) -> str:
@@ -83,7 +101,116 @@ def _is_safe_path(base_path: Path, target_path: Path) -> bool:
         return False
 
 
-def create_hard_links(target_dir: str, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
+def _strict_path_exists(path: Path) -> bool:
+    """Check path existence without treating access failures as absence."""
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def plan_hard_links(target_dir: str, torrents: Sequence[TorrentInfo]) -> list[PlannedHardLink]:
+    """Build the exact hard-link plan without mutating the filesystem.
+
+    Existing destinations are omitted, matching execution behavior. Any
+    inaccessible, missing, or unsafe source fails the entire plan closed.
+
+    Args:
+        target_dir: Existing destination directory for hard links.
+        torrents: Torrent snapshot used by execution.
+
+    Returns:
+        Ordered source and destination pairs to create.
+
+    Raises:
+        HardLinkPlanningError: If paths cannot be inspected safely.
+    """
+    if not target_dir:
+        raise HardLinkPlanningError("No target directory specified for hard link creation")
+
+    try:
+        target_path = Path(target_dir).resolve()
+        if not target_path.is_dir():
+            raise HardLinkPlanningError(f"Target directory does not exist or is not a directory: {target_path}")
+        target_path.stat()
+
+        planned_links: list[PlannedHardLink] = []
+        planned_sources_by_target: dict[Path, Path] = {}
+        for torrent in torrents:
+            if not torrent.state_enum.is_complete:
+                continue
+
+            save_path = Path(torrent.save_path).resolve()
+            content_path = (save_path / torrent.name).resolve()
+            if not content_path.is_relative_to(save_path):
+                raise HardLinkPlanningError(f"Unsafe source path for torrent '{torrent.name}'")
+
+            category_dir = _sanitize_category_name(torrent.category or "")
+            sources: list[tuple[Path, Path]] = []
+            if content_path.is_dir():
+
+                def raise_walk_error(error: OSError) -> None:
+                    raise error
+
+                for root, _directories, files in os.walk(content_path, onerror=raise_walk_error):
+                    for filename in files:
+                        source_path = (Path(root) / filename).resolve()
+                        if not source_path.is_relative_to(content_path):
+                            raise HardLinkPlanningError(
+                                f"Source path escapes torrent content for torrent '{torrent.name}': {source_path}"
+                            )
+                        source_stat = source_path.lstat()
+                        if not stat.S_ISREG(source_stat.st_mode):
+                            raise HardLinkPlanningError(f"Source is not a regular file: {source_path}")
+                        sources.append((source_path, source_path.relative_to(content_path)))
+            elif content_path.is_file():
+                source_stat = content_path.lstat()
+                if not stat.S_ISREG(source_stat.st_mode):
+                    raise HardLinkPlanningError(f"Source is not a regular file: {content_path}")
+                sources.append((content_path, Path(content_path.name)))
+            else:
+                raise HardLinkPlanningError(f"Content path does not exist: {content_path}")
+
+            for source_path, relative_path in sources:
+                target_file_path = (target_path / category_dir / relative_path).resolve()
+                if not _is_safe_path(target_path, target_file_path):
+                    raise HardLinkPlanningError(f"Unsafe destination path for torrent '{torrent.name}': {target_file_path}")
+                if not _strict_path_exists(target_file_path):
+                    previous_source = planned_sources_by_target.get(target_file_path)
+                    if previous_source is not None:
+                        if previous_source != source_path:
+                            raise HardLinkPlanningError(
+                                "Multiple sources map to the same hard-link destination: " f"{target_file_path}"
+                            )
+                        continue
+                    planned_sources_by_target[target_file_path] = source_path
+                    source_stat = source_path.lstat()
+                    planned_links.append(
+                        PlannedHardLink(
+                            source_path,
+                            target_file_path,
+                            source_stat.st_dev,
+                            source_stat.st_ino,
+                            source_stat.st_size,
+                            source_stat.st_mtime_ns,
+                        )
+                    )
+
+        return planned_links
+    except (KeyboardInterrupt, SystemExit, HardLinkPlanningError):
+        raise
+    except (OSError, RuntimeError, ValueError) as error:
+        raise HardLinkPlanningError("Could not build a complete hard-link plan") from error
+
+
+def create_hard_links(
+    target_dir: str,
+    torrents: Sequence[TorrentInfo],
+    dry_run: bool = False,
+    *,
+    planned_links: Sequence[PlannedHardLink] | None = None,
+) -> None:
     """
     Create hard links for completed torrents in the target directory.
 
@@ -93,225 +220,78 @@ def create_hard_links(target_dir: str, torrents: Sequence[TorrentInfo], dry_run:
         target_dir: Target directory where hard links will be created
         torrents: List of torrent objects to process
         dry_run: If True, only log actions without creating links
+        planned_links: Confirmed read-only plan to execute without rescanning.
 
     Note: Hard links only work within the same filesystem. Cross-filesystem
           linking will fail.
 
     Security: Validates all paths to prevent directory traversal attacks.
     """
-    try:
-        if not target_dir:
-            logging.error("No target directory specified for hard link creation")
-            return
+    if planned_links is None:
+        planned_links = plan_hard_links(target_dir, torrents)
+    logging.info("Planned %d hard links from %d torrents", len(planned_links), len(torrents))
+    total_links = 0
+    total_errors = 0
+    created_dirs: set[Path] = set()
+    target_base = Path(target_dir).resolve()
 
-        target_path = Path(target_dir).resolve()  # Resolve to absolute path
-
-        # Validate target directory
-        if not dry_run and not target_path.exists():
-            logging.error(f"Target directory does not exist: {target_dir}")
-            return
-
-        # Security: Defensive check - resolve() should always return absolute path,
-        # but verify as safeguard against future code changes
-        if not target_path.is_absolute():
-            logging.error(f"Target directory must be an absolute path: {target_dir}")
-            return
-
-        completed_torrents = [t for t in torrents if t.state_enum.is_complete]
-        logging.info(f"Processing {len(completed_torrents)} completed torrents out of {len(torrents)} total")
-
-        # Note: Hard links don't consume additional disk space - they're directory entries
-        # pointing to existing inodes. No disk space check needed.
-
-        # Pre-flight check: verify filesystem compatibility for hard links across all unique source devices
-        # Track each unique device ID to warn about cross-filesystem issues upfront
-        if not dry_run and completed_torrents:
-            try:
-                target_stat = os.stat(target_path)
-                target_device = target_stat.st_dev
-                checked_devices = {}  # Maps device ID to example save path for reporting
-                incompatible_devices = []
-
-                # Collect unique source device IDs from all torrents
-                for torrent in completed_torrents:
-                    try:
-                        source_stat = os.stat(torrent.save_path)
-                        source_device = source_stat.st_dev
-
-                        # Track this device if not seen before
-                        if source_device not in checked_devices:
-                            checked_devices[source_device] = torrent.save_path
-
-                            # Check compatibility with target
-                            if source_device != target_device:
-                                incompatible_devices.append((torrent.save_path, source_device))
-                    except Exception as e:
-                        logging.debug(f"Could not check filesystem for {torrent.save_path}: {e}")
-
-                # Report findings
-                if incompatible_devices:
-                    logging.warning(
-                        f"WARNING: Found {len(incompatible_devices)} source filesystem(s) incompatible with target:"
-                    )
-                    for save_path, device_id in incompatible_devices:
-                        logging.warning(f"  - {save_path} (device {device_id})")
-                    logging.warning(f"  Target: {target_path} (device {target_device})")
-                    logging.warning("  Hard links only work within the same filesystem.")
-                    logging.warning(
-                        "  Operations on incompatible paths will fail. Consider using symlinks or copying instead."
-                    )
-                elif checked_devices:
-                    logging.debug(
-                        f"Filesystem check passed: {len(checked_devices)} unique source device(s) compatible with target"
-                    )
-            except Exception as e:
-                logging.debug(f"Could not verify filesystem compatibility: {e}")
-
-        total_links = 0
-        total_skipped = 0
-        total_errors = 0
-        created_dirs = set()  # Cache for created directories to avoid redundant mkdir calls
-
-        for torrent in tqdm(completed_torrents, desc="Creating hard links", unit="torrent"):
-            try:
-                content_path = Path(torrent.save_path) / torrent.name
-
-                # Handle both directories and single files
-                if content_path.is_dir():
-                    # Process directory torrents
-                    for root, _dirs, files in os.walk(content_path):
-                        for file in files:
-                            try:
-                                source_path = Path(root) / file
-
-                                # Preserve relative directory structure
-                                rel_path = source_path.relative_to(content_path)
-
-                                # Security: Sanitize category name to prevent path traversal
-                                category_dir = _sanitize_category_name(torrent.category or "")
-
-                                # Construct target path and resolve to absolute path
-                                target_file_path = (target_path / category_dir / rel_path).resolve()
-
-                                # Security: Check for path traversal after resolution
-                                if not _is_safe_path(target_path, target_file_path):
-                                    logging.error(
-                                        f"Security: Path traversal detected for torrent '{torrent.name}', category '{torrent.category}', skipping: {target_file_path}"
-                                    )
-                                    total_errors += 1
-                                    continue
-
-                                if target_file_path.exists():
-                                    logging.debug(f"Hard link already exists: {target_file_path}")
-                                    total_skipped += 1
-                                    continue
-
-                                if dry_run:
-                                    logging.info(f"[Dry Run] Would create hard link: {source_path} -> {target_file_path}")
-                                    total_links += 1
-                                else:
-                                    # Create parent directories (cached to avoid redundant mkdir calls)
-                                    parent_dir = target_file_path.parent
-                                    if parent_dir not in created_dirs:
-                                        parent_dir.mkdir(parents=True, exist_ok=True)
-                                        created_dirs.add(parent_dir)
-
-                                    # Create hard link
-                                    try:
-                                        os.link(source_path, target_file_path)
-                                        logging.debug(f"Hard link created: {source_path} -> {target_file_path}")
-                                        total_links += 1
-                                    except FileExistsError:
-                                        # TOCTOU: File created between existence check and link creation
-                                        logging.debug(f"Hard link already exists (race condition): {target_file_path}")
-                                        total_skipped += 1
-
-                            except OSError as e:
-                                if e.errno == 18:  # EXDEV - Cross-device link
-                                    logging.error(
-                                        f"Cannot create hard link: source and target are on different filesystems.\n"
-                                        f"  Source: {source_path}\n"
-                                        f"  Target: {target_file_path}\n"
-                                        f"  Hard links only work within the same filesystem."
-                                    )
-                                else:
-                                    logging.exception(f"Failed to create hard link for '{source_path}'")
-                                total_errors += 1
-                            except Exception:
-                                logging.exception(f"Unexpected error processing file '{source_path}'")
-                                total_errors += 1
-
-                elif content_path.is_file():
-                    # Handle single-file torrents
-                    try:
-                        # Security: Sanitize category name to prevent path traversal
-                        category_dir = _sanitize_category_name(torrent.category or "")
-
-                        # Construct target path and resolve to absolute path
-                        target_file_path = (target_path / category_dir / content_path.name).resolve()
-
-                        # Security: Check for path traversal after resolution
-                        if not _is_safe_path(target_path, target_file_path):
-                            logging.error(
-                                f"Security: Path traversal detected for torrent '{torrent.name}', category '{torrent.category}', skipping: {target_file_path}"
-                            )
-                            total_errors += 1
-                            continue
-
-                        if target_file_path.exists():
-                            logging.debug(f"Hard link already exists: {target_file_path}")
-                            total_skipped += 1
-                        elif dry_run:
-                            logging.info(f"[Dry Run] Would create hard link: {content_path} -> {target_file_path}")
-                            total_links += 1
-                        else:
-                            # Create parent directories (cached to avoid redundant mkdir calls)
-                            parent_dir = target_file_path.parent
-                            if parent_dir not in created_dirs:
-                                parent_dir.mkdir(parents=True, exist_ok=True)
-                                created_dirs.add(parent_dir)
-
-                            # Create hard link
-                            try:
-                                os.link(content_path, target_file_path)
-                                logging.debug(f"Hard link created: {content_path} -> {target_file_path}")
-                                total_links += 1
-                            except FileExistsError:
-                                # TOCTOU: File created between existence check and link creation
-                                logging.debug(f"Hard link already exists (race condition): {target_file_path}")
-                                total_skipped += 1
-
-                    except OSError as e:
-                        if e.errno == 18:  # EXDEV - Cross-device link
-                            logging.error(
-                                f"Cannot create hard link: source and target are on different filesystems.\n"
-                                f"  Source: {content_path}\n"
-                                f"  Target: {target_file_path}\n"
-                                f"  Hard links only work within the same filesystem."
-                            )
-                        else:
-                            logging.exception(f"Failed to create hard link for single file '{content_path}'")
-                        total_errors += 1
-                    except Exception:
-                        logging.exception(f"Unexpected error processing single file '{content_path}'")
-                        total_errors += 1
-
-                else:
-                    logging.warning(f"Content path does not exist: {content_path}")
-                    total_errors += 1
-
-            except Exception:
-                logging.exception(f"Error processing torrent '{getattr(torrent, 'name', 'unknown')}'")
-                total_errors += 1
-
-        # Summary
+    for planned_link in tqdm(planned_links, desc="Creating hard links", unit="link"):
         if dry_run:
-            logging.info(
-                f"[Dry Run] Hard link summary: {total_links} would be created, {total_skipped} already exist, {total_errors} errors"
-            )
-        else:
-            logging.info(f"Hard link summary: {total_links} created, {total_skipped} already exist, {total_errors} errors")
+            logging.info("[Dry Run] Would create hard link: %s -> %s", planned_link.source, planned_link.target)
+            total_links += 1
+            continue
 
-    except Exception:
-        logging.exception("Error in create_hard_links")
-        raise
+        try:
+            source_stat = planned_link.source.lstat()
+            if (
+                not stat.S_ISREG(source_stat.st_mode)
+                or source_stat.st_dev != planned_link.source_device
+                or source_stat.st_ino != planned_link.source_inode
+                or source_stat.st_size != planned_link.source_size
+                or source_stat.st_mtime_ns != planned_link.source_mtime_ns
+            ):
+                raise HardLinkPlanningError(f"Source changed after planning: {planned_link.source}")
+
+            parent_dir = planned_link.target.parent
+            if parent_dir not in created_dirs:
+                parent_dir.mkdir(parents=True, exist_ok=True)
+                created_dirs.add(parent_dir)
+            resolved_target = planned_link.target.resolve()
+            if resolved_target != planned_link.target or not resolved_target.is_relative_to(target_base):
+                raise HardLinkPlanningError(f"Target changed after planning: {planned_link.target}")
+
+            os.link(planned_link.source, planned_link.target, follow_symlinks=False)
+            target_stat = planned_link.target.lstat()
+            if (
+                target_stat.st_dev != planned_link.source_device
+                or target_stat.st_ino != planned_link.source_inode
+                or not stat.S_ISREG(target_stat.st_mode)
+            ):
+                _remove_target_if_source_still_matches(planned_link.source, planned_link.target, target_stat)
+                raise HardLinkPlanningError(f"Source changed while creating hard link: {planned_link.source}")
+            total_links += 1
+        except (OSError, HardLinkPlanningError):
+            logging.exception("Failed to create hard link: %s -> %s", planned_link.source, planned_link.target)
+            total_errors += 1
+
+    if dry_run:
+        logging.info("[Dry Run] Hard link summary: %d would be created, %d errors", total_links, total_errors)
+    else:
+        logging.info("Hard link summary: %d created, %d errors", total_links, total_errors)
+    if total_errors:
+        raise HardLinkPlanningError(f"Failed to create {total_errors} of {len(planned_links)} planned hard links")
+
+
+def _remove_target_if_source_still_matches(source: Path, target: Path, target_stat: os.stat_result) -> None:
+    """Remove a mismatched target only while the linked source is still present."""
+    try:
+        source_stat = source.lstat()
+        current_target_stat = target.lstat()
+    except FileNotFoundError:
+        return
+    target_identity = (target_stat.st_dev, target_stat.st_ino)
+    if (source_stat.st_dev, source_stat.st_ino) == target_identity and (
+        current_target_stat.st_dev,
+        current_target_stat.st_ino,
+    ) == target_identity:
+        target.unlink()

@@ -1,12 +1,265 @@
 import logging
+from collections import defaultdict
 from pathlib import Path
-from typing import List, Set, Tuple, Optional
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 from tqdm import tqdm
 
-from qbitunregistered.file_operations import move_files_to_recycle_bin, get_torrent_file_paths, check_cross_seeding
+from qbitunregistered.file_operations import (
+    FileIdentity,
+    RecycleBinMove,
+    SafetyCheckError,
+    capture_file_identity,
+    fetch_torrent_files,
+    move_files_to_recycle_bin,
+    rollback_recycle_bin_moves,
+    verify_file_identity,
+)
+from qbitunregistered.types import QBittorrentClient, TorrentInfo
 
 
-def compile_patterns(unregistered: List[str]) -> Tuple[Set[str], Set[str]]:
+class DeletionAction(str, Enum):
+    """Filesystem behavior for one planned torrent deletion."""
+
+    TORRENT_ONLY = "torrent_only"
+    PRESERVE_SHARED = "preserve_shared"
+    RECYCLE_FILES = "recycle_files"
+    PERMANENT_DELETE = "permanent_delete"
+
+
+@dataclass(frozen=True, slots=True)
+class TorrentOwnership:
+    """Ownership-relevant qBittorrent metadata for one torrent."""
+
+    torrent_hash: str
+    name: str
+    save_path: Path
+    category: str
+    file_paths: tuple[Path, ...]
+    source_paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OwnershipSnapshot:
+    """Canonical qBittorrent ownership state used by a deletion plan."""
+
+    torrents: tuple[TorrentOwnership, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedTorrentDeletion:
+    """One confirmed torrent deletion and its exact file behavior."""
+
+    torrent_hash: str
+    torrent_name: str
+    matching_tag: str
+    category: str
+    action: DeletionAction
+    files: tuple[FileIdentity, ...] = ()
+    shared_with: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class UnregisteredDeletionPlan:
+    """Read-only deletion plan shared by impact preview and execution."""
+
+    deletions: tuple[PlannedTorrentDeletion, ...]
+    ownership_snapshot: OwnershipSnapshot | None
+
+
+def _torrent_file_name(file_info: Any, torrent_hash: str) -> str:
+    """Return one validated relative file name from qBittorrent metadata."""
+    name = file_info.get("name") if isinstance(file_info, dict) else getattr(file_info, "name", None)
+    if not isinstance(name, str) or not name:
+        raise SafetyCheckError(f"Torrent {torrent_hash} returned malformed file metadata")
+    return name
+
+
+def _build_ownership_snapshot(
+    client: QBittorrentClient,
+    torrents: Sequence[TorrentInfo],
+    *,
+    use_cache: bool,
+) -> OwnershipSnapshot:
+    """Read and canonicalize one complete torrent/file ownership snapshot."""
+    ownership: list[TorrentOwnership] = []
+    seen_hashes: set[str] = set()
+    for torrent in torrents:
+        torrent_hash = getattr(torrent, "hash", None)
+        name = getattr(torrent, "name", None)
+        save_path_value = getattr(torrent, "save_path", None)
+        category = getattr(torrent, "category", "")
+        if not isinstance(torrent_hash, str) or not torrent_hash or torrent_hash in seen_hashes:
+            raise SafetyCheckError("qBittorrent returned a missing or duplicate torrent hash")
+        if not isinstance(name, str) or not name:
+            raise SafetyCheckError(f"Torrent {torrent_hash} has no valid name")
+        if not isinstance(save_path_value, str) or not save_path_value:
+            raise SafetyCheckError(f"Torrent {torrent_hash} has no valid save path")
+        if not isinstance(category, str):
+            raise SafetyCheckError(f"Torrent {torrent_hash} has no valid category")
+        seen_hashes.add(torrent_hash)
+
+        try:
+            raw_files = (
+                fetch_torrent_files(client, torrent_hash, cache_scope=id(client))
+                if use_cache
+                else client.torrents_files(torrent_hash)
+            )
+        except (KeyboardInterrupt, SystemExit, SafetyCheckError):
+            raise
+        except Exception as error:
+            raise SafetyCheckError(f"Could not read file metadata for torrent {torrent_hash}") from error
+        if raw_files is None:
+            raise SafetyCheckError(f"Torrent {torrent_hash} returned no file metadata")
+        save_path = Path(save_path_value).resolve()
+        file_paths: dict[Path, Path] = {}
+        for file_info in raw_files:
+            source_path = save_path / _torrent_file_name(file_info, torrent_hash)
+            ownership_path = source_path.resolve()
+            if not ownership_path.is_relative_to(save_path):
+                raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path")
+            if ownership_path in file_paths and file_paths[ownership_path] != source_path:
+                raise SafetyCheckError(f"Torrent {torrent_hash} returned ambiguous file paths")
+            file_paths[ownership_path] = source_path
+
+        sorted_file_paths = tuple(sorted(file_paths))
+        ownership.append(
+            TorrentOwnership(
+                torrent_hash=torrent_hash,
+                name=name,
+                save_path=save_path,
+                category=category,
+                file_paths=sorted_file_paths,
+                source_paths=tuple(file_paths[path] for path in sorted_file_paths),
+            )
+        )
+    return OwnershipSnapshot(torrents=tuple(sorted(ownership, key=lambda item: item.torrent_hash)))
+
+
+def _matching_delete_tag(torrent: TorrentInfo, delete_tags: Sequence[str]) -> str | None:
+    """Return the first configured delete tag present on a torrent."""
+    tags = getattr(torrent, "tags", "")
+    if not isinstance(tags, str):
+        raise SafetyCheckError(f"Torrent {torrent.hash} has malformed tags")
+    torrent_tags = _parse_torrent_tags(tags)
+    return next((tag for tag in delete_tags if tag in torrent_tags), None)
+
+
+def build_unregistered_deletion_plan(
+    client: QBittorrentClient,
+    torrents: Sequence[TorrentInfo],
+    config: Mapping[str, Any],
+    use_delete_tags: bool,
+    delete_tags: Sequence[str],
+    delete_files: Mapping[str, bool],
+    recycle_bin: str | None,
+) -> UnregisteredDeletionPlan:
+    """Build the exact torrent and file actions used by preview and execution."""
+    if not use_delete_tags:
+        return UnregisteredDeletionPlan(deletions=(), ownership_snapshot=None)
+
+    candidates: list[tuple[TorrentInfo, str, bool]] = []
+    allow_file_deletion = config.get("use_delete_files", False) is True
+    for torrent in torrents:
+        matching_tag = _matching_delete_tag(torrent, delete_tags)
+        if matching_tag is None:
+            continue
+        candidates.append((torrent, matching_tag, allow_file_deletion and delete_files.get(matching_tag, False)))
+
+    if not candidates:
+        return UnregisteredDeletionPlan(deletions=(), ownership_snapshot=None)
+
+    needs_ownership = any(delete_requested for _torrent, _tag, delete_requested in candidates)
+    snapshot = _build_ownership_snapshot(client, torrents, use_cache=True) if needs_ownership else None
+    ownership_by_hash = {item.torrent_hash: item for item in snapshot.torrents} if snapshot is not None else {}
+    owners_by_path: dict[Path, set[str]] = defaultdict(set)
+    for ownership in ownership_by_hash.values():
+        for file_path in ownership.file_paths:
+            owners_by_path[file_path].add(ownership.torrent_hash)
+
+    planned: list[PlannedTorrentDeletion] = []
+    for torrent, matching_tag, delete_requested in candidates:
+        torrent_hash = torrent.hash
+        torrent_name = torrent.name
+        category = torrent.category if isinstance(torrent.category, str) else ""
+        if not delete_requested:
+            planned.append(
+                PlannedTorrentDeletion(
+                    torrent_hash=torrent_hash,
+                    torrent_name=torrent_name,
+                    matching_tag=matching_tag,
+                    category=category,
+                    action=DeletionAction.TORRENT_ONLY,
+                )
+            )
+            continue
+
+        ownership = ownership_by_hash[torrent_hash]
+        shared_hashes = {
+            owner_hash
+            for file_path in ownership.file_paths
+            for owner_hash in owners_by_path[file_path]
+            if owner_hash != torrent_hash
+        }
+        if shared_hashes:
+            shared_names = tuple(sorted(ownership_by_hash[item].name for item in shared_hashes))
+            planned.append(
+                PlannedTorrentDeletion(
+                    torrent_hash=torrent_hash,
+                    torrent_name=torrent_name,
+                    matching_tag=matching_tag,
+                    category=category,
+                    action=DeletionAction.PRESERVE_SHARED,
+                    shared_with=shared_names,
+                )
+            )
+            continue
+
+        if not ownership.file_paths:
+            planned.append(
+                PlannedTorrentDeletion(
+                    torrent_hash=torrent_hash,
+                    torrent_name=torrent_name,
+                    matching_tag=matching_tag,
+                    category=category,
+                    action=DeletionAction.TORRENT_ONLY,
+                )
+            )
+            continue
+
+        identities = tuple(capture_file_identity(path) for path in ownership.source_paths)
+        planned.append(
+            PlannedTorrentDeletion(
+                torrent_hash=torrent_hash,
+                torrent_name=torrent_name,
+                matching_tag=matching_tag,
+                category=category,
+                action=DeletionAction.RECYCLE_FILES if recycle_bin else DeletionAction.PERMANENT_DELETE,
+                files=identities,
+            )
+        )
+
+    return UnregisteredDeletionPlan(deletions=tuple(planned), ownership_snapshot=snapshot)
+
+
+def _revalidate_ownership_snapshot(client: QBittorrentClient, expected: OwnershipSnapshot) -> None:
+    """Fail closed unless the final uncached qBittorrent ownership state matches."""
+    try:
+        current_torrents = client.torrents.info()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as error:
+        raise SafetyCheckError("Could not refresh qBittorrent state before deletion") from error
+    if current_torrents is None:
+        raise SafetyCheckError("qBittorrent returned no torrent list during final deletion validation")
+    current = _build_ownership_snapshot(client, current_torrents, use_cache=False)
+    if current != expected:
+        raise SafetyCheckError("qBittorrent ownership state changed after deletion preview")
+
+
+def compile_patterns(unregistered: list[str]) -> tuple[set[str], set[str]]:
     """
     Pre-compile patterns into two sets for efficient matching.
 
@@ -47,7 +300,7 @@ def compile_patterns(unregistered: List[str]) -> Tuple[Set[str], Set[str]]:
     return exact_matches, starts_with_patterns
 
 
-def check_unregistered_message(tracker, exact_matches: Set[str], starts_with_patterns: Set[str]) -> bool:
+def check_unregistered_message(tracker: Any, exact_matches: set[str], starts_with_patterns: set[str]) -> bool:
     """
     Check if tracker message matches any unregistered pattern.
 
@@ -73,7 +326,7 @@ def check_unregistered_message(tracker, exact_matches: Set[str], starts_with_pat
     return False
 
 
-def process_torrent(torrent, exact_matches: Set[str], starts_with_patterns: Set[str]) -> int:
+def process_torrent(torrent: Any, exact_matches: set[str], starts_with_patterns: set[str]) -> int:
     """
     Count unregistered trackers for a torrent.
 
@@ -93,15 +346,28 @@ def process_torrent(torrent, exact_matches: Set[str], starts_with_patterns: Set[
     return unregistered_count
 
 
-def update_torrent_file_paths(torrent_file_paths, torrent):
+def update_torrent_file_paths(torrent_file_paths: dict[str, list[str]], torrent: TorrentInfo) -> None:
     torrent_file_paths.setdefault(torrent.save_path, []).append(torrent.hash)
 
 
-def delete_torrents_and_files(  # noqa: C901
-    client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents=None, recycle_bin: Optional[str] = None
-):
-    """
-    Delete torrents with specific tags. Pass torrents to avoid redundant API call.
+def _parse_torrent_tags(tags: str) -> set[str]:
+    """Parse qBittorrent's comma-separated tag value into exact tags."""
+    return {tag.strip() for tag in tags.split(",") if tag.strip()}
+
+
+def delete_torrents_and_files(
+    client: QBittorrentClient,
+    config: Mapping[str, Any],
+    use_delete_tags: bool,
+    delete_tags: Sequence[str],
+    delete_files: Mapping[str, bool],
+    dry_run: bool,
+    torrents: Sequence[TorrentInfo] | None = None,
+    recycle_bin: str | None = None,
+    *,
+    plan: UnregisteredDeletionPlan | None = None,
+) -> None:
+    """Execute a confirmed torrent deletion plan.
 
     Args:
         client: qBittorrent client instance
@@ -112,114 +378,142 @@ def delete_torrents_and_files(  # noqa: C901
         dry_run: If True, only simulate the operation
         torrents: Optional list of torrents (avoids redundant API call)
         recycle_bin: Optional path to recycle bin directory
+        plan: Optional plan produced during impact analysis. When omitted, the
+            same plan is built immediately before execution.
     """
-    if use_delete_tags:
-        # Use provided torrents list to avoid redundant API call
+    if not use_delete_tags:
+        return
+
+    if plan is None:
         if torrents is None:
-            torrents = client.torrents.info()
+            fetched_torrents = client.torrents.info()
+            if fetched_torrents is None:
+                raise SafetyCheckError("qBittorrent returned no torrent list; refusing torrent deletion")
+            resolved_torrents = fetched_torrents
+        else:
+            resolved_torrents = torrents
+        plan = build_unregistered_deletion_plan(
+            client,
+            resolved_torrents,
+            config,
+            use_delete_tags,
+            delete_tags,
+            delete_files,
+            recycle_bin,
+        )
 
-        recycle_bin_path = Path(recycle_bin) if recycle_bin else None
+    if not plan.deletions:
+        return
 
-        for torrent in torrents:
-            torrent_deleted = False
-            for tag in delete_tags:
-                if tag in torrent.tags:
-                    # Determine if we should delete files
-                    should_delete_files = delete_files.get(tag, False)
+    recycle_bin_path = Path(recycle_bin) if recycle_bin else None
+    file_actions = {
+        DeletionAction.RECYCLE_FILES,
+        DeletionAction.PERMANENT_DELETE,
+    }
+    for deletion in plan.deletions:
+        if deletion.action in file_actions:
+            for identity in deletion.files:
+                verify_file_identity(identity)
 
-                    if should_delete_files:
-                        # Files need to be deleted
-                        if recycle_bin_path:
-                            # Move files to recycle bin instead of permanent deletion
-                            if not dry_run:
-                                # Get file paths BEFORE deleting the torrent
-                                file_paths = get_torrent_file_paths(client, torrent.hash)
+    if dry_run:
+        for deletion in plan.deletions:
+            if deletion.action is DeletionAction.TORRENT_ONLY:
+                logging.info("[Dry Run] Would delete torrent '%s' but keep its files.", deletion.torrent_name)
+            elif deletion.action is DeletionAction.PRESERVE_SHARED:
+                logging.info(
+                    "[Dry Run] Would delete torrent '%s' but preserve files shared with: %s.",
+                    deletion.torrent_name,
+                    ", ".join(deletion.shared_with),
+                )
+            elif deletion.action is DeletionAction.RECYCLE_FILES:
+                assert recycle_bin_path is not None
+                identities = {identity.path: identity for identity in deletion.files}
+                move_files_to_recycle_bin(
+                    list(identities),
+                    recycle_bin_path,
+                    "unregistered",
+                    deletion.category or "uncategorized",
+                    dry_run=True,
+                    expected_identities=identities,
+                )
+                logging.info("[Dry Run] Would delete torrent '%s' after recycling its files.", deletion.torrent_name)
+            else:
+                logging.info("[Dry Run] Would permanently delete torrent '%s' and its files.", deletion.torrent_name)
+        return
 
-                                if file_paths:
-                                    # CRITICAL: Check for cross-seeding before moving files
-                                    is_cross_seeded, cross_seeded_torrents = check_cross_seeding(
-                                        client, file_paths, exclude_hash=torrent.hash
-                                    )
+    if plan.ownership_snapshot is not None:
+        _revalidate_ownership_snapshot(client, plan.ownership_snapshot)
 
-                                    if is_cross_seeded:
-                                        # Files are being used by other torrents - skip moving files
-                                        logging.warning(
-                                            f"Skipping file deletion for torrent '{torrent.name}' (hash: {torrent.hash}) - "
-                                            f"files are cross-seeded by {len(cross_seeded_torrents)} other torrent(s): "
-                                            f"{', '.join(cross_seeded_torrents[:3])}"
-                                            + (
-                                                f" and {len(cross_seeded_torrents) - 3} more"
-                                                if len(cross_seeded_torrents) > 3
-                                                else ""
-                                            )
-                                        )
-                                        # Delete torrent only, keep files
-                                        client.torrents.delete(torrent.hash, delete_files=False)
-                                        logging.info(
-                                            f"Deleted torrent '{torrent.name}' (hash: {torrent.hash}) but kept files due to cross-seeding."
-                                        )
-                                    else:
-                                        # No cross-seeding detected - safe to move files
-                                        # Move files to recycle bin with hybrid structure
-                                        # Unregistered files go to: /recycle_bin/unregistered/{category}/[original_path]
-                                        category = torrent.category if torrent.category else "uncategorized"
+    permanent_deletions = [deletion for deletion in plan.deletions if deletion.action is DeletionAction.PERMANENT_DELETE]
+    if permanent_deletions:
+        permanent_hashes = [deletion.torrent_hash for deletion in permanent_deletions]
+        client.torrents_delete(torrent_hashes=permanent_hashes, delete_files=True)
+        for deletion in permanent_deletions:
+            logging.info("Permanently deleted torrent '%s' and its files.", deletion.torrent_name)
 
-                                        success_count, failed = move_files_to_recycle_bin(
-                                            file_paths=file_paths,
-                                            recycle_bin_path=recycle_bin_path,
-                                            deletion_type="unregistered",
-                                            category=category,
-                                            dry_run=False,
-                                        )
-
-                                        if failed:
-                                            logging.warning(
-                                                f"Failed to move {len(failed)} files to recycle bin for torrent '{torrent.name}'"
-                                            )
-
-                                        logging.info(
-                                            f"Moved {success_count} files to recycle bin (unregistered/{category}) for torrent '{torrent.name}'"
-                                        )
-
-                                        # Delete torrent WITHOUT files (we already moved them)
-                                        client.torrents.delete(torrent.hash, delete_files=False)
-                                        logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash}.")
-                                else:
-                                    # No files found - just delete the torrent
-                                    client.torrents.delete(torrent.hash, delete_files=False)
-                                    logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash}.")
-                            else:
-                                logging.info(
-                                    f"[Dry Run] Would move files to recycle bin and delete torrent '{torrent.name}' with hash {torrent.hash}."
-                                )
-                        else:
-                            # No recycle bin - permanent deletion
-                            if not dry_run:
-                                client.torrents.delete(torrent.hash, delete_files=True)
-                                logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash} and its files.")
-                            else:
-                                logging.info(
-                                    f"[Dry Run] Would delete torrent '{torrent.name}' with hash {torrent.hash} and its files."
-                                )
-                    else:
-                        # Delete torrent only, keep files
-                        if not dry_run:
-                            client.torrents.delete(torrent.hash, delete_files=False)
-                            logging.info(f"Deleted torrent '{torrent.name}' with hash {torrent.hash}.")
-                        else:
-                            logging.info(f"[Dry Run] Would delete torrent '{torrent.name}' with hash {torrent.hash}.")
-
-                    torrent_deleted = True
-                    break  # Exit the inner loop after deleting the torrent
-
-            # Skip to next torrent if this one was deleted (object is now stale)
-            if torrent_deleted:
+    keep_file_hashes: list[str] = []
+    for deletion in plan.deletions:
+        if deletion.action is DeletionAction.PERMANENT_DELETE:
+            continue
+        if deletion.action is DeletionAction.RECYCLE_FILES:
+            assert recycle_bin_path is not None
+            identities = {identity.path: identity for identity in deletion.files}
+            move_records: list[RecycleBinMove] = []
+            success_count, failed = move_files_to_recycle_bin(
+                list(identities),
+                recycle_bin_path,
+                "unregistered",
+                deletion.category or "uncategorized",
+                all_or_nothing=True,
+                expected_identities=identities,
+                move_records=move_records,
+            )
+            if failed or success_count != len(identities):
+                logging.error(
+                    "Preserving torrent '%s' because not all files were moved safely (%d/%d moved).",
+                    deletion.torrent_name,
+                    success_count,
+                    len(identities),
+                )
                 continue
+            try:
+                client.torrents_delete(torrent_hashes=[deletion.torrent_hash], delete_files=False)
+            except BaseException:
+                rollback_failures = rollback_recycle_bin_moves(move_records)
+                if rollback_failures:
+                    logging.critical(
+                        "Torrent '%s' remains active and %d recycled files could not be restored.",
+                        deletion.torrent_name,
+                        len(rollback_failures),
+                    )
+                raise
+            logging.info("Moved %d files and deleted torrent '%s'.", success_count, deletion.torrent_name)
+            continue
+        elif deletion.action is DeletionAction.PRESERVE_SHARED:
+            logging.warning(
+                "Preserving files for torrent '%s' (hash: %s); shared with: %s",
+                deletion.torrent_name,
+                deletion.torrent_hash,
+                ", ".join(deletion.shared_with),
+            )
+        keep_file_hashes.append(deletion.torrent_hash)
+
+    if keep_file_hashes:
+        client.torrents_delete(torrent_hashes=keep_file_hashes, delete_files=False)
 
 
 def unregistered_checks(  # noqa: C901
-    client, torrents, config, use_delete_tags, delete_tags, delete_files, dry_run, recycle_bin: Optional[str] = None
-):
+    client: QBittorrentClient,
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
+    use_delete_tags: bool,
+    delete_tags: list[str],
+    delete_files: dict[str, bool],
+    dry_run: bool,
+    recycle_bin: str | None = None,
+    *,
+    deletion_plan: UnregisteredDeletionPlan | None = None,
+) -> tuple[dict[str, list[str]], dict[str, int]]:
     """
     Check torrents for unregistered status and apply appropriate tags.
 
@@ -234,16 +528,26 @@ def unregistered_checks(  # noqa: C901
         delete_files: Dictionary mapping tags to delete_files boolean
         dry_run: If True, don't make actual changes
         recycle_bin: Optional path to recycle bin directory
+        deletion_plan: Optional deletion plan confirmed during impact preview.
 
     Returns:
         Tuple of (torrent_file_paths, unregistered_counts_per_path)
     """
-    torrent_file_paths = {}
-    unregistered_counts_per_path = {}
-    unregistered_torrents_per_path = {}  # Track number of torrents (not tracker hits) with unregistered trackers
-    tag_counts = {}
+    torrent_file_paths: dict[str, list[str]] = {}
+    unregistered_counts_per_path: dict[str, int] = {}
+    unregistered_torrents_per_path: dict[str, int] = {}
+    tag_counts: dict[str, int] = {}
     default_tag = config["default_unregistered_tag"]
     cross_seeding_tag = config["cross_seeding_tag"]
+    resolved_deletion_plan = deletion_plan or build_unregistered_deletion_plan(
+        client,
+        torrents,
+        config,
+        use_delete_tags,
+        delete_tags,
+        delete_files,
+        recycle_bin,
+    )
 
     # Pre-compile patterns for efficient matching
     unregistered_patterns = config.get("unregistered", [])
@@ -251,7 +555,7 @@ def unregistered_checks(  # noqa: C901
 
     # First pass: Collect all torrent data and unregistered status
     # Store per-path lists of unregistered torrent hashes for second pass
-    unregistered_hashes_per_path = {}
+    unregistered_hashes_per_path: dict[str, list[str]] = {}
 
     for torrent in tqdm(torrents, desc="Checking for unregistered torrents", unit="torrent"):
         update_torrent_file_paths(torrent_file_paths, torrent)
@@ -273,8 +577,8 @@ def unregistered_checks(  # noqa: C901
             unregistered_hashes_per_path[torrent.save_path].append(torrent.hash)
 
     # Second pass: Now that we have complete per-path counts, assign tags correctly
-    default_tag_hashes = []
-    cross_seeding_tag_hashes = []
+    default_tag_hashes: list[str] = []
+    cross_seeding_tag_hashes: list[str] = []
 
     for save_path, unregistered_hashes in unregistered_hashes_per_path.items():
         # Now we can accurately check if ALL torrents in this path have unregistered trackers
@@ -313,7 +617,17 @@ def unregistered_checks(  # noqa: C901
         if cross_seeding_tag_hashes:
             logging.info(f"[Dry Run] Would add tag '{cross_seeding_tag}' to {len(cross_seeding_tag_hashes)} torrents")
 
-    delete_torrents_and_files(client, config, use_delete_tags, delete_tags, delete_files, dry_run, torrents, recycle_bin)
+    delete_torrents_and_files(
+        client,
+        config,
+        use_delete_tags,
+        delete_tags,
+        delete_files,
+        dry_run,
+        torrents,
+        recycle_bin,
+        plan=resolved_deletion_plan,
+    )
 
     for tag, count in tag_counts.items():
         logging.info("Tag: %s, Count: %d", tag, count)

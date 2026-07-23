@@ -197,6 +197,7 @@ class TestUnregisteredRecycleBin:
     def mock_client(self):
         client = MagicMock()
         client.torrents.delete = MagicMock()
+        client.torrents.info.return_value = []
         client.torrents_info = MagicMock(return_value=[])
         client.torrents_files = MagicMock(return_value=[])
         return client
@@ -207,12 +208,20 @@ class TestUnregisteredRecycleBin:
             "default_unregistered_tag": "unregistered",
             "cross_seeding_tag": "unregistered:crossseeding",
             "unregistered": ["unregistered"],
+            "use_delete_files": True,
         }
+
+    @pytest.fixture(autouse=True)
+    def clear_file_cache(self):
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
+        yield
+        clear_cache()
 
     def test_unregistered_deletion_with_recycle_bin(self, mock_client, config, tmp_path):
         """Test that unregistered torrent files are moved to recycle bin."""
         from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
-        from pathlib import Path
 
         # Create test file structure
         source_dir = tmp_path / "torrents"
@@ -230,18 +239,9 @@ class TestUnregisteredRecycleBin:
         mock_torrent.tags = "unregistered"
         mock_torrent.save_path = str(source_dir)
 
-        # Mock torrents_info to return file list
         mock_file = MagicMock()
         mock_file.name = "movie.mkv"
-
-        mock_torrent_info = MagicMock()
-        mock_torrent_info.save_path = str(source_dir)
-        mock_torrent_info.hash = "abc123"
-
-        # Setup mock to handle cross-seeding check
-        # First call: get torrent files
-        # Second call: get all torrents for cross-seed check (return empty list to simulate no cross-seeding)
-        mock_client.torrents_info.side_effect = [[mock_torrent_info], []]
+        mock_client.torrents.info.return_value = [mock_torrent]
         mock_client.torrents_files.return_value = [mock_file]
 
         # Run deletion with recycle bin
@@ -257,7 +257,7 @@ class TestUnregisteredRecycleBin:
         )
 
         # Verify torrent was deleted WITHOUT files
-        mock_client.torrents.delete.assert_called_once_with("abc123", delete_files=False)
+        mock_client.torrents_delete.assert_called_once_with(torrent_hashes=["abc123"], delete_files=False)
 
         # Verify file was moved to recycle bin with hybrid structure
         # Should be: recycle_bin/unregistered/movies/[original_path]
@@ -270,14 +270,24 @@ class TestUnregisteredRecycleBin:
         assert moved_files[0].read_text() == "test content"
         assert not test_file.exists()
 
-    def test_unregistered_deletion_without_recycle_bin(self, mock_client, config):
+    def test_unregistered_deletion_without_recycle_bin(self, mock_client, config, tmp_path):
         """Test permanent deletion when no recycle bin is configured."""
         from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+
+        source_dir = tmp_path / "torrents"
+        source_dir.mkdir()
+        (source_dir / "movie.mkv").write_text("content")
 
         mock_torrent = MagicMock()
         mock_torrent.name = "Test Movie"
         mock_torrent.hash = "abc123"
         mock_torrent.tags = "unregistered"
+        mock_torrent.save_path = str(source_dir)
+        mock_torrent.category = "movies"
+        mock_file = MagicMock(name="file")
+        mock_file.name = "movie.mkv"
+        mock_client.torrents.info.return_value = [mock_torrent]
+        mock_client.torrents_files.return_value = [mock_file]
 
         delete_torrents_and_files(
             client=mock_client,
@@ -291,7 +301,34 @@ class TestUnregisteredRecycleBin:
         )
 
         # Verify torrent was deleted WITH files (permanent deletion)
-        mock_client.torrents.delete.assert_called_once_with("abc123", delete_files=True)
+        mock_client.torrents_delete.assert_called_once_with(torrent_hashes=["abc123"], delete_files=True)
+
+    def test_permanent_deletion_preserves_cross_seeded_files(self, mock_client, config, tmp_path):
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+
+        source_dir = tmp_path / "torrents"
+        source_dir.mkdir()
+        (source_dir / "movie.mkv").write_text("content")
+        source = MagicMock(hash="source", tags="unregistered", save_path=str(source_dir), category="movies")
+        source.name = "source"
+        peer = MagicMock(hash="peer", tags="", save_path=str(source_dir), category="movies")
+        peer.name = "peer"
+        file_info = MagicMock()
+        file_info.name = "movie.mkv"
+        mock_client.torrents.info.return_value = [source, peer]
+        mock_client.torrents_files.return_value = [file_info]
+
+        delete_torrents_and_files(
+            mock_client,
+            config,
+            True,
+            ["unregistered"],
+            {"unregistered": True},
+            False,
+            [source, peer],
+        )
+
+        mock_client.torrents_delete.assert_called_once_with(torrent_hashes=["source"], delete_files=False)
 
     def test_unregistered_deletion_dry_run_with_recycle_bin(self, mock_client, config, tmp_path, caplog):
         """Test dry run mode with recycle bin."""
@@ -302,11 +339,19 @@ class TestUnregisteredRecycleBin:
 
         recycle_bin = tmp_path / "recycle_bin"
 
+        source_dir = tmp_path / "torrents"
+        source_dir.mkdir()
+        (source_dir / "movie.mkv").write_text("content")
         mock_torrent = MagicMock()
         mock_torrent.name = "Test Movie"
         mock_torrent.hash = "abc123"
         mock_torrent.category = "movies"
         mock_torrent.tags = "unregistered"
+        mock_torrent.save_path = str(source_dir)
+        mock_file = MagicMock()
+        mock_file.name = "movie.mkv"
+        mock_client.torrents.info.return_value = [mock_torrent]
+        mock_client.torrents_files.return_value = [mock_file]
 
         delete_torrents_and_files(
             client=mock_client,
@@ -320,15 +365,100 @@ class TestUnregisteredRecycleBin:
         )
 
         # Verify nothing was actually deleted
-        mock_client.torrents.delete.assert_not_called()
+        mock_client.torrents_delete.assert_not_called()
 
         # Verify dry run log message
-        assert "Would move files to recycle bin" in caplog.text
+        assert "Would move to recycle bin" in caplog.text
+
+    def test_delete_tag_matching_is_exact(self, mock_client, config):
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+
+        torrent = MagicMock(hash="hash", tags="unregistered, other")
+        torrent.name = "torrent"
+
+        delete_torrents_and_files(
+            mock_client,
+            config,
+            True,
+            ["reg"],
+            {"reg": False},
+            False,
+            [torrent],
+        )
+
+        mock_client.torrents_delete.assert_not_called()
+
+    def test_global_file_deletion_gate_preserves_files(self, mock_client, config):
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+
+        torrent = MagicMock(hash="hash", tags=" first, unregistered ,third ")
+        torrent.name = "torrent"
+        gated_config = {**config, "use_delete_files": False}
+
+        delete_torrents_and_files(
+            mock_client,
+            gated_config,
+            True,
+            ["unregistered"],
+            {"unregistered": True},
+            False,
+            [torrent],
+        )
+
+        mock_client.torrents_delete.assert_called_once_with(torrent_hashes=["hash"], delete_files=False)
+
+    @pytest.mark.parametrize(
+        "failure",
+        [ConnectionError("offline"), TimeoutError("timeout"), ValueError("malformed")],
+    )
+    def test_file_discovery_failure_aborts_all_deletion(self, mock_client, config, failure, tmp_path):
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+        from qbitunregistered.file_operations import SafetyCheckError
+
+        torrent = MagicMock(hash="hash", tags="unregistered", save_path=str(tmp_path), category="")
+        torrent.name = "torrent"
+        mock_client.torrents_files.side_effect = failure
+
+        with pytest.raises(SafetyCheckError):
+            delete_torrents_and_files(
+                mock_client,
+                config,
+                True,
+                ["unregistered"],
+                {"unregistered": True},
+                False,
+                [torrent],
+            )
+
+        mock_client.torrents_delete.assert_not_called()
+
+    def test_missing_torrent_file_aborts_all_deletion(self, mock_client, config, tmp_path):
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+        from qbitunregistered.file_operations import SafetyCheckError
+
+        torrent = MagicMock(hash="hash", tags="unregistered", save_path=str(tmp_path), category="")
+        torrent.name = "torrent"
+        file_info = MagicMock()
+        file_info.name = "missing.mkv"
+        mock_client.torrents_info.return_value = [torrent]
+        mock_client.torrents_files.return_value = [file_info]
+
+        with pytest.raises(SafetyCheckError):
+            delete_torrents_and_files(
+                mock_client,
+                config,
+                True,
+                ["unregistered"],
+                {"unregistered": True},
+                False,
+                [torrent],
+            )
+
+        mock_client.torrents_delete.assert_not_called()
 
     def test_category_based_organization(self, mock_client, config, tmp_path):
         """Test that files are organized by category in recycle bin."""
         from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
-        from pathlib import Path
 
         # Create test files for different categories
         source_dir = tmp_path / "torrents"
@@ -357,14 +487,7 @@ class TestUnregisteredRecycleBin:
             mock_file = MagicMock()
             mock_file.name = filename
 
-            mock_torrent_info = MagicMock()
-            mock_torrent_info.save_path = str(source_dir)
-            mock_torrent_info.hash = f"hash_{filename}"
-
-            # Setup mock to handle cross-seeding check
-            # First call: get torrent files
-            # Second call: get all torrents for cross-seed check (return empty list to simulate no cross-seeding)
-            mock_client.torrents_info.side_effect = [[mock_torrent_info], []]
+            mock_client.torrents.info.return_value = [mock_torrent]
             mock_client.torrents_files.return_value = [mock_file]
 
             delete_torrents_and_files(
@@ -411,7 +534,7 @@ class TestUnregisteredRecycleBin:
         )
 
         # Verify torrent was deleted without files
-        mock_client.torrents.delete.assert_called_once_with("abc123", delete_files=False)
+        mock_client.torrents_delete.assert_called_once_with(torrent_hashes=["abc123"], delete_files=False)
 
         # Recycle bin should not be used
         assert not recycle_bin.exists()
@@ -449,12 +572,7 @@ class TestUnregisteredRecycleBin:
         mock_file_info.name = "movie.mkv"
 
         # Setup client mocks
-        mock_client.torrents_info.side_effect = [
-            # First call: get torrent being deleted
-            [mock_unregistered_torrent],
-            # Second call: get all torrents for cross-seed check
-            [mock_unregistered_torrent, mock_cross_seeded_torrent],
-        ]
+        mock_client.torrents.info.return_value = [mock_unregistered_torrent, mock_cross_seeded_torrent]
         mock_client.torrents_files.return_value = [mock_file_info]
 
         delete_torrents_and_files(
@@ -464,12 +582,12 @@ class TestUnregisteredRecycleBin:
             delete_tags=["unregistered"],
             delete_files={"unregistered": True},
             dry_run=False,
-            torrents=[mock_unregistered_torrent],
+            torrents=[mock_unregistered_torrent, mock_cross_seeded_torrent],
             recycle_bin=str(recycle_bin),
         )
 
         # Verify torrent was deleted without files (due to cross-seeding)
-        mock_client.torrents.delete.assert_called_once_with("unreg123", delete_files=False)
+        mock_client.torrents_delete.assert_called_once_with(torrent_hashes=["unreg123"], delete_files=False)
 
         # Verify file was NOT moved (still exists in original location)
         assert test_file.exists(), "File should not be moved due to cross-seeding"
@@ -501,6 +619,8 @@ class TestUnregisteredRecycleBin:
         mock_other_torrent = MagicMock()
         mock_other_torrent.name = "Other Movie"
         mock_other_torrent.hash = "other456"
+        mock_other_torrent.tags = ""
+        mock_other_torrent.category = "movies"
         mock_other_torrent.save_path = str(tmp_path / "other")
 
         # Mock file info
@@ -511,16 +631,11 @@ class TestUnregisteredRecycleBin:
         mock_other_file_info.name = "different.mkv"
 
         # Setup client mocks
-        mock_client.torrents_info.side_effect = [
-            # First call: get torrent being deleted
-            [mock_torrent],
-            # Second call: get all torrents for cross-seed check
-            [mock_torrent, mock_other_torrent],
-        ]
-        mock_client.torrents_files.side_effect = [
-            [mock_file_info],  # Files for torrent being deleted
-            [mock_other_file_info],  # Files for other torrent (different)
-        ]
+        mock_client.torrents.info.return_value = [mock_torrent, mock_other_torrent]
+        mock_client.torrents_files.side_effect = lambda torrent_hash: {
+            "unreg123": [mock_file_info],
+            "other456": [mock_other_file_info],
+        }[torrent_hash]
 
         delete_torrents_and_files(
             client=mock_client,
@@ -529,12 +644,167 @@ class TestUnregisteredRecycleBin:
             delete_tags=["unregistered"],
             delete_files={"unregistered": True},
             dry_run=False,
-            torrents=[mock_torrent],
+            torrents=[mock_torrent, mock_other_torrent],
             recycle_bin=str(recycle_bin),
         )
 
         # Verify torrent was deleted without files (we moved them to recycle bin)
-        mock_client.torrents.delete.assert_called_once_with("unreg123", delete_files=False)
+        mock_client.torrents_delete.assert_called_once_with(torrent_hashes=["unreg123"], delete_files=False)
 
         # Verify file was moved to recycle bin
         assert not test_file.exists(), "File should be moved from original location"
+
+    def test_final_qbittorrent_state_change_aborts_before_mutation(self, mock_client, config, tmp_path):
+        """A new owner after preview invalidates permanent deletion."""
+        from qbitunregistered.file_operations import SafetyCheckError
+        from qbitunregistered.operations.unregistered_checks import (
+            build_unregistered_deletion_plan,
+            delete_torrents_and_files,
+        )
+
+        source_file = tmp_path / "movie.mkv"
+        source_file.write_text("content")
+        source = MagicMock(
+            hash="source",
+            tags="unregistered",
+            save_path=str(tmp_path),
+            category="movies",
+        )
+        source.name = "source"
+        peer = MagicMock(hash="peer", tags="", save_path=str(tmp_path), category="movies")
+        peer.name = "peer"
+        file_info = MagicMock()
+        file_info.name = "movie.mkv"
+        mock_client.torrents_files.return_value = [file_info]
+
+        plan = build_unregistered_deletion_plan(
+            mock_client,
+            [source],
+            config,
+            True,
+            ["unregistered"],
+            {"unregistered": True},
+            None,
+        )
+        mock_client.torrents.info.return_value = [source, peer]
+
+        with pytest.raises(SafetyCheckError, match="ownership state changed"):
+            delete_torrents_and_files(
+                mock_client,
+                config,
+                True,
+                ["unregistered"],
+                {"unregistered": True},
+                False,
+                [source],
+                plan=plan,
+            )
+
+        assert source_file.read_text() == "content"
+        mock_client.torrents_delete.assert_not_called()
+
+    def test_ownership_index_reads_each_torrent_once_per_snapshot(self, mock_client, config, tmp_path):
+        """Deletion candidates share one O(torrents) ownership scan."""
+        from qbitunregistered.operations.unregistered_checks import (
+            build_unregistered_deletion_plan,
+            delete_torrents_and_files,
+        )
+
+        torrents = []
+        files_by_hash = {}
+        for index in range(3):
+            torrent_dir = tmp_path / f"torrent-{index}"
+            torrent_dir.mkdir()
+            (torrent_dir / "data.bin").write_text(str(index))
+            torrent_hash = f"hash-{index}"
+            torrent = MagicMock(
+                hash=torrent_hash,
+                tags="unregistered" if index < 2 else "",
+                save_path=str(torrent_dir),
+                category="data",
+            )
+            torrent.name = torrent_hash
+            torrents.append(torrent)
+            file_info = MagicMock()
+            file_info.name = "data.bin"
+            files_by_hash[torrent_hash] = [file_info]
+
+        mock_client.torrents_files.side_effect = lambda torrent_hash: files_by_hash[torrent_hash]
+        plan = build_unregistered_deletion_plan(
+            mock_client,
+            torrents,
+            config,
+            True,
+            ["unregistered"],
+            {"unregistered": True},
+            None,
+        )
+
+        assert mock_client.torrents_files.call_count == len(torrents)
+        mock_client.torrents.info.return_value = torrents
+
+        delete_torrents_and_files(
+            mock_client,
+            config,
+            True,
+            ["unregistered"],
+            {"unregistered": True},
+            False,
+            torrents,
+            plan=plan,
+        )
+
+        assert mock_client.torrents.info.call_count == 1
+        assert mock_client.torrents_files.call_count == len(torrents) * 2
+        mock_client.torrents_delete.assert_called_once_with(
+            torrent_hashes=["hash-0", "hash-1"],
+            delete_files=True,
+        )
+
+    def test_recycle_rolls_back_when_torrent_delete_fails(self, mock_client, config, tmp_path):
+        """A live torrent retains its files when qBittorrent deletion fails."""
+        from qbitunregistered.operations.unregistered_checks import (
+            build_unregistered_deletion_plan,
+            delete_torrents_and_files,
+        )
+
+        source_file = tmp_path / "movie.mkv"
+        source_file.write_text("content")
+        recycle_bin = tmp_path / "recycle"
+        torrent = MagicMock(
+            hash="source",
+            tags="unregistered",
+            save_path=str(tmp_path),
+            category="movies",
+        )
+        torrent.name = "source"
+        file_info = MagicMock()
+        file_info.name = "movie.mkv"
+        mock_client.torrents_files.return_value = [file_info]
+        mock_client.torrents.info.return_value = [torrent]
+        plan = build_unregistered_deletion_plan(
+            mock_client,
+            [torrent],
+            config,
+            True,
+            ["unregistered"],
+            {"unregistered": True},
+            str(recycle_bin),
+        )
+        mock_client.torrents_delete.side_effect = ConnectionError("qBittorrent unavailable")
+
+        with pytest.raises(ConnectionError, match="unavailable"):
+            delete_torrents_and_files(
+                mock_client,
+                config,
+                True,
+                ["unregistered"],
+                {"unregistered": True},
+                False,
+                [torrent],
+                str(recycle_bin),
+                plan=plan,
+            )
+
+        assert source_file.read_text() == "content"
+        assert list(recycle_bin.rglob("movie.mkv")) == []

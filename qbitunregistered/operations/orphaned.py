@@ -1,11 +1,30 @@
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, cast
 from fnmatch import translate
 
 from qbitunregistered.cache import cached
-from qbitunregistered.file_operations import move_files_to_recycle_bin
+from qbitunregistered.file_operations import (
+    FileIdentity,
+    SafetyCheckError,
+    capture_file_identity,
+    move_files_to_recycle_bin,
+    verify_file_identity,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class OrphanFilePlan:
+    """Read-only set of filesystem identities confirmed as orphaned."""
+
+    files: tuple[FileIdentity, ...]
+
+    @property
+    def paths(self) -> tuple[Path, ...]:
+        """Return the confirmed paths in deterministic order."""
+        return tuple(identity.path for identity in self.files)
 
 
 @cached(ttl=300, key_prefix="app_default_save_path")
@@ -29,7 +48,7 @@ def _get_default_save_path(client, *, cache_scope: int) -> str:
 
 
 @cached(ttl=300, key_prefix="torrent_categories")
-def _get_categories(client, *, cache_scope: int) -> Dict[str, Any]:
+def _get_categories(client, *, cache_scope: int) -> dict[str, Any]:
     """
     Cached wrapper for client.torrent_categories.categories property.
     Reduces redundant API calls for category configuration.
@@ -46,12 +65,15 @@ def _get_categories(client, *, cache_scope: int) -> Dict[str, Any]:
     """
     # Runtime assertion to prevent cache contamination
     assert cache_scope is not None, "cache_scope must be provided (use id(client))"
-    return client.torrent_categories.categories
+    return cast(dict[str, Any], client.torrent_categories.categories)
 
 
 def check_files_on_disk(  # noqa: C901
-    client, torrents: List, exclude_file_patterns: Optional[List[str]] = None, exclude_dirs: Optional[List[str]] = None
-) -> List[str]:
+    client,
+    torrents: list[Any],
+    exclude_file_patterns: list[str] | None = None,
+    exclude_dirs: list[str] | None = None,
+) -> list[str]:
     """
     Identifies orphaned files on disk that are not associated with any active torrents in qBittorrent.
 
@@ -199,8 +221,25 @@ def check_files_on_disk(  # noqa: C901
     return orphaned_files
 
 
+def build_orphan_file_plan(orphaned_files: list[str]) -> OrphanFilePlan:
+    """Capture immutable identities for paths found by the orphan scan.
+
+    Raises:
+        SafetyCheckError: If any path cannot be confirmed as the same regular
+            file discovered by the scan.
+    """
+    identities = tuple(sorted((capture_file_identity(Path(path)) for path in orphaned_files), key=lambda item: item.path))
+    return OrphanFilePlan(files=identities)
+
+
 def delete_orphaned_files(  # noqa: C901
-    orphaned_files: List[str], dry_run: bool, client, torrents: Optional[List] = None, recycle_bin: Optional[str] = None
+    orphaned_files: list[str],
+    dry_run: bool,
+    client,
+    torrents: list[Any] | None = None,
+    recycle_bin: str | None = None,
+    *,
+    plan: OrphanFilePlan | None = None,
 ) -> None:
     """
     Deletes orphaned files and removes empty directories, while preserving active save paths.
@@ -212,10 +251,16 @@ def delete_orphaned_files(  # noqa: C901
         client: qBittorrent client instance
         torrents: Optional list of torrents (avoids redundant API call if provided)
         recycle_bin: Optional path to move files to instead of deleting
+        plan: Optional identity plan produced during impact analysis. When
+            omitted, identities are captured before any mutation for backward
+            compatibility.
     """
     deleted_files_count = 0
-    skipped_files = []
-    orphaned_files_set = {Path(file) for file in orphaned_files}  # Convert to Path objects for easier comparison
+    skipped_files: list[tuple[Path, str]] = []
+    resolved_plan = plan if plan is not None else build_orphan_file_plan(orphaned_files)
+    orphaned_files_set = set(resolved_plan.paths)
+    expected_identities = {identity.path: identity for identity in resolved_plan.files}
+    processed_files: set[Path] = set()
 
     # Get active save paths to prevent accidental deletion (cached to reduce API calls)
     # Use id(client) to scope cache per client instance, preventing contamination
@@ -224,8 +269,13 @@ def delete_orphaned_files(  # noqa: C901
 
     # Get save paths from all torrents (reuse provided list to avoid redundant API call)
     if torrents is None:
-        torrents = client.torrents.info()
-    active_save_paths.update(Path(torrent.save_path) for torrent in torrents)
+        fetched_torrents = client.torrents.info()
+        if fetched_torrents is None:
+            raise RuntimeError("qBittorrent returned no torrent list; refusing orphan cleanup")
+        resolved_torrents = fetched_torrents
+    else:
+        resolved_torrents = torrents
+    active_save_paths.update(Path(torrent.save_path) for torrent in resolved_torrents)
 
     # Get save paths from categories (cached to reduce API calls)
     categories = _get_categories(client, cache_scope=id(client))
@@ -261,24 +311,33 @@ def delete_orphaned_files(  # noqa: C901
             deletion_type="orphaned",
             category="uncategorized",  # Orphaned files don't have a category
             dry_run=dry_run,
+            expected_identities=expected_identities,
         )
 
         deleted_files_count = success_count
         skipped_files = failed
+        failed_paths = {path for path, _reason in failed}
+        processed_files.update(path for path in orphaned_files_set if path not in failed_paths)
     else:
         # Permanent deletion (no recycle bin)
-        for file_path in orphaned_files_set:
-            if dry_run:
-                logging.info(f"Would delete orphaned file: {file_path}")
-                deleted_files_count += 1
-            else:
-                try:
+        for identity in resolved_plan.files:
+            file_path = identity.path
+            try:
+                verify_file_identity(identity)
+                if dry_run:
+                    logging.info(f"Would delete orphaned file: {file_path}")
+                    deleted_files_count += 1
+                    processed_files.add(file_path)
+                else:
                     file_path.unlink()
                     logging.info(f"Deleted orphaned file: {file_path}")
                     deleted_files_count += 1
-                except Exception:
-                    logging.exception(f"Error processing {file_path}")
-                    skipped_files.append((file_path, "see logs for details"))
+                    processed_files.add(file_path)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except (OSError, SafetyCheckError) as error:
+                logging.error("Refusing to delete changed orphaned file %s: %s", file_path, error)
+                skipped_files.append((file_path, str(error)))
 
     # Determine which directories would be empty
     empty_dirs_to_delete = set()
@@ -294,7 +353,7 @@ def delete_orphaned_files(  # noqa: C901
                 logging.exception(f"Unexpected error accessing directory {dir_path}")
                 break
 
-            remaining_files = existing_files - orphaned_files_set  # What's left after simulated deletion
+            remaining_files = existing_files - processed_files  # What's left after confirmed deletion
 
             if not remaining_files:  # If directory would be empty
                 empty_dirs_to_delete.add(dir_path)

@@ -2,9 +2,9 @@
 
 from pathlib import Path
 from fnmatch import fnmatch
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
-from qbitunregistered.operations.orphaned import delete_orphaned_files
+from qbitunregistered.operations.orphaned import build_orphan_file_plan, delete_orphaned_files
 
 
 class TestFileExclusionPatterns:
@@ -188,6 +188,62 @@ class TestRecycleBin:
         delete_orphaned_files(orphaned_files, dry_run=False, client=mock_client, recycle_bin=None)
 
         assert not dummy_file.exists()
+
+    def test_permanent_delete_refuses_file_substituted_after_preview(self, mock_client, tmp_path, caplog):
+        """A confirmed orphan identity cannot authorize a replacement file."""
+        source = tmp_path / "orphaned.mkv"
+        source.write_text("previewed")
+        plan = build_orphan_file_plan([str(source)])
+
+        source.unlink()
+        source.write_text("replacement")
+
+        delete_orphaned_files(
+            [str(source)],
+            dry_run=False,
+            client=mock_client,
+            plan=plan,
+        )
+
+        assert source.read_text() == "replacement"
+        assert "Planned file changed after preview" in caplog.text
+
+    def test_recycle_refuses_file_substituted_after_preview(self, mock_client, tmp_path, caplog):
+        """Recycle execution cannot move a regular file substituted after preview."""
+        source = tmp_path / "orphaned.mkv"
+        recycle_bin = tmp_path / "recycle"
+        source.write_text("previewed")
+        plan = build_orphan_file_plan([str(source)])
+
+        source.unlink()
+        source.write_text("replacement")
+
+        delete_orphaned_files(
+            [str(source)],
+            dry_run=False,
+            client=mock_client,
+            recycle_bin=str(recycle_bin),
+            plan=plan,
+        )
+
+        assert source.read_text() == "replacement"
+        assert list(recycle_bin.rglob("orphaned.mkv")) == []
+        assert "Planned file changed after preview" in caplog.text
+
+    def test_dry_run_consumes_confirmed_plan_without_mutation(self, mock_client, tmp_path):
+        """Dry-run validates and reports the same immutable plan."""
+        source = tmp_path / "orphaned.mkv"
+        source.write_text("previewed")
+        plan = build_orphan_file_plan([str(source)])
+
+        delete_orphaned_files(
+            [str(source)],
+            dry_run=True,
+            client=mock_client,
+            plan=plan,
+        )
+
+        assert source.read_text() == "previewed"
 
     def test_dry_run_recycle_bin(self, mock_client, caplog, tmp_path):
         """Test dry run with recycle bin."""

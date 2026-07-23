@@ -175,9 +175,52 @@ class TestConfigValidation:
             "username": "admin",
             "password": "password",
             "scheduled_times": ["09:00", "15:30", "23:59:59"],
+            "scheduled_operations": ["unregistered", "orphaned"],
         }
         # Should not raise any exception
         validate_config(config)
+
+    @pytest.mark.parametrize("value", ["false", 1, None])
+    def test_delete_files_values_must_be_boolean(self, value):
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "delete_files": {"unregistered": value},
+        }
+
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+
+        assert "'delete_files[unregistered]' must be a boolean" in str(exc_info.value)
+
+    def test_scheduled_times_require_operations(self):
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "scheduled_times": ["09:00"],
+            "scheduled_operations": [],
+        }
+
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+
+        assert "at least one operation" in str(exc_info.value)
+
+    def test_unknown_scheduled_operation_is_rejected(self):
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "scheduled_times": ["09:00"],
+            "scheduled_operations": ["delete_everything"],
+        }
+
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+
+        assert "Unknown scheduled operation" in str(exc_info.value)
 
     def test_valid_tracker_tags_with_limits(self):
         """Test that valid tracker_tags with seed limits pass validation."""
@@ -371,6 +414,10 @@ class TestDryRunResolution:
 
     def test_defaults_to_false(self):
         assert resolve_dry_run(None, {}) is False
+
+    def test_invalid_config_value_is_rejected(self):
+        with pytest.raises(ConfigValidationError):
+            resolve_dry_run(None, {"dry_run": "true"})
 
 
 class TestExcludePatternValidation:

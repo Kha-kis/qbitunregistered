@@ -8,11 +8,13 @@ import time
 from typing import Dict, List, Optional, Any, Callable
 
 try:
-    import apprise
-
-    APPRISE_AVAILABLE = True
+    import apprise as _apprise
 except ImportError:
+    apprise: Any = None
     APPRISE_AVAILABLE = False
+else:
+    apprise = _apprise
+    APPRISE_AVAILABLE = True
 
 
 class NotifiarrError(Exception):
@@ -46,7 +48,7 @@ class NotificationManager:
 
         self.apprise_obj = None
         if self.apprise_url:
-            if APPRISE_AVAILABLE:
+            if APPRISE_AVAILABLE and apprise is not None:
                 self.apprise_obj = apprise.Apprise()
                 self.apprise_obj.add(self.apprise_url)
             else:

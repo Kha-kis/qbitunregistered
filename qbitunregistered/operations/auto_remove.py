@@ -18,27 +18,31 @@ def auto_remove(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_
 
     total_removed = 0
     total_torrents = len(torrents)
-    completed_count = 0
+    completed_hashes: list[str] = []
 
     logging.info(f"Total torrents found: {total_torrents}")
 
     for torrent in tqdm(torrents, desc="Checking torrents for removal", unit="torrent"):
         try:
             if torrent.state_enum.is_complete:
-                completed_count += 1
+                completed_hashes.append(torrent.hash)
                 if dry_run:
                     logging.info(f"[Dry Run] Would remove completed torrent: {torrent.name}")
-                    total_removed += 1
-                else:
-                    try:
-                        # Use torrents_delete with hash directly (not in list)
-                        client.torrents_delete(torrent_hashes=torrent.hash, delete_files=False)
-                        logging.info(f"Removed completed torrent: {torrent.name}")
-                        total_removed += 1
-                    except Exception as e:
-                        logging.error(f"Error removing torrent '{torrent.name}': {e}")
         except Exception as e:
             logging.error(f"Error checking torrent '{getattr(torrent, 'name', 'unknown')}': {e}")
+
+    completed_count = len(completed_hashes)
+    if completed_hashes:
+        if dry_run:
+            total_removed = completed_count
+        else:
+            try:
+                client.torrents_delete(torrent_hashes=completed_hashes, delete_files=False)
+            except Exception:
+                logging.exception("Failed to remove completed torrent batch")
+                raise
+            total_removed = completed_count
+            logging.info("Removed %d completed torrents in one batch", total_removed)
 
     if total_removed == 0:
         logging.info("No completed torrents were removed.")

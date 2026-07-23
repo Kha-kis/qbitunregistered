@@ -1,9 +1,12 @@
 """Tests for file operations utilities."""
 
+import errno
+import os
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from qbitunregistered.file_operations import (
+    SafetyCheckError,
     check_cross_seeding,
     move_files_to_recycle_bin,
     get_torrent_file_paths,
@@ -130,18 +133,30 @@ class TestCheckCrossSeeding:
         assert len(torrents) == 0
 
     def test_error_handling(self):
-        """Test that transient errors during check don't crash and prevent file deletion."""
+        """Test that transient ownership errors are distinguishable from no overlap."""
         mock_client = MagicMock()
         # Simulate a transient connection-like error
         mock_client.torrents_info.side_effect = ConnectionError("API Error")
 
         test_files = [Path("/data/movies/movie.mkv")]
 
-        # Should not raise exception and should signal "potentially cross-seeded"
-        is_cross_seeded, torrents = check_cross_seeding(mock_client, test_files, exclude_hash="exclude123")
+        with pytest.raises(SafetyCheckError):
+            check_cross_seeding(mock_client, test_files, exclude_hash="exclude123")
 
-        assert is_cross_seeded
-        assert len(torrents) == 0
+    def test_malformed_peer_fails_closed(self):
+        mock_client = MagicMock()
+        malformed_peer = MagicMock()
+        malformed_peer.hash = "peer"
+        malformed_peer.name = "Peer"
+        malformed_peer.save_path = None
+        mock_client.torrents_info.return_value = [malformed_peer]
+
+        with pytest.raises(SafetyCheckError):
+            check_cross_seeding(
+                mock_client,
+                [Path("/data/movies/movie.mkv")],
+                exclude_hash="source",
+            )
 
 
 class TestMoveFilesToRecycleBin:
@@ -190,6 +205,157 @@ class TestMoveFilesToRecycleBin:
         # Should have replaced invalid chars
         assert sanitized_dirs[0].name.replace("_", "").replace("-", "").isalnum()
 
+    def test_repeated_collision_never_overwrites_recycled_files(self, tmp_path):
+        recycle_bin = tmp_path / "recycle_bin"
+        source = tmp_path / "test.txt"
+
+        with patch("qbitunregistered.file_operations.datetime") as mock_datetime:
+            mock_datetime.now.return_value.strftime.return_value = "20260723_120000"
+            for contents in ("first", "second", "third"):
+                source.write_text(contents)
+                success_count, failed = move_files_to_recycle_bin(
+                    [source],
+                    recycle_bin,
+                    "orphaned",
+                )
+                assert success_count == 1
+                assert failed == []
+
+        recycled = sorted(recycle_bin.rglob("test*.txt"))
+        assert [path.read_text() for path in recycled] == ["first", "second", "third"]
+
+    def test_all_or_nothing_rolls_back_prior_moves(self, tmp_path):
+        from qbitunregistered import file_operations
+
+        recycle_bin = tmp_path / "recycle_bin"
+        first = tmp_path / "first.txt"
+        second = tmp_path / "second.txt"
+        first.write_text("first")
+        second.write_text("second")
+        real_move = file_operations._move_without_overwrite
+
+        def fail_second_move(source, destination):
+            if source == second:
+                raise OSError("simulated move failure")
+            return real_move(source, destination)
+
+        with patch("qbitunregistered.file_operations._move_without_overwrite", side_effect=fail_second_move):
+            success_count, failed = move_files_to_recycle_bin(
+                [first, second],
+                recycle_bin,
+                "unregistered",
+                all_or_nothing=True,
+            )
+
+        assert success_count == 0
+        assert len(failed) == 1
+        assert first.read_text() == "first"
+        assert second.read_text() == "second"
+        assert not list(recycle_bin.rglob("*.txt"))
+
+    def test_destination_race_never_overwrites_existing_file(self, tmp_path):
+        from qbitunregistered.file_operations import _move_without_overwrite
+
+        source = tmp_path / "source.txt"
+        destination = tmp_path / "destination.txt"
+        source.write_text("source")
+        destination.write_text("existing")
+
+        with pytest.raises(FileExistsError):
+            _move_without_overwrite(source, destination)
+
+        assert source.read_text() == "source"
+        assert destination.read_text() == "existing"
+
+    def test_source_replacement_race_preserves_replacement(self, tmp_path):
+        from qbitunregistered.file_operations import _move_without_overwrite
+
+        source = tmp_path / "source.txt"
+        replacement = tmp_path / "replacement.txt"
+        destination = tmp_path / "destination.txt"
+        source.write_text("original")
+        replacement.write_text("replacement")
+        real_link = os.link
+
+        def replace_source_after_link(link_source, link_destination, **kwargs):
+            real_link(link_source, link_destination, **kwargs)
+            os.replace(replacement, source)
+
+        with (
+            patch("qbitunregistered.file_operations.os.link", side_effect=replace_source_after_link),
+            pytest.raises(OSError, match="changed"),
+        ):
+            _move_without_overwrite(source, destination)
+
+        assert source.read_text() == "replacement"
+        assert destination.read_text() == "original"
+
+    def test_source_disappearance_race_preserves_destination(self, tmp_path):
+        from qbitunregistered.file_operations import _move_without_overwrite
+
+        source = tmp_path / "source.txt"
+        destination = tmp_path / "destination.txt"
+        source.write_text("original")
+        real_link = os.link
+
+        def remove_source_after_link(link_source, link_destination, **kwargs):
+            real_link(link_source, link_destination, **kwargs)
+            source.unlink()
+
+        with (
+            patch("qbitunregistered.file_operations.os.link", side_effect=remove_source_after_link),
+            pytest.raises(OSError, match="disappeared"),
+        ):
+            _move_without_overwrite(source, destination)
+
+        assert not source.exists()
+        assert destination.read_text() == "original"
+
+    def test_cross_filesystem_source_replacement_preserves_verified_copy(self, tmp_path):
+        from qbitunregistered.file_operations import _move_without_overwrite
+
+        source = tmp_path / "source.txt"
+        replacement = tmp_path / "replacement.txt"
+        destination = tmp_path / "destination.txt"
+        source.write_text("original")
+        replacement.write_text("replacement")
+
+        def replace_source_after_copy(_directory):
+            if replacement.exists():
+                os.replace(replacement, source)
+
+        with (
+            patch(
+                "qbitunregistered.file_operations.os.link",
+                side_effect=OSError(errno.EXDEV, "cross-device link"),
+            ),
+            patch(
+                "qbitunregistered.file_operations._fsync_directory",
+                side_effect=replace_source_after_copy,
+            ),
+            pytest.raises(OSError, match="changed"),
+        ):
+            _move_without_overwrite(source, destination)
+
+        assert source.read_text() == "replacement"
+        assert destination.read_text() == "original"
+
+    def test_cross_filesystem_metadata_update_uses_open_descriptor(self, tmp_path):
+        from qbitunregistered.file_operations import _move_without_overwrite
+
+        source = tmp_path / "source.txt"
+        destination = tmp_path / "destination.txt"
+        source.write_text("original")
+
+        with patch(
+            "qbitunregistered.file_operations.os.link",
+            side_effect=OSError(errno.EXDEV, "cross-device link"),
+        ):
+            _move_without_overwrite(source, destination)
+
+        assert not source.exists()
+        assert destination.read_text() == "original"
+
 
 class TestGetTorrentFilePaths:
     """Test getting torrent file paths."""
@@ -213,7 +379,7 @@ class TestGetTorrentFilePaths:
         # Mock Path.exists() to return True
         from unittest.mock import patch
 
-        with patch.object(Path, "exists", return_value=True):
+        with patch.object(Path, "is_file", return_value=True):
             file_paths = get_torrent_file_paths(mock_client, "test_hash")
 
         assert len(file_paths) == 2
@@ -225,18 +391,16 @@ class TestGetTorrentFilePaths:
         mock_client = MagicMock()
         mock_client.torrents_info.return_value = []
 
-        file_paths = get_torrent_file_paths(mock_client, "nonexistent_hash")
-
-        assert len(file_paths) == 0
+        with pytest.raises(SafetyCheckError):
+            get_torrent_file_paths(mock_client, "nonexistent_hash")
 
     def test_error_handling(self):
         """Test error handling during file path retrieval."""
         mock_client = MagicMock()
         mock_client.torrents_info.side_effect = Exception("API Error")
 
-        file_paths = get_torrent_file_paths(mock_client, "test_hash")
-
-        assert len(file_paths) == 0
+        with pytest.raises(SafetyCheckError):
+            get_torrent_file_paths(mock_client, "test_hash")
 
 
 class TestFetchTorrentFiles:
@@ -322,14 +486,14 @@ class TestFetchTorrentFiles:
         # First call
         from unittest.mock import patch
 
-        with patch.object(Path, "exists", return_value=True):
+        with patch.object(Path, "is_file", return_value=True):
             result1 = get_torrent_file_paths(mock_client, "test_hash")
 
         # torrents_files should be called once
         assert mock_client.torrents_files.call_count == 1
 
         # Second call with same hash should use cache
-        with patch.object(Path, "exists", return_value=True):
+        with patch.object(Path, "is_file", return_value=True):
             result2 = get_torrent_file_paths(mock_client, "test_hash")
 
         # torrents_files should still be 1 (cached)

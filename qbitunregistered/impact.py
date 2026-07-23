@@ -5,12 +5,24 @@ before they are executed, giving users confidence and preventing accidental data
 """
 
 import logging
-from typing import Dict, List, Any
+import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from collections import defaultdict
+from collections.abc import Sequence
 
 from qbitunregistered.types import TorrentInfo, QBittorrentClient
 
+if TYPE_CHECKING:
+    from qbitunregistered.operations.create_hardlinks import PlannedHardLink
+    from qbitunregistered.operations.orphaned import OrphanFilePlan
+    from qbitunregistered.operations.unregistered_checks import UnregisteredDeletionPlan
+
 logger = logging.getLogger(__name__)
+
+
+class ImpactAnalysisError(RuntimeError):
+    """Raised when a complete, reliable impact preview cannot be produced."""
 
 
 class ImpactSummary:
@@ -29,15 +41,23 @@ class ImpactSummary:
         operation_details: Additional details per operation
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize an empty impact summary."""
-        self.torrents_to_delete: Dict[str, List[str]] = defaultdict(list)
-        self.torrents_to_tag: Dict[str, List[str]] = defaultdict(list)
-        self.torrents_to_pause: List[str] = []
-        self.torrents_to_resume: List[str] = []
-        self.orphaned_files: List[str] = []
+        self.torrents_to_delete: dict[str, list[str]] = defaultdict(list)
+        self.torrents_to_tag: dict[str, list[str]] = defaultdict(list)
+        self.torrents_to_pause: list[str] = []
+        self.torrents_to_resume: list[str] = []
+        self.orphaned_files: list[str] = []
         self.disk_to_free_bytes: int = 0
-        self.operation_details: Dict[str, Any] = {}
+        self.operation_details: dict[str, Any] = {}
+        self.operation_targets: dict[str, list[str]] = defaultdict(list)
+        self.hard_link_plan: list["PlannedHardLink"] | None = None
+        self.orphan_file_plan: "OrphanFilePlan | None" = None
+        self.unregistered_deletion_plan: "UnregisteredDeletionPlan | None" = None
+
+    def add_operation_target(self, operation: str, target: str) -> None:
+        """Add a concrete target for an operation."""
+        self.operation_targets[operation].append(target)
 
     def add_deletion(self, tag: str, torrent_hash: str, size_bytes: int = 0) -> None:
         """Add a torrent deletion to the impact summary.
@@ -119,7 +139,7 @@ class ImpactSummary:
 
         return len(affected)
 
-    def get_warning_messages(self) -> List[str]:
+    def get_warning_messages(self) -> list[str]:
         """Generate warning messages for potentially dangerous operations.
 
         Returns:
@@ -213,6 +233,17 @@ class ImpactSummary:
                 lines.append(f"\n💾 Disk space to free: {mb:.2f} MB")
 
         # Operation-specific details
+        if self.operation_targets:
+            has_changes = True
+            lines.append("\n🎯 Other operation targets:")
+            for operation, targets in sorted(self.operation_targets.items()):
+                lines.append(f"   - {operation}: {len(targets)}")
+                if show_details:
+                    for target in targets[:5]:
+                        lines.append(f"     {target}")
+                    if len(targets) > 5:
+                        lines.append(f"     ... and {len(targets) - 5} more")
+
         if self.operation_details:
             lines.append("\n📊 Operation Details:")
             for operation, details in sorted(self.operation_details.items()):
@@ -247,14 +278,15 @@ class ImpactSummary:
             and not self.torrents_to_pause
             and not self.torrents_to_resume
             and not self.orphaned_files
+            and not self.operation_targets
         )
 
 
 def analyze_impact(
     client: QBittorrentClient,
-    torrents: List[TorrentInfo],
-    config: Dict[str, Any],
-    operations: List[str],
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
+    operations: Sequence[str],
 ) -> ImpactSummary:
     """Analyze the potential impact of specified operations.
 
@@ -285,260 +317,249 @@ def analyze_impact(
         "tag_by_age": _analyze_tag_by_age,
         "tag_cross_seeding": _analyze_tag_cross_seeding,
         "auto_remove": _analyze_auto_remove,
+        "seeding_management": _analyze_seeding_management,
+        "auto_tmm": _analyze_auto_tmm,
+        "create_hard_links": _analyze_create_hard_links,
         "pause": _analyze_pause,
         "resume": _analyze_resume,
     }
 
     for operation in operations:
-        if operation in operation_map:
-            try:
-                logger.debug(f"Analyzing impact for operation: {operation}")
-                operation_map[operation](client, torrents, config, summary)
-            except Exception as e:
-                logger.error(f"Error analyzing {operation}: {e}", exc_info=True)
-                summary.set_operation_detail(operation, "error", str(e))
-        else:
-            logger.warning(f"Unknown operation for impact analysis: {operation}")
+        analyzer = operation_map.get(operation)
+        if analyzer is None:
+            raise ImpactAnalysisError(f"Unknown operation for impact analysis: {operation}")
+        try:
+            logger.debug("Analyzing impact for operation: %s", operation)
+            analyzer(client, torrents, config, summary)
+        except (KeyboardInterrupt, SystemExit, ImpactAnalysisError):
+            raise
+        except Exception as error:
+            raise ImpactAnalysisError(f"Could not analyze operation '{operation}'") from error
 
     return summary
 
 
 def _analyze_unregistered(
     client: QBittorrentClient,
-    torrents: List[TorrentInfo],
-    config: Dict[str, Any],
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
     summary: ImpactSummary,
 ) -> None:
-    """Analyze impact of unregistered checks operation.
-
-    Args:
-        client: qBittorrent API client
-        torrents: List of torrents
-        config: Configuration dict
-        summary: ImpactSummary to update
-    """
+    """Analyze the exact tags and deletions selected by unregistered checks."""
     from qbitunregistered.operations.unregistered_checks import (
+        DeletionAction,
+        build_unregistered_deletion_plan,
         compile_patterns,
-        check_unregistered_message,
+        process_torrent,
     )
-
-    def _fetch_trackers(cli, torrent_hash):
-        """Fetch trackers for a torrent."""
-        try:
-            return cli.torrents_trackers(torrent_hash)
-        except Exception as e:
-            logger.debug(f"Error fetching trackers for {torrent_hash}: {e}")
-            return []
 
     exact_patterns, starts_with_patterns = compile_patterns(config.get("unregistered", []))
     default_tag = config.get("default_unregistered_tag", "unregistered")
     cross_seed_tag = config.get("cross_seeding_tag", "unregistered:crossseeding")
-    use_delete = config.get("use_delete_tags", False)
-    delete_tags = set(config.get("delete_tags", []))
-
-    unregistered_count = 0
-    cross_seed_count = 0
-
+    use_delete = config.get("use_delete_tags", False) is True
+    delete_tags = config.get("delete_tags", [])
+    hashes_by_path: dict[str, list[str]] = defaultdict(list)
+    all_hashes_by_path: dict[str, list[str]] = defaultdict(list)
     for torrent in torrents:
-        try:
-            trackers = _fetch_trackers(client, torrent.hash)
-            unregistered_trackers = sum(
-                1
-                for tracker in trackers
-                if check_unregistered_message(tracker, exact_patterns, starts_with_patterns)
-                and (tracker.get("status") if isinstance(tracker, dict) else getattr(tracker, "status", None)) in (4, 5)
-            )
+        all_hashes_by_path[torrent.save_path].append(torrent.hash)
+        if process_torrent(torrent, exact_patterns, starts_with_patterns):
+            hashes_by_path[torrent.save_path].append(torrent.hash)
 
-            if unregistered_trackers > 0:
-                # Determine tag
-                total_trackers = len([t for t in trackers if t.get("url", "").startswith("http")])
-                if total_trackers > 1 and unregistered_trackers < total_trackers:
-                    tag = cross_seed_tag
-                    cross_seed_count += 1
-                else:
-                    tag = default_tag
-                    unregistered_count += 1
+    for save_path, hashes in hashes_by_path.items():
+        tag = default_tag if len(hashes) == len(all_hashes_by_path[save_path]) else cross_seed_tag
+        for torrent_hash in hashes:
+            summary.add_tagging(tag, torrent_hash)
 
-                # Add tagging impact
-                summary.add_tagging(tag, torrent.hash)
-
-                # Check if deletion configured
-                if use_delete and tag in delete_tags:
-                    # Calculate size
-                    size = 0
-                    try:
-                        torrent_info = client.torrents_info(torrent_hashes=torrent.hash)[0]
-                        size = torrent_info.get("size", 0)
-                    except (KeyboardInterrupt, SystemExit):
-                        raise
-                    except Exception as e:
-                        logger.debug(f"Error fetching size for torrent {torrent.hash}: {e}")
-
-                    summary.add_deletion(tag, torrent.hash, size)
-
-        except Exception as e:
-            logger.debug(f"Error analyzing torrent {torrent.hash}: {e}")
-
-    summary.set_operation_detail("unregistered_checks", "unregistered_found", unregistered_count)
-    summary.set_operation_detail("unregistered_checks", "cross_seeding_found", cross_seed_count)
+    summary.unregistered_deletion_plan = build_unregistered_deletion_plan(
+        client,
+        torrents,
+        config,
+        use_delete,
+        delete_tags,
+        config.get("delete_files", {}),
+        config.get("recycle_bin"),
+    )
+    action_labels = {
+        DeletionAction.TORRENT_ONLY: "delete torrent only (keep files)",
+        DeletionAction.PRESERVE_SHARED: "delete torrent only (preserve cross-seeded files)",
+        DeletionAction.RECYCLE_FILES: "recycle files, then delete torrent",
+        DeletionAction.PERMANENT_DELETE: "permanently delete torrent and files",
+    }
+    for deletion in summary.unregistered_deletion_plan.deletions:
+        size = sum(identity.size for identity in deletion.files) if deletion.action is DeletionAction.PERMANENT_DELETE else 0
+        summary.add_deletion(deletion.matching_tag, deletion.torrent_hash, size)
+        summary.add_operation_target(action_labels[deletion.action], deletion.torrent_hash)
 
 
 def _analyze_orphaned(
     client: QBittorrentClient,
-    torrents: List[TorrentInfo],
-    config: Dict[str, Any],
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
     summary: ImpactSummary,
 ) -> None:
-    """Analyze impact of orphaned files operation.
+    """Scan the filesystem and record each concrete orphan target."""
+    from qbitunregistered.operations.orphaned import build_orphan_file_plan, check_files_on_disk
 
-    Args:
-        client: qBittorrent API client
-        torrents: List of torrents
-        config: Configuration dict
-        summary: ImpactSummary to update
-    """
-    # This is a simplified version - full implementation would need to scan disk
-    # For now, we'll note that orphaned check requires actual disk scanning
-    summary.set_operation_detail(
-        "orphaned_files",
-        "note",
-        "Orphaned file detection requires disk scan - run with --orphaned to see results",
+    exclude_dirs = list(config.get("exclude_dirs", []))
+    recycle_bin = config.get("recycle_bin")
+    if recycle_bin:
+        exclude_dirs.append(str(Path(recycle_bin).resolve()))
+    orphaned_files = check_files_on_disk(
+        client,
+        list(torrents),
+        exclude_file_patterns=config.get("exclude_files", []),
+        exclude_dirs=exclude_dirs,
     )
+    summary.orphan_file_plan = build_orphan_file_plan(orphaned_files)
+    for identity in summary.orphan_file_plan.files:
+        summary.add_orphaned_file(str(identity.path), identity.size)
 
 
 def _analyze_tag_by_tracker(
     client: QBittorrentClient,
-    torrents: List[TorrentInfo],
-    config: Dict[str, Any],
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
     summary: ImpactSummary,
 ) -> None:
-    """Analyze impact of tag by tracker operation.
-
-    Args:
-        client: qBittorrent API client
-        torrents: List of torrents
-        config: Configuration dict
-        summary: ImpactSummary to update
-    """
-    from qbitunregistered.tracker_matcher import match_tracker_url
-
-    def _fetch_trackers(cli, torrent_hash):
-        """Fetch trackers for a torrent."""
-        try:
-            return cli.torrents_trackers(torrent_hash)
-        except Exception as e:
-            logger.debug(f"Error fetching trackers for {torrent_hash}: {e}")
-            return []
-
-    tracker_tags = config.get("tracker_tags", {})
-    if not tracker_tags:
-        return
+    """Record tracker tags and share-limit targets."""
+    from qbitunregistered.operations.seeding_management import find_tracker_config
 
     for torrent in torrents:
-        try:
-            trackers = _fetch_trackers(client, torrent.hash)
-            for tracker in trackers:
-                url = tracker.get("url", "")
-                if not url or not url.startswith("http"):
-                    continue
-
-                tracker_config = match_tracker_url(url, tracker_tags)
-                if tracker_config:
-                    tag = tracker_config.get("tag")
-                    if tag:
-                        summary.add_tagging(tag, torrent.hash)
-                        break
-
-        except Exception as e:
-            logger.debug(f"Error analyzing torrent {torrent.hash}: {e}")
+        tracker_config = find_tracker_config(client, torrent, config, raise_on_error=True)
+        if tracker_config is None:
+            continue
+        tag = tracker_config.get("tag")
+        if isinstance(tag, str) and tag:
+            summary.add_tagging(tag, torrent.hash)
+        if "seed_time_limit" in tracker_config or "seed_ratio_limit" in tracker_config:
+            summary.add_operation_target("share limits", torrent.hash)
 
 
 def _analyze_tag_by_age(
     client: QBittorrentClient,
-    torrents: List[TorrentInfo],
-    config: Dict[str, Any],
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
     summary: ImpactSummary,
 ) -> None:
-    """Analyze impact of tag by age operation.
-
-    Args:
-        client: qBittorrent API client
-        torrents: List of torrents
-        config: Configuration dict
-        summary: ImpactSummary to update
-    """
-    # Simplified - would need full age calculation logic
-    summary.set_operation_detail("tag_by_age", "note", "Age-based tagging will be applied based on completion time")
+    """Record the same month-bucket tags used by the age operation."""
+    now = datetime.datetime.now()
+    for torrent in torrents:
+        if not torrent.added_on:
+            continue
+        created_at = datetime.datetime.fromtimestamp(torrent.added_on)
+        months = (now.year - created_at.year) * 12 + now.month - created_at.month
+        if now.day < created_at.day:
+            months -= 1
+        if months < 1:
+            continue
+        if months >= 6:
+            tag = "6_months_plus"
+        elif months >= 5:
+            tag = ">5_months"
+        elif months >= 4:
+            tag = ">4_months"
+        elif months >= 3:
+            tag = ">3_months"
+        elif months >= 2:
+            tag = ">2_months"
+        else:
+            tag = ">1_month"
+        summary.add_tagging(tag, torrent.hash)
 
 
 def _analyze_tag_cross_seeding(
     client: QBittorrentClient,
-    torrents: List[TorrentInfo],
-    config: Dict[str, Any],
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
     summary: ImpactSummary,
 ) -> None:
-    """Analyze impact of cross-seeding detection.
+    """Record cross-seed tags from complete file-structure data."""
+    from qbitunregistered.file_operations import fetch_torrent_files
+    from qbitunregistered.operations.tag_cross_seeding import _build_file_structure
 
-    Args:
-        client: qBittorrent API client
-        torrents: List of torrents
-        config: Configuration dict
-        summary: ImpactSummary to update
-    """
-    summary.set_operation_detail("tag_cross_seeding", "note", "Cross-seeding detection will identify duplicates")
+    structure_map: dict[frozenset[Any], list[TorrentInfo]] = defaultdict(list)
+    for torrent in torrents:
+        files = fetch_torrent_files(client, torrent.hash, cache_scope=id(client))
+        file_structure = _build_file_structure(files)
+        if not file_structure:
+            continue
+        structure_map[file_structure].append(torrent)
+    for grouped_torrents in structure_map.values():
+        tag = "cross-seed" if len(grouped_torrents) > 1 else "not-cross-seeding"
+        for torrent in grouped_torrents:
+            summary.add_tagging(tag, torrent.hash)
 
 
 def _analyze_auto_remove(
     client: QBittorrentClient,
-    torrents: List[TorrentInfo],
-    config: Dict[str, Any],
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
     summary: ImpactSummary,
 ) -> None:
-    """Analyze impact of auto-remove operation.
+    """Record every completed torrent auto-remove will delete."""
+    for torrent in torrents:
+        if torrent.state_enum.is_complete:
+            summary.add_deletion("completed", torrent.hash)
 
-    Args:
-        client: qBittorrent API client
-        torrents: List of torrents
-        config: Configuration dict
-        summary: ImpactSummary to update
-    """
-    # Would need to implement actual removal logic
-    summary.set_operation_detail("auto_remove", "note", "Auto-removal will delete completed torrents matching criteria")
+
+def _analyze_seeding_management(
+    client: QBittorrentClient,
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
+    summary: ImpactSummary,
+) -> None:
+    """Record torrents with configured tracker share limits."""
+    from qbitunregistered.operations.seeding_management import find_tracker_config
+
+    for torrent in torrents:
+        tracker_config = find_tracker_config(client, torrent, config, raise_on_error=True)
+        if tracker_config and ("seed_time_limit" in tracker_config or "seed_ratio_limit" in tracker_config):
+            summary.add_operation_target("seeding management", torrent.hash)
+
+
+def _analyze_auto_tmm(
+    client: QBittorrentClient,
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
+    summary: ImpactSummary,
+) -> None:
+    """Record every torrent whose auto-management flag will be enabled."""
+    for torrent in torrents:
+        summary.add_operation_target("auto TMM", torrent.hash)
+
+
+def _analyze_create_hard_links(
+    client: QBittorrentClient,
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
+    summary: ImpactSummary,
+) -> None:
+    """Record concrete destination paths from the hard-link planner."""
+    from qbitunregistered.operations.create_hardlinks import plan_hard_links
+
+    planned_links = plan_hard_links(config.get("target_dir", ""), torrents)
+    summary.hard_link_plan = planned_links
+    for planned_link in planned_links:
+        summary.add_operation_target("create hard links", str(planned_link.target))
 
 
 def _analyze_pause(
     client: QBittorrentClient,
-    torrents: List[TorrentInfo],
-    config: Dict[str, Any],
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
     summary: ImpactSummary,
 ) -> None:
-    """Analyze impact of pause operation.
-
-    Args:
-        client: qBittorrent API client
-        torrents: List of torrents
-        config: Configuration dict
-        summary: ImpactSummary to update
-    """
+    """Record every torrent passed to the batched pause call."""
     for torrent in torrents:
-        if hasattr(torrent.state_enum, "is_paused") and not torrent.state_enum.is_paused:
-            summary.add_pause(torrent.hash)
+        summary.add_pause(torrent.hash)
 
 
 def _analyze_resume(
     client: QBittorrentClient,
-    torrents: List[TorrentInfo],
-    config: Dict[str, Any],
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, Any],
     summary: ImpactSummary,
 ) -> None:
-    """Analyze impact of resume operation.
-
-    Args:
-        client: qBittorrent API client
-        torrents: List of torrents
-        config: Configuration dict
-        summary: ImpactSummary to update
-    """
+    """Record every torrent passed to the batched resume call."""
     for torrent in torrents:
-        if hasattr(torrent.state_enum, "is_paused") and torrent.state_enum.is_paused:
-            summary.add_resume(torrent.hash)
+        summary.add_resume(torrent.hash)

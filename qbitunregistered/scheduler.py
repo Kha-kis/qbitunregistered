@@ -22,15 +22,31 @@ import time
 import subprocess
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
+from qbitunregistered.config import (
+    ConfigValidationError,
+    SCHEDULED_OPERATION_FLAGS,
+    validate_config,
+)
 
-def run_script(config_path: str | Path) -> None:
-    """Execute qbitunregistered with the scheduler's selected configuration."""
+
+def run_script(config_path: str | Path, operations: Sequence[str] = ()) -> None:
+    """Execute the configured maintenance operations."""
     try:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting scheduled run of qbitunregistered")
+        operation_flags = [SCHEDULED_OPERATION_FLAGS[operation] for operation in operations]
         result = subprocess.run(
-            [sys.executable, "-m", "qbitunregistered", "--config", str(config_path), "--yes"],
+            [
+                sys.executable,
+                "-m",
+                "qbitunregistered",
+                "--config",
+                str(config_path),
+                *operation_flags,
+                "--yes",
+            ],
             timeout=3600,
             check=True,
             capture_output=True,
@@ -83,6 +99,15 @@ def main(
     except json.JSONDecodeError:
         print(f"Error: The configuration file {config_path} contains invalid JSON.")
         return 1
+    except (OSError, TypeError) as error:
+        print(f"Error: Could not read configuration file {config_path}: {error}")
+        return 1
+
+    try:
+        validate_config(config)
+    except ConfigValidationError as error:
+        print(f"Error: {error}")
+        return 1
 
     # Schedule the script to run at the specified times
     scheduled_times = config.get("scheduled_times", [])
@@ -90,9 +115,10 @@ def main(
         print("Warning: No scheduled_times found in config.json. Scheduler will not run any tasks.")
         return 0
 
+    scheduled_operations = config["scheduled_operations"]
     for scheduled_time in scheduled_times:
         try:
-            schedule.every().day.at(scheduled_time).do(run_script, config_path)
+            schedule.every().day.at(scheduled_time).do(run_script, config_path, scheduled_operations)
         except schedule.ScheduleValueError as e:
             print(f"Error: Invalid time format '{scheduled_time}' in scheduled_times. {e}")
             return 1
