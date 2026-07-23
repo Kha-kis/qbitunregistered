@@ -6,6 +6,13 @@
 
 The installable package has a centralized CLI coordinator that orchestrates specialized operation modules.
 
+The root `qbitunregistered.py` and `scheduler.py` files are deprecated
+compatibility boundaries, not application modules. They preserve commands
+documented for source checkouts before packaging, including the scheduler's
+adjacent-`config.json` lookup. They contain no business logic, remain supported
+throughout 2.x, and are planned for removal in 3.0. New integrations should use
+the installed console commands or `python -m qbitunregistered`.
+
 ## Architecture Principles
 
 1. **Separation of Concerns**: Each module handles a specific domain (tagging, orphaned files, seeding limits)

@@ -41,8 +41,10 @@ python -m pip install -e ".[dev]" build bandit pip-audit
 - `qbitunregistered/scheduler.py` invokes the installed CLI on a schedule.
 - `tests/` contains isolated pytest tests with mocked qBittorrent clients and
   temporary filesystems.
-- `qbitunregistered.py` and `scheduler.py` are compatibility wrappers; keep
-  business logic in the package.
+- `qbitunregistered.py` and `scheduler.py` are deprecated source-checkout
+  compatibility wrappers for commands documented before packaging. Keep them
+  throughout the 2.x series, keep business logic in the package, and remove
+  them only as an explicitly planned 3.0 breaking change.
 - See `ARCHITECTURE.md` for execution flow and `CONTRIBUTING.md` for the human
   contribution workflow.
 
@@ -64,9 +66,9 @@ check.
 
 ## Implementation rules
 
-- Preserve CLI flags, JSON fields, exit codes, installed console commands, and
-  root compatibility wrappers unless a task explicitly authorizes a breaking
-  change.
+- Preserve CLI flags, JSON fields, exit codes, and installed console commands.
+  Preserve the root compatibility wrappers throughout 2.x unless a task
+  explicitly authorizes the planned 3.0 breaking removal.
 - Make the smallest coherent change that solves the current task. Avoid
   speculative abstractions, configuration, hooks, and unrelated refactors.
 - Ask before a major refactor or architectural shift that materially expands

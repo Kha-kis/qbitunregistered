@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `notifiarr_channel` must be a numeric Discord channel ID string (17–20 digits)
   - Added validation for `recycle_bin` configuration (absolute path requirement, directory and writability checks)
 
+### Deprecated
+
+- The root `qbitunregistered.py` and `scheduler.py` source-checkout commands
+  remain supported throughout 2.x for existing automation but are planned for
+  removal in 3.0. New automation should use the installed
+  `qbitunregistered` and `qbitunregistered-scheduler` commands.
+
 ### Fixed
 - Invalid non-boolean `dry_run` configuration now fails before connecting or
   mutating, while explicit `--dry-run` and `--no-dry-run` still take precedence

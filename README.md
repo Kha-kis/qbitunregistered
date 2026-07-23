@@ -160,8 +160,9 @@ Run the installed command with the operations you want:
 qbitunregistered --config config.json --unregistered --dry-run
 ```
 
-Use `python -m qbitunregistered` if you prefer module execution. The root
-`qbitunregistered.py` script remains as a compatibility wrapper.
+Use `python -m qbitunregistered` if you prefer module execution. New
+installations and automation should use one of these two supported entry
+points instead of the legacy root scripts.
 
 To run the built-in scheduler, set both `scheduled_times` and
 `scheduled_operations` in the configuration, then pass that same file to the
@@ -181,6 +182,23 @@ qbitunregistered-scheduler --config /absolute/path/to/config.json
 Scheduled runs forward those operation flags and add `--yes` automatically.
 The scheduler rejects configured times with no operations. Test the same
 operations with `"dry_run": true` before enabling real scheduled mutations.
+
+### Legacy source-checkout commands
+
+The following commands were documented before the project became an
+installable package:
+
+```bash
+python qbitunregistered.py --config config.json --unregistered
+python scheduler.py
+```
+
+They remain supported throughout the 2.x series so existing cron jobs and
+source-checkout workflows do not break. Both root scripts are deprecated and
+planned for removal in 3.0. Migrate new and existing automation to
+`qbitunregistered` and `qbitunregistered-scheduler`. The legacy `scheduler.py`
+wrapper continues to find `config.json` beside the script rather than in the
+current working directory.
 
 ### Command-Line Arguments
 

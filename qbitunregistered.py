@@ -1,4 +1,4 @@
-"""Compatibility wrapper for running qbitunregistered from a source checkout."""
+"""Deprecated 2.x source-checkout wrapper; use the installed CLI."""
 
 from qbitunregistered.cli import main
 

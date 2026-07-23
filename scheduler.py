@@ -1,4 +1,4 @@
-"""Compatibility wrapper for running the scheduler from a source checkout."""
+"""Deprecated 2.x source-checkout wrapper; use the installed scheduler."""
 
 from pathlib import Path
 
