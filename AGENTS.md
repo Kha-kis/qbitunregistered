@@ -12,14 +12,6 @@
 - `tests/` mirrors application behavior with pytest.
 - See `ARCHITECTURE.md` for execution flow and component details.
 
-## Python-pro agent
-
-For substantial Python implementation, modernization, packaging, performance,
-security, or review work, use the project-scoped `python-pro` custom agent in
-`.codex/agents/python-pro.toml` when an independent delegated pass will improve
-the result. Give it a concrete, bounded task and reconcile its findings with the
-main task before changing code. Do not delegate trivial edits.
-
 ## Engineering rules
 
 - Support Python 3.11 and newer.

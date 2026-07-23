@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Installable `qbitunregistered` and `qbitunregistered-scheduler` console commands
 - Package-build smoke testing in CI
-- Project-specific Codex `python-pro` agent and `AGENTS.md` guidance for Python implementation and review
+- Codex-compatible `AGENTS.md` guidance for Python implementation and review
 - **qBittorrent 5.2 API-key authentication** as an alternative to username/password credentials
 - Tracker error status support for qBittorrent WebAPI v2.13+
 - **Dry-Run Impact Preview**: New impact analysis system that shows what will happen before executing operations
