@@ -56,14 +56,22 @@ Do not edit generated output under `build/`, `dist/`, `*.egg-info/`,
   change.
 - Make the smallest coherent change that solves the current task. Avoid
   speculative abstractions, configuration, hooks, and unrelated refactors.
+- Ask before a major refactor or architectural shift that materially expands
+  the requested scope.
 - Keep orchestration in `cli.py` and focused behavior in the relevant package
   module. Keep functions single-purpose when practical, and split distinct
   responsibilities when doing so improves safety or testability. Reuse the
   protocols in `qbitunregistered/types.py` at API boundaries.
-- Use `pathlib.Path` for filesystem paths, structured logging for operator
-  feedback, descriptive names, and type hints on new or changed public
-  interfaces. Document public APIs and comment on why non-obvious logic exists,
-  not what each line does.
+- Prefer `pathlib.Path`, context managers, and clear native Python constructs.
+  Use Python 3.11 type syntax such as `list[str]` and `Value | None` on new or
+  changed interfaces; do not mechanically rewrite untouched annotations.
+- Use descriptive names and concise Google-style docstrings for new or changed
+  public APIs. Comment on why non-obvious logic exists, not what each line does.
+- Use structured logging for runtime diagnostics. Reserve `print()` for
+  intentional CLI output, including failures before logging is configured.
+- Do not add placeholders, `TODO`/`FIXME` comments, commented-out
+  implementations, or deliberately unfinished paths unless the task explicitly
+  requests scaffolding.
 - Do not swallow `KeyboardInterrupt` or `SystemExit`. Handle expected failures
   narrowly and include actionable context without exposing secrets.
 - Prefer batched qBittorrent calls. Cache data only within one execution and
