@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Scheduler runs now forward the selected configuration path to the application
+- The root scheduler compatibility wrapper again defaults to its adjacent
+  `config.json`, preserving existing cron and systemd setups
 - Tracker-tag impact preview now uses the same URL matcher as the real operation
 - Unregistered impact preview now requires the same tracker error statuses as the real operation
 - Empty or omitted API keys now fall back to username/password authentication

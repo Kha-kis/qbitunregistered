@@ -24,8 +24,6 @@ import json
 import sys
 from pathlib import Path
 
-CONFIG_PATH = Path.cwd() / "config.json"
-
 
 def run_script(config_path: str | Path) -> None:
     """Execute qbitunregistered with the scheduler's selected configuration."""
@@ -54,15 +52,22 @@ def run_script(config_path: str | Path) -> None:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ERROR: Unexpected error running script: {type(e).__name__}: {e}")
 
 
-def main(argv=None) -> int:
-    """Main entry point for the scheduler."""
+def main(
+    argv: list[str] | None = None,
+    *,
+    default_config_path: str | Path | None = None,
+) -> int:
+    """Run the scheduler with an optional caller-specific default config path."""
+    if default_config_path is None:
+        default_config_path = Path.cwd() / "config.json"
+
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Run qbitunregistered at the times defined in its configuration.")
     parser.add_argument(
         "--config",
         type=str,
-        default=str(CONFIG_PATH),
-        help=f"Path to the config.json file (default: {CONFIG_PATH})",
+        default=str(default_config_path),
+        help=f"Path to the config.json file (default: {default_config_path})",
     )
     args = parser.parse_args(argv)
 
