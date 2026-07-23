@@ -6,7 +6,7 @@ Thank you for your interest in contributing to qbitunregistered! This document p
 
 ### Prerequisites
 
-- Python 3.9 or newer
+- Python 3.11 or newer
 - qBittorrent with Web UI access (for testing)
 - Git
 
