@@ -18,7 +18,7 @@
 
 ## Prerequisites
 
-- Python 3.9 or newer installed on your system.
+- Python 3.11 or newer installed on your system.
 - qBittorrent with Web UI access.
 - Dependencies from `requirements.txt` installed.
 
@@ -34,9 +34,9 @@ pip install -r requirements.txt
 
 ## Upgrading
 
-### From Pre-3.9 Python Versions
+### From Older Python Versions
 
-**Important**: This version requires Python 3.9 or newer due to the use of `Path.is_relative_to()` and other modern Python features.
+**Important**: This version requires Python 3.11 or newer to support current qBittorrent API clients.
 
 If you're upgrading from an older version:
 
@@ -45,9 +45,9 @@ If you're upgrading from an older version:
    python3 --version
    ```
 
-2. **If you're on Python 3.8 or older, upgrade Python first:**
-   - Ubuntu/Debian: `sudo apt update && sudo apt install python3.9`
-   - macOS (Homebrew): `brew install python@3.9`
+2. **If you're on Python 3.10 or older, upgrade Python first:**
+   - Ubuntu/Debian: install Python 3.11 or newer from your distribution
+   - macOS (Homebrew): `brew install python@3.11`
    - Windows: Download from [python.org](https://www.python.org/downloads/)
 
 3. **Update dependencies:**
@@ -56,9 +56,9 @@ If you're upgrading from an older version:
    ```
 
 4. **Key Changes in This Version:**
-   - **Minimum Python**: 3.9+ (was 3.6+)
+   - **Minimum Python**: 3.11+
    - **New dependency**: tqdm >=4.66.3 (for progress bars and security fix)
-   - **Breaking change**: Path handling now uses Python 3.9+ features
+   - **Breaking change**: Python 3.9 and 3.10 are no longer supported
    - **Performance**: Major improvements through API call batching (4000+ → 15-20 calls)
    - **New features**: Caching layer, progress bars, improved error handling
 
@@ -71,6 +71,18 @@ cp config.json.example config.json
 ```
 
 Edit `config.json` with your preferred text editor, and set your qBittorrent credentials, preferred behaviors, and other settings.
+
+For qBittorrent v5.2.0 or newer, you may authenticate with an API key instead
+of a username and password:
+
+```json
+{
+  "host": "localhost:8080",
+  "api_key": "qbt_your_api_key"
+}
+```
+
+If `api_key` is omitted or blank, `username` and `password` are used.
 
 ### Customizable Tags for Unregistered Torrents
 
@@ -152,10 +164,11 @@ Here's what you can specify when running `qbitunregistered`:
 - `--config`: Custom path to your configuration file.
 - `--orphaned`: Activate orphaned file checking.
 - `--unregistered`: Enable checks for unregistered torrents.
-- `--dry-run`: Simulate script actions without making changes.
+- `--dry-run` / `--no-dry-run`: Override dry-run mode from the configuration file.
 - `--host`: Specify the host and port where qBittorrent is running.
 - `--username`: Your username for logging into the qBittorrent Web UI.
 - `--password`: Your password for logging into the qBittorrent Web UI.
+- `--api-key`: API key for qBittorrent v5.2.0 or newer. Takes precedence over username/password.
 - `--tag-by-tracker`: Perform tagging based on the associated tracker.
 - `--seeding-management`: Apply seed time and seed ratio limits based on tracker tags.
 - `--auto-tmm`: Enable Automatic Torrent Management (auto TMM).

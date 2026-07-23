@@ -16,6 +16,7 @@ Usage:
 The script will run continuously and execute qbitunregistered.py at the
 configured times. Press Ctrl+C to stop the scheduler.
 """
+
 import argparse
 import schedule
 import time

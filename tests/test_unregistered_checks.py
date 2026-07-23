@@ -145,6 +145,22 @@ class TestProcessTorrent:
         count = process_torrent(torrent, exact, starts_with)
         assert count == 0
 
+    def test_tracker_error_status_is_counted(self):
+        """Test qBittorrent 5.2 tracker-error status."""
+        torrent = MockTorrent([MockTracker("Unregistered torrent", status=5)])
+
+        count = process_torrent(torrent, {"unregistered torrent"}, set())
+
+        assert count == 1
+
+    def test_unreachable_status_is_not_counted(self):
+        """Test that an unreachable tracker is not treated as unregistered."""
+        torrent = MockTorrent([MockTracker("Unregistered torrent", status=6)])
+
+        count = process_torrent(torrent, {"unregistered torrent"}, set())
+
+        assert count == 0
+
     def test_no_unregistered_trackers(self):
         """Test torrent with no unregistered trackers."""
         trackers = [

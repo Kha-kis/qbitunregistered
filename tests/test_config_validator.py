@@ -1,7 +1,14 @@
 """Tests for configuration validation."""
 
+import json
+from pathlib import Path
 import pytest
-from utils.config_validator import validate_config, validate_exclude_patterns, ConfigValidationError
+from utils.config_validator import (
+    validate_config,
+    validate_exclude_patterns,
+    resolve_dry_run,
+    ConfigValidationError,
+)
 
 
 class TestConfigValidation:
@@ -31,7 +38,7 @@ class TestConfigValidation:
         assert "Missing required field: 'host'" in str(exc_info.value)
 
     def test_missing_username(self):
-        """Test that missing username raises error."""
+        """Test that missing username raises error when no api_key is set."""
         config = {
             "host": "localhost:8080",
             "password": "password",
@@ -41,7 +48,7 @@ class TestConfigValidation:
         assert "Missing required field: 'username'" in str(exc_info.value)
 
     def test_missing_password(self):
-        """Test that missing password raises error."""
+        """Test that missing password raises error when no api_key is set."""
         config = {
             "host": "localhost:8080",
             "username": "admin",
@@ -49,6 +56,60 @@ class TestConfigValidation:
         with pytest.raises(ConfigValidationError) as exc_info:
             validate_config(config)
         assert "Missing required field: 'password'" in str(exc_info.value)
+
+    def test_valid_config_with_api_key(self):
+        """Test that api_key alone (no username/password) passes validation."""
+        config = {
+            "host": "localhost:8080",
+            "api_key": "qbt_abc123",
+        }
+        validate_config(config)
+
+    def test_api_key_does_not_require_username_password(self):
+        """Test that api_key makes username and password optional."""
+        config = {
+            "host": "localhost:8080",
+            "api_key": "qbt_abc123",
+            "dry_run": True,
+        }
+        validate_config(config)
+
+    def test_empty_api_key_uses_username_password(self):
+        """Test that an empty api_key falls back to username/password."""
+        config = {
+            "host": "localhost:8080",
+            "api_key": "   ",
+            "username": "admin",
+            "password": "password",
+        }
+        validate_config(config)
+
+    def test_empty_api_key_without_credentials_raises_error(self):
+        """Test that an empty api_key still requires username/password."""
+        config = {
+            "host": "localhost:8080",
+            "api_key": "",
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "Missing required field: 'username'" in str(exc_info.value)
+        assert "Missing required field: 'password'" in str(exc_info.value)
+
+    def test_invalid_api_key_type(self):
+        """Test that a non-string api_key raises an error."""
+        config = {
+            "host": "localhost:8080",
+            "api_key": 12345,
+        }
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+        assert "Field 'api_key' must be a string" in str(exc_info.value)
+
+    def test_example_config_is_valid(self):
+        """Test that the committed example config passes validation."""
+        config_path = Path(__file__).parents[1] / "config.json.example"
+        with config_path.open(encoding="utf-8") as config_file:
+            validate_config(json.load(config_file))
 
     def test_invalid_host_format(self):
         """Test that invalid host format raises error."""
@@ -295,6 +356,21 @@ class TestConfigValidation:
             validate_config(config)
         assert "must be an absolute path" in str(exc_info.value)
         assert "security requirement" in str(exc_info.value)
+
+
+class TestDryRunResolution:
+    """Test command-line and configuration dry-run precedence."""
+
+    def test_uses_config_when_cli_is_unspecified(self):
+        assert resolve_dry_run(None, {"dry_run": True}) is True
+        assert resolve_dry_run(None, {"dry_run": False}) is False
+
+    def test_cli_overrides_config(self):
+        assert resolve_dry_run(True, {"dry_run": False}) is True
+        assert resolve_dry_run(False, {"dry_run": True}) is False
+
+    def test_defaults_to_false(self):
+        assert resolve_dry_run(None, {}) is False
 
 
 class TestExcludePatternValidation:

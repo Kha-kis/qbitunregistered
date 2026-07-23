@@ -90,7 +90,7 @@ def process_torrent(torrent, exact_matches: Set[str], starts_with_patterns: Set[
     unregistered_count = sum(
         1
         for tracker in torrent.trackers
-        if check_unregistered_message(tracker, exact_matches, starts_with_patterns) and tracker.status == 4
+        if check_unregistered_message(tracker, exact_matches, starts_with_patterns) and tracker.status in (4, 5)
     )
     return unregistered_count
 

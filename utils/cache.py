@@ -21,7 +21,6 @@ import hashlib
 from typing import Any, Optional, Callable, Dict, Tuple, Union
 from functools import wraps
 
-
 # Sentinel object to distinguish cache misses from cached None values
 _CACHE_MISS = object()
 

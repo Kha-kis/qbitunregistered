@@ -2,10 +2,13 @@
   "//": "The host and port where qbittorrent is running.",
   "host": "localhost:8080",
 
-  "//": "The username for logging into qbittorrent's web UI.",
+  "//": "API key for qBittorrent Web UI (qBittorrent v5.2.0+). Alternative to username/password. Generated in qBittorrent WebUI settings (starts with 'qbt_'). When set, username and password are not required.",
+  "api_key": "",
+
+  "//": "The username for logging into qbittorrent's web UI. Not required when api_key is set.",
   "username": "admin",
 
-  "//": "The password for logging into qbittorrent's web UI.",
+  "//": "The password for logging into qbittorrent's web UI. Not required when api_key is set.",
   "password": "password",
 
   "//": "A flag for dry run mode. If set to true, the script will print what it would do but won't actually execute actions like adding tags or deleting torrents/files. Set to false to actually execute actions.",
