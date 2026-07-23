@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --upgrade pip "setuptools>=83"
       - run: python -m pip install -e ".[dev]"
       - name: Check fatal Flake8 errors
         run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv/
@@ -44,7 +44,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --upgrade pip "setuptools>=83"
       - run: python -m pip install -e ".[dev]"
       - name: Run tests
         run: pytest --cov=qbitunregistered --cov-report=xml --cov-report=term-missing --cov-fail-under=60
@@ -65,7 +65,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: python -m pip install --upgrade pip build
+      - run: python -m pip install --upgrade pip "setuptools>=83" build
       - run: python -m build
       - name: Install wheel
         run: python -m pip install dist/*.whl
@@ -85,7 +85,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --upgrade pip "setuptools>=83"
       - run: python -m pip install -e . bandit pip-audit
       - name: Audit dependencies
         run: pip-audit
