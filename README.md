@@ -27,6 +27,12 @@ CI validates the full test suite on Ubuntu with Python 3.11 through 3.14 and on
 Windows with Python 3.11 and 3.14. macOS is expected to work but is not
 currently CI-validated.
 
+The qBittorrent-facing acceptance workflow also starts a pinned, disposable
+qBittorrent 5.2.3 container and verifies that a selected dry-run operation
+authenticates successfully without stopping its synthetic torrent. See
+[CONTRIBUTING.md](CONTRIBUTING.md#running-the-qbittorrent-acceptance-test) to
+run the same check locally.
+
 Filesystem maintenance must run on a host that can access the same paths
 reported by qBittorrent. Before enabling deletion, validate mount mappings,
 permissions, and recycle-bin behavior with `--dry-run`.
