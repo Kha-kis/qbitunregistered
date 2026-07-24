@@ -7,8 +7,9 @@ Thank you for your interest in contributing to qbitunregistered! This document p
 ### Prerequisites
 
 - Python 3.11 or newer
-- qBittorrent with Web UI access (for testing)
 - Git
+- Docker for the disposable qBittorrent acceptance test
+- qBittorrent with Web UI access only for optional manual testing
 
 ### Setup Development Environment
 
@@ -270,16 +271,39 @@ pytest -m unit
 pytest -m "not slow"
 ```
 
+### Running the qBittorrent Acceptance Test
+
+The acceptance test starts a pinned qBittorrent 5.2.3 container, binds its Web
+UI to a temporary loopback-only port, and adds a synthetic torrent. It runs the
+pause operation with `--dry-run`, verifies that the torrent was not stopped,
+and removes the container automatically.
+
+Docker must be running. Use the locked development environment:
+
+```bash
+uv sync --extra dev
+./scripts/run-qbittorrent-acceptance.sh
+```
+
+Set `QBITTORRENT_ACCEPTANCE_PORT` to an unused port from 1024 through 65535 only
+when automatic port selection is unsuitable. Do not point this test at a real
+qBittorrent instance; the script intentionally manages only the disposable
+container it creates.
+
 ## Continuous Integration
 
 ### GitHub Actions
 
-All PRs and pushes trigger our CI pipeline:
+All PRs and pushes trigger the main CI pipeline:
 
 1. **Linting**: flake8, black, BasedPyright, and advisory mypy
 2. **Tests**: pytest with coverage
-3. **Security**: safety, bandit scans
-4. **Smoke tests**: Basic functionality checks
+3. **Security**: pip-audit and Bandit scans
+4. **Smoke tests**: package and installed-command checks
+
+A separate acceptance workflow runs when qBittorrent-facing code or its test
+harness changes, on manual dispatch, and weekly. It validates authentication
+and dry-run behavior against the pinned qBittorrent container.
 
 ### CI Must Pass
 
@@ -309,15 +333,10 @@ Releases are managed by maintainers:
    ```
 
 The release workflow verifies the tag, runs the tests and required type
-analysis, builds and checks both distributions, creates a GitHub release, and
-then publishes the same artifacts to PyPI through Trusted Publishing.
-Pre-release version tags are marked as GitHub pre-releases automatically.
-
-Before the first PyPI release, configure a protected GitHub environment named
-`pypi` with required reviewers. Register the PyPI Trusted Publisher for owner
-`Kha-kis`, repository `qbitunregistered`, workflow `release.yml`, and
-environment `pypi`. The workflow intentionally does not use a long-lived PyPI
-API token.
+analysis, builds and checks both distributions, and attaches them to a GitHub
+release. Pre-release version tags are marked as GitHub pre-releases
+automatically. The project is not currently published to PyPI; adding another
+package index is a separate release-policy decision.
 
 ## Getting Help
 
