@@ -333,15 +333,10 @@ Releases are managed by maintainers:
    ```
 
 The release workflow verifies the tag, runs the tests and required type
-analysis, builds and checks both distributions, creates a GitHub release, and
-then publishes the same artifacts to PyPI through Trusted Publishing.
-Pre-release version tags are marked as GitHub pre-releases automatically.
-
-Before the first PyPI release, configure a protected GitHub environment named
-`pypi` with required reviewers. Register the PyPI Trusted Publisher for owner
-`Kha-kis`, repository `qbitunregistered`, workflow `release.yml`, and
-environment `pypi`. The workflow intentionally does not use a long-lived PyPI
-API token.
+analysis, builds and checks both distributions, and attaches them to a GitHub
+release. Pre-release version tags are marked as GitHub pre-releases
+automatically. The project is not currently published to PyPI; adding another
+package index is a separate release-policy decision.
 
 ## Getting Help
 

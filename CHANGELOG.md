@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.1.0rc1] - 2026-07-24
 
 ### Added
-- Automated, tag-driven GitHub Release and PyPI Trusted Publishing workflow
+- Automated, tag-driven GitHub Release workflow with wheel and source
+  distribution artifacts
 - Windows test and installed-wheel smoke coverage on Python 3.11 and 3.14
 - Package metadata, MIT license file, private vulnerability reporting policy,
   Dependabot configuration, and a `--version` command

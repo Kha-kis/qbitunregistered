@@ -56,6 +56,14 @@ Confirm the installed version with:
 qbitunregistered --version
 ```
 
+The project is not currently published to PyPI. Tagged GitHub Releases include
+a wheel and source distribution. To install a downloaded wheel instead of a
+source checkout:
+
+```bash
+python -m pip install ./qbitunregistered-2.1.0rc1-py3-none-any.whl
+```
+
 ## Upgrading
 
 ### From Older Python Versions
