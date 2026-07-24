@@ -178,6 +178,8 @@ def build_unregistered_deletion_plan(
     for ownership in ownership_by_hash.values():
         for file_path in ownership.file_paths:
             owners_by_path[file_path].add(ownership.torrent_hash)
+    file_deletion_hashes = {torrent.hash for torrent, _matching_tag, delete_requested in candidates if delete_requested}
+    claimed_file_paths: set[Path] = set()
 
     planned: list[PlannedTorrentDeletion] = []
     for torrent, matching_tag, delete_requested in candidates:
@@ -197,14 +199,14 @@ def build_unregistered_deletion_plan(
             continue
 
         ownership = ownership_by_hash[torrent_hash]
-        shared_hashes = {
+        external_owner_hashes = {
             owner_hash
             for file_path in ownership.file_paths
             for owner_hash in owners_by_path[file_path]
-            if owner_hash != torrent_hash
+            if owner_hash not in file_deletion_hashes
         }
-        if shared_hashes:
-            shared_names = tuple(sorted(ownership_by_hash[item].name for item in shared_hashes))
+        if external_owner_hashes:
+            shared_names = tuple(sorted(ownership_by_hash[item].name for item in external_owner_hashes))
             planned.append(
                 PlannedTorrentDeletion(
                     torrent_hash=torrent_hash,
@@ -229,7 +231,12 @@ def build_unregistered_deletion_plan(
             )
             continue
 
-        identities = tuple(capture_file_identity(path) for path in ownership.source_paths)
+        identities: list[FileIdentity] = []
+        for canonical_path, source_path in zip(ownership.file_paths, ownership.source_paths, strict=True):
+            if canonical_path in claimed_file_paths:
+                continue
+            identities.append(capture_file_identity(source_path))
+            claimed_file_paths.add(canonical_path)
         planned.append(
             PlannedTorrentDeletion(
                 torrent_hash=torrent_hash,
@@ -237,7 +244,7 @@ def build_unregistered_deletion_plan(
                 matching_tag=matching_tag,
                 category=category,
                 action=DeletionAction.RECYCLE_FILES if recycle_bin else DeletionAction.PERMANENT_DELETE,
-                files=identities,
+                files=tuple(identities),
             )
         )
 
@@ -391,6 +398,62 @@ def _parse_torrent_tags(tags: str) -> set[str]:
     return {tag.strip() for tag in tags.split(",") if tag.strip()}
 
 
+def _execute_recycle_deletions(
+    client: QBittorrentClient,
+    deletions: Sequence[PlannedTorrentDeletion],
+    recycle_bin_path: Path,
+    delete_tags: Sequence[str],
+) -> None:
+    """Recycle every unique planned file before deleting the owning torrents."""
+    completed_moves: list[RecycleBinMove] = []
+    try:
+        for deletion in deletions:
+            identities = {identity.path: identity for identity in deletion.files}
+            if not identities:
+                continue
+            deletion_moves: list[RecycleBinMove] = []
+            success_count, failed = move_files_to_recycle_bin(
+                list(identities),
+                recycle_bin_path,
+                "unregistered",
+                deletion.category or "uncategorized",
+                all_or_nothing=True,
+                expected_identities=identities,
+                move_records=deletion_moves,
+            )
+            if failed or success_count != len(identities):
+                failure_details = "; ".join(f"{path}: {reason}" for path, reason in failed) or "incomplete move"
+                raise SafetyCheckError(
+                    f"Could not safely recycle all files for torrent '{deletion.torrent_name}' "
+                    f"({success_count}/{len(identities)} moved; {failure_details}). "
+                    "The torrent was preserved."
+                )
+            completed_moves.extend(deletion_moves)
+
+        current_torrents = _refresh_torrents_for_deletion(client)
+        _revalidate_delete_tags(current_torrents, deletions, delete_tags)
+        client.torrents_delete(
+            torrent_hashes=[deletion.torrent_hash for deletion in deletions],
+            delete_files=False,
+        )
+    except BaseException:
+        rollback_failures = rollback_recycle_bin_moves(completed_moves)
+        if rollback_failures:
+            logging.critical(
+                "%d planned torrents remain active and %d recycled files could not be restored.",
+                len(deletions),
+                len(rollback_failures),
+            )
+        raise
+
+    for deletion in deletions:
+        logging.info(
+            "Moved %d unique files and deleted torrent '%s'.",
+            len(deletion.files),
+            deletion.torrent_name,
+        )
+
+
 def delete_torrents_and_files(
     client: QBittorrentClient,
     config: Mapping[str, Any],
@@ -464,14 +527,15 @@ def delete_torrents_and_files(
             elif deletion.action is DeletionAction.RECYCLE_FILES:
                 assert recycle_bin_path is not None
                 identities = {identity.path: identity for identity in deletion.files}
-                move_files_to_recycle_bin(
-                    list(identities),
-                    recycle_bin_path,
-                    "unregistered",
-                    deletion.category or "uncategorized",
-                    dry_run=True,
-                    expected_identities=identities,
-                )
+                if identities:
+                    move_files_to_recycle_bin(
+                        list(identities),
+                        recycle_bin_path,
+                        "unregistered",
+                        deletion.category or "uncategorized",
+                        dry_run=True,
+                        expected_identities=identities,
+                    )
                 logging.info("[Dry Run] Would delete torrent '%s' after recycling its files.", deletion.torrent_name)
             else:
                 logging.info("[Dry Run] Would permanently delete torrent '%s' and its files.", deletion.torrent_name)
@@ -490,46 +554,16 @@ def delete_torrents_and_files(
         for deletion in permanent_deletions:
             logging.info("Permanently deleted torrent '%s' and its files.", deletion.torrent_name)
 
+    recycle_deletions = [deletion for deletion in plan.deletions if deletion.action is DeletionAction.RECYCLE_FILES]
+    if recycle_deletions:
+        assert recycle_bin_path is not None
+        _execute_recycle_deletions(client, recycle_deletions, recycle_bin_path, delete_tags)
+
     keep_file_deletions: list[PlannedTorrentDeletion] = []
     for deletion in plan.deletions:
-        if deletion.action is DeletionAction.PERMANENT_DELETE:
+        if deletion.action in file_actions:
             continue
-        if deletion.action is DeletionAction.RECYCLE_FILES:
-            assert recycle_bin_path is not None
-            identities = {identity.path: identity for identity in deletion.files}
-            move_records: list[RecycleBinMove] = []
-            success_count, failed = move_files_to_recycle_bin(
-                list(identities),
-                recycle_bin_path,
-                "unregistered",
-                deletion.category or "uncategorized",
-                all_or_nothing=True,
-                expected_identities=identities,
-                move_records=move_records,
-            )
-            if failed or success_count != len(identities):
-                failure_details = "; ".join(f"{path}: {reason}" for path, reason in failed) or "incomplete move"
-                raise SafetyCheckError(
-                    f"Could not safely recycle all files for torrent '{deletion.torrent_name}' "
-                    f"({success_count}/{len(identities)} moved; {failure_details}). "
-                    "The torrent was preserved."
-                )
-            try:
-                current_torrents = _refresh_torrents_for_deletion(client)
-                _revalidate_delete_tags(current_torrents, (deletion,), delete_tags)
-                client.torrents_delete(torrent_hashes=[deletion.torrent_hash], delete_files=False)
-            except BaseException:
-                rollback_failures = rollback_recycle_bin_moves(move_records)
-                if rollback_failures:
-                    logging.critical(
-                        "Torrent '%s' remains active and %d recycled files could not be restored.",
-                        deletion.torrent_name,
-                        len(rollback_failures),
-                    )
-                raise
-            logging.info("Moved %d files and deleted torrent '%s'.", success_count, deletion.torrent_name)
-            continue
-        elif deletion.action is DeletionAction.PRESERVE_SHARED:
+        if deletion.action is DeletionAction.PRESERVE_SHARED:
             logging.warning(
                 "Preserving files for torrent '%s' (hash: %s); shared with: %s",
                 deletion.torrent_name,

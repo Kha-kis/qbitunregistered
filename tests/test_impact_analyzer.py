@@ -465,6 +465,68 @@ class TestAnalyzeUnregistered:
         assert "recycle files, then delete torrent" not in summary.operation_targets
         assert summary.disk_to_free_bytes == 0
 
+    def test_dry_run_preview_deletes_fully_selected_shared_group_once(self, tmp_path):
+        """Preview and dry-run share one deduplicated all-owner deletion plan."""
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+
+        shared_file = tmp_path / "movie.mkv"
+        shared_file.write_text("content", encoding="utf-8")
+        tracker = Mock(msg="not registered", status=4)
+        first = Mock(
+            hash="first",
+            save_path=str(tmp_path),
+            category="movies",
+            tags="unregistered",
+            trackers=[tracker],
+        )
+        first.name = "first"
+        second = Mock(
+            hash="second",
+            save_path=str(tmp_path),
+            category="movies",
+            tags="unregistered",
+            trackers=[tracker],
+        )
+        second.name = "second"
+        file_info = Mock()
+        file_info.name = shared_file.name
+        client = Mock()
+        client.torrents_files.return_value = [file_info]
+        config = {
+            "unregistered": ["not registered"],
+            "default_unregistered_tag": "unregistered",
+            "cross_seeding_tag": "unregistered:crossseeding",
+            "use_delete_tags": True,
+            "use_delete_files": True,
+            "delete_tags": ["unregistered"],
+            "delete_files": {"unregistered": True},
+            "dry_run": True,
+        }
+        torrents = [first, second]
+        summary = ImpactSummary()
+
+        _analyze_unregistered(client, torrents, config, summary)
+
+        assert summary.operation_targets["permanently delete torrent and files"] == ["first", "second"]
+        assert "delete torrent only (preserve cross-seeded files)" not in summary.operation_targets
+        assert summary.disk_to_free_bytes == len("content")
+        assert summary.unregistered_deletion_plan is not None
+        assert sum(len(deletion.files) for deletion in summary.unregistered_deletion_plan.deletions) == 1
+
+        delete_torrents_and_files(
+            client,
+            config,
+            True,
+            ["unregistered"],
+            {"unregistered": True},
+            True,
+            torrents,
+            plan=summary.unregistered_deletion_plan,
+        )
+
+        assert shared_file.read_text(encoding="utf-8") == "content"
+        client.torrents_delete.assert_not_called()
+
     def test_analyze_unregistered_ignores_non_error_tracker_status(self):
         """Preview only matches statuses handled by the real operation."""
         mock_client = Mock()

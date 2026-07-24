@@ -74,6 +74,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   qBittorrent ownership state before file mutation. Current delete tags are
   revalidated before deletion, and uncertainty or tag removal preserves the
   torrent and rolls back any pending recycle move
+- Fully selected cross-seed owner groups now delete or recycle each canonical
+  shared path once instead of treating another planned deletion as a surviving
+  owner. Torrent-only, ineligible, and unselected owners still preserve shared
+  content, and grouped recycle failures roll every completed move back.
 - Unregistered deletion now matches comma-separated tags exactly, validates
   every `delete_files` value, and honors the global `use_delete_files` gate
 - Permanent deletion now performs the same fail-closed file discovery and
@@ -97,6 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - API caches are cleared at the start of each CLI execution and isolated by
   client within that execution; an explicitly blank CLI API key correctly
   selects username/password authentication
+- Empty or whitespace-only `--recycle-bin` overrides are rejected before
+  connection so they cannot disable a configured recycle bin and select
+  permanent deletion
 - Scheduler runs now forward the selected configuration path to the application
 - The root scheduler compatibility wrapper again defaults to its adjacent
   `config.json` and runs scheduled children from the source checkout, preserving

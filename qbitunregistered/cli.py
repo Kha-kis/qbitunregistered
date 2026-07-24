@@ -37,6 +37,14 @@ EXIT_GENERAL_ERROR = 1
 EXIT_CONFIG_ERROR = 2
 EXIT_CONNECTION_ERROR = 3
 
+
+def _nonblank_recycle_bin_path(value: str) -> str:
+    """Return a nonblank recycle-bin CLI path."""
+    if not value.strip():
+        raise argparse.ArgumentTypeError("--recycle-bin requires a nonblank path")
+    return value
+
+
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
 parser.add_argument("--config", type=str, default="config.json", help="Path to the config.json file.")
@@ -47,7 +55,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--recycle-bin",
-    type=str,
+    type=_nonblank_recycle_bin_path,
     default=None,
     help="Path to the recycle bin directory. If set, orphaned files will be moved here instead of being deleted.",
 )

@@ -211,6 +211,8 @@ Here's what you can specify when running `qbitunregistered`:
 - `--config`: Custom path to your configuration file.
 - `--orphaned`: Activate orphaned file checking.
 - `--unregistered`: Enable checks for unregistered torrents.
+- `--recycle-bin`: Override the configured recycle-bin path with a nonblank
+  path. Empty or whitespace-only values are rejected before connection.
 - `--dry-run` / `--no-dry-run`: Override dry-run mode from the configuration file.
 - `--host`: Specify the host and port where qBittorrent is running.
 - `--username`: Your username for logging into the qBittorrent Web UI.
@@ -369,7 +371,10 @@ When those controls authorize file removal:
 3. qBittorrent permanently deletes both torrent and files
 
 **Important Notes:**
-- Cross-seeded files are preserved and the torrent is removed without deleting files
+- Cross-seeded files are preserved while any current owner is not authorized
+  for file deletion. If every owner is selected and file deletion is enabled
+  for each, shared content is deleted or recycled once before all owners are
+  removed.
 - A failed, incomplete, or malformed file/ownership check aborts deletion of that torrent
 - Missing files are treated as an unsafe state, not as an empty torrent
 - The same ownership checks protect recycle-bin and permanent-deletion modes

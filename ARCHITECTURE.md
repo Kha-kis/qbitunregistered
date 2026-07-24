@@ -150,13 +150,17 @@ Deletion impact and execution share an immutable plan. One complete torrent
 snapshot and one file-list read per torrent build a path-to-owner index, so
 cross-seed checks do not rescan every torrent for every deletion candidate.
 The plan records torrent-only, shared-file preservation, recycle, or permanent
-deletion explicitly. File-mutating execution validates planned file identities
-and refreshes the full ownership snapshot without cache before mutation. Every
-planned torrent's current matching delete tag is also revalidated before its
-deletion request; recycle moves are rolled back if that final check fails.
-An incomplete recycle move preserves the torrent and raises an operation
-failure so CLI summaries, notifications, and scheduled exit codes remain
-truthful.
+deletion explicitly. Owners outside the file-deletion-eligible candidate set
+protect shared content; when every owner is eligible, canonical shared paths
+are claimed once across the plan. Permanent owners are deleted in one
+`delete_files=True` batch. Recycle paths are moved once before all owning
+torrents are deleted without files, and every completed move is rolled back if
+any later move, final tag check, or group deletion fails. File-mutating
+execution validates planned file identities and refreshes the full ownership
+snapshot without cache before mutation. Every planned torrent's current
+matching delete tag is also revalidated before its deletion request. An
+incomplete recycle move preserves the torrent and raises an operation failure
+so CLI summaries, notifications, and scheduled exit codes remain truthful.
 
 #### `qbitunregistered/operations/orphaned.py` - Detect & Delete Orphaned Files
 

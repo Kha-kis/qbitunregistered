@@ -220,6 +220,67 @@ def test_blank_cli_api_key_selects_credentials(tmp_path) -> None:
     assert captured_config["password"] == "cli-password"
 
 
+@pytest.mark.parametrize("cli_value", ["", "   "], ids=["empty", "whitespace"])
+@pytest.mark.parametrize("has_config", [True, False], ids=["configured", "missing-config"])
+def test_blank_cli_recycle_bin_aborts_before_connection_or_mutation(tmp_path, cli_value, has_config) -> None:
+    configured_recycle_bin = tmp_path / "configured-recycle"
+    config_path = (
+        _write_config(tmp_path, recycle_bin=str(configured_recycle_bin)) if has_config else tmp_path / "missing-config.json"
+    )
+
+    with (
+        patch("qbitunregistered.cli.create_client") as create_client,
+        patch("qbitunregistered.cli.unregistered_checks") as unregistered_checks,
+        pytest.raises(SystemExit) as error,
+    ):
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--unregistered",
+                "--recycle-bin",
+                cli_value,
+                "--yes",
+            ]
+        )
+
+    assert error.value.code == EXIT_CONFIG_ERROR
+    create_client.assert_not_called()
+    unregistered_checks.assert_not_called()
+
+
+def test_nonblank_cli_recycle_bin_overrides_config(tmp_path) -> None:
+    config_path = _write_config(tmp_path, recycle_bin=str(tmp_path / "configured-recycle"))
+    cli_recycle_bin = tmp_path / "cli-recycle"
+    client = _empty_client(tmp_path)
+    captured_config = {}
+
+    def capture_config(config):
+        captured_config.update(config)
+        return client
+
+    with (
+        patch("qbitunregistered.cli.create_client", side_effect=capture_config),
+        patch("qbitunregistered.cli.unregistered_checks", return_value=({}, {})) as unregistered_checks,
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--unregistered",
+                "--recycle-bin",
+                str(cli_recycle_bin),
+                "--dry-run",
+                "--yes",
+            ]
+        )
+
+    assert result == EXIT_SUCCESS
+    assert captured_config["recycle_bin"] == str(cli_recycle_bin)
+    assert unregistered_checks.call_args.kwargs["recycle_bin"] == str(cli_recycle_bin)
+
+
 @pytest.mark.parametrize(
     "operation_flag",
     [
