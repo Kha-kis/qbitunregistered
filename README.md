@@ -21,6 +21,16 @@
 - Python 3.11 or newer installed on your system.
 - qBittorrent with Web UI access.
 
+## Platform support
+
+CI validates the full test suite on Ubuntu with Python 3.11 through 3.14 and on
+Windows with Python 3.11 and 3.14. macOS is expected to work but is not
+currently CI-validated.
+
+Filesystem maintenance must run on a host that can access the same paths
+reported by qBittorrent. Before enabling deletion, validate mount mappings,
+permissions, and recycle-bin behavior with `--dry-run`.
+
 ## Installation
 
 Clone the repository, create a virtual environment, and install the application:
@@ -34,6 +44,11 @@ python -m pip install .
 ```
 
 This installs the `qbitunregistered` and `qbitunregistered-scheduler` commands.
+Confirm the installed version with:
+
+```bash
+qbitunregistered --version
+```
 
 ## Upgrading
 
@@ -544,6 +559,12 @@ Your contributions make this project better! Feel free to report bugs, suggest f
 ## License
 
 This project is released under the MIT License. See the LICENSE file for more details.
+
+## Security
+
+Report suspected vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md). Do not include credentials, tracker passkeys,
+notification URLs, torrent names, or local filesystem paths in a report.
 
 ## Acknowledgements
 

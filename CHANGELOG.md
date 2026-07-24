@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0rc1] - 2026-07-24
+
 ### Added
+- Automated, tag-driven GitHub Release and PyPI Trusted Publishing workflow
+- Windows test and installed-wheel smoke coverage on Python 3.11 and 3.14
+- Package metadata, MIT license file, private vulnerability reporting policy,
+  Dependabot configuration, and a `--version` command
 - Validated `scheduled_operations` configuration so the built-in scheduler
   forwards an explicit maintenance operation set and rejects scheduled hard-link
   jobs without an absolute target directory
@@ -290,5 +296,7 @@ This release represents a comprehensive overhaul focused on performance, securit
 
 *Note: This is the first release with a formal changelog. Previous versions are not documented here.*
 
+[Unreleased]: https://github.com/Kha-kis/qbitunregistered/compare/v2.1.0rc1...HEAD
+[2.1.0rc1]: https://github.com/Kha-kis/qbitunregistered/compare/v2.0.0...v2.1.0rc1
 [2.0.0]: https://github.com/Kha-kis/qbitunregistered/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/Kha-kis/qbitunregistered/releases/tag/v1.0.0

@@ -294,11 +294,30 @@ All CI checks must pass before a PR can be merged. If CI fails:
 
 Releases are managed by maintainers:
 
-1. **Update version** in `pyproject.toml`
-2. **Update CHANGELOG.md** with release notes
-3. **Create release tag**: `git tag -a v2.1.0 -m "Release v2.1.0"`
-4. **Push tag**: `git push origin v2.1.0`
-5. **Create GitHub release** with release notes
+1. Update the version in `pyproject.toml` and `qbitunregistered/__init__.py`.
+2. Move the release notes from `Unreleased` into a dated section in
+   `CHANGELOG.md`.
+3. Run the full test, type, security, and package-build checks from
+   `AGENTS.md`.
+4. Merge the release preparation PR into `main`.
+5. Create and push an annotated tag that exactly matches the package version,
+   for example:
+
+   ```bash
+   git tag -a v2.1.0rc1 -m "Release v2.1.0rc1"
+   git push origin v2.1.0rc1
+   ```
+
+The release workflow verifies the tag, runs the tests and required type
+analysis, builds and checks both distributions, creates a GitHub release, and
+then publishes the same artifacts to PyPI through Trusted Publishing.
+Pre-release version tags are marked as GitHub pre-releases automatically.
+
+Before the first PyPI release, configure a protected GitHub environment named
+`pypi` with required reviewers. Register the PyPI Trusted Publisher for owner
+`Kha-kis`, repository `qbitunregistered`, workflow `release.yml`, and
+environment `pypi`. The workflow intentionally does not use a long-lived PyPI
+API token.
 
 ## Getting Help
 
