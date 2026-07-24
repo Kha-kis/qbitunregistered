@@ -64,6 +64,11 @@ The language-server command speaks LSP over standard input/output and waits for
 an editor or other LSP client; use the CLI command for a non-interactive project
 check.
 
+For every Python code change, use the `python_pro` agent for implementation or
+review. Ensure that agent reads this file, uses the BasedPyright analysis
+engine for navigation and diagnostics, and reports the required test and type
+checks before completion.
+
 ## Implementation rules
 
 - Preserve CLI flags, JSON fields, exit codes, and installed console commands.
