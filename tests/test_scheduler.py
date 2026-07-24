@@ -99,6 +99,20 @@ def test_scheduler_rejects_times_without_operations(tmp_path: Path) -> None:
     assert main(["--config", str(config_path)]) == 1
 
 
+def test_scheduler_rejects_scheduled_hard_links_without_target_dir(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        '{"host":"localhost:8080","username":"admin","password":"password",'
+        '"scheduled_times":["09:00"],"scheduled_operations":["create_hard_links"]}',
+        encoding="utf-8",
+    )
+
+    with patch("qbitunregistered.scheduler.schedule.every") as every:
+        assert main(["--config", str(config_path)]) == 1
+
+    every.assert_not_called()
+
+
 def test_compatibility_wrapper_uses_adjacent_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wrapper_path = Path(__file__).resolve().parents[1] / "scheduler.py"
     monkeypatch.chdir(tmp_path)

@@ -335,6 +335,16 @@ def _validate_scheduled_times(config: dict[str, Any], errors: list[str]) -> None
                 allowed = ", ".join(sorted(SCHEDULED_OPERATION_FLAGS))
                 errors.append(f"Unknown scheduled operation '{operation}'. Allowed values: {allowed}")
 
+        if isinstance(scheduled_times, list) and scheduled_times and "create_hard_links" in scheduled_operations:
+            target_dir = config.get("target_dir")
+            if not isinstance(target_dir, str) or not target_dir.strip():
+                errors.append(
+                    "'target_dir' must be a non-empty absolute path when 'scheduled_operations' includes "
+                    "'create_hard_links'"
+                )
+            elif not Path(target_dir).is_absolute():
+                errors.append("'target_dir' must be an absolute path when 'scheduled_operations' includes 'create_hard_links'")
+
 
 def _validate_recycle_bin(config: dict[str, Any], errors: list[str]) -> None:
     """Validate recycle_bin configuration if present."""

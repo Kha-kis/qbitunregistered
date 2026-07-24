@@ -222,6 +222,47 @@ class TestConfigValidation:
 
         assert "Unknown scheduled operation" in str(exc_info.value)
 
+    @pytest.mark.parametrize("target_dir", [None, "", "relative/path"])
+    def test_scheduled_hard_links_require_absolute_target_dir(self, target_dir):
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "scheduled_times": ["09:00"],
+            "scheduled_operations": ["create_hard_links"],
+        }
+        if target_dir is not None:
+            config["target_dir"] = target_dir
+
+        with pytest.raises(ConfigValidationError) as exc_info:
+            validate_config(config)
+
+        assert "'target_dir' must be" in str(exc_info.value)
+        assert "'create_hard_links'" in str(exc_info.value)
+
+    def test_scheduled_hard_links_accept_absolute_target_dir(self, tmp_path):
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "scheduled_times": ["09:00"],
+            "scheduled_operations": ["create_hard_links"],
+            "target_dir": str(tmp_path / "hard-links"),
+        }
+
+        validate_config(config)
+
+    def test_dormant_scheduled_hard_links_do_not_require_target_dir(self):
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "scheduled_times": [],
+            "scheduled_operations": ["create_hard_links"],
+        }
+
+        validate_config(config)
+
     def test_valid_tracker_tags_with_limits(self):
         """Test that valid tracker_tags with seed limits pass validation."""
         config = {

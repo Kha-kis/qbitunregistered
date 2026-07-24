@@ -1,5 +1,6 @@
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -13,6 +14,7 @@ from qbitunregistered.file_operations import (
     move_files_to_recycle_bin,
     verify_file_identity,
 )
+from qbitunregistered.types import QBittorrentClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,10 +234,70 @@ def build_orphan_file_plan(orphaned_files: list[str]) -> OrphanFilePlan:
     return OrphanFilePlan(files=identities)
 
 
+def _revalidate_orphan_ownership(client: QBittorrentClient, plan: OrphanFilePlan) -> None:
+    """Fail closed if any confirmed orphan path is now owned by a torrent."""
+    try:
+        current_torrents = client.torrents.info()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as error:
+        raise SafetyCheckError("Could not refresh qBittorrent state before orphan cleanup") from error
+    if current_torrents is None:
+        raise SafetyCheckError("qBittorrent returned no torrent list during final orphan validation")
+    if not isinstance(current_torrents, Sequence) or isinstance(current_torrents, (str, bytes)):
+        raise SafetyCheckError("qBittorrent returned a malformed torrent list during final orphan validation")
+
+    owned_paths: set[Path] = set()
+    seen_hashes: set[str] = set()
+    for torrent in current_torrents:
+        torrent_hash = getattr(torrent, "hash", None)
+        save_path_value = getattr(torrent, "save_path", None)
+        if not isinstance(torrent_hash, str) or not torrent_hash or torrent_hash in seen_hashes:
+            raise SafetyCheckError("qBittorrent returned a missing or duplicate torrent hash")
+        if not isinstance(save_path_value, str) or not save_path_value:
+            raise SafetyCheckError(f"Torrent {torrent_hash} has no valid save path")
+        seen_hashes.add(torrent_hash)
+        try:
+            configured_save_path = Path(save_path_value)
+            if not configured_save_path.is_absolute():
+                raise SafetyCheckError(f"Torrent {torrent_hash} has a non-absolute save path")
+            save_path = configured_save_path.resolve()
+        except (OSError, RuntimeError) as error:
+            raise SafetyCheckError(f"Torrent {torrent_hash} has an unsafe save path") from error
+
+        try:
+            raw_files = client.torrents_files(torrent_hash)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as error:
+            raise SafetyCheckError(f"Could not read file metadata for torrent {torrent_hash}") from error
+        if raw_files is None:
+            raise SafetyCheckError(f"Torrent {torrent_hash} returned no file metadata")
+        if not isinstance(raw_files, Sequence) or isinstance(raw_files, (str, bytes)):
+            raise SafetyCheckError(f"Torrent {torrent_hash} returned malformed file metadata")
+
+        for file_info in raw_files:
+            name = file_info.get("name") if isinstance(file_info, dict) else getattr(file_info, "name", None)
+            if not isinstance(name, str) or not name:
+                raise SafetyCheckError(f"Torrent {torrent_hash} returned malformed file metadata")
+            try:
+                owned_path = (save_path / name).resolve()
+            except (OSError, RuntimeError, ValueError) as error:
+                raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path") from error
+            if not owned_path.is_relative_to(save_path):
+                raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path")
+            owned_paths.add(owned_path)
+
+    claimed_paths = sorted(set(plan.paths) & owned_paths)
+    if claimed_paths:
+        formatted_paths = ", ".join(str(path) for path in claimed_paths)
+        raise SafetyCheckError(f"Confirmed orphan path is now owned by qBittorrent: {formatted_paths}")
+
+
 def delete_orphaned_files(  # noqa: C901
     orphaned_files: list[str],
     dry_run: bool,
-    client,
+    client: QBittorrentClient,
     torrents: list[Any] | None = None,
     recycle_bin: str | None = None,
     *,
@@ -262,6 +324,10 @@ def delete_orphaned_files(  # noqa: C901
     expected_identities = {identity.path: identity for identity in resolved_plan.files}
     processed_files: set[Path] = set()
 
+    if not resolved_plan.files:
+        logging.info("No orphaned files found. Nothing to delete.")
+        return
+
     # Get active save paths to prevent accidental deletion (cached to reduce API calls)
     # Use id(client) to scope cache per client instance, preventing contamination
     default_save_path = Path(_get_default_save_path(client, cache_scope=id(client)))
@@ -285,10 +351,6 @@ def delete_orphaned_files(  # noqa: C901
         )
         active_save_paths.add(category_save_path)
 
-    if not orphaned_files:
-        logging.info("No orphaned files found. Nothing to delete.")
-        return
-
     # Track directories that will become empty
     potential_empty_dirs = set()
 
@@ -298,6 +360,9 @@ def delete_orphaned_files(  # noqa: C901
         while parent_dir != parent_dir.parent:  # Add parent and all ancestor directories
             potential_empty_dirs.add(parent_dir)
             parent_dir = parent_dir.parent
+
+    if not dry_run:
+        _revalidate_orphan_ownership(client, resolved_plan)
 
     # Handle recycle bin or deletion
     if recycle_bin:

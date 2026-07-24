@@ -85,6 +85,42 @@ def test_main_requires_target_for_hard_links(tmp_path) -> None:
     assert error.value.code == EXIT_CONFIG_ERROR
 
 
+def test_cli_target_override_satisfies_scheduled_hard_link_validation(tmp_path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        target_dir=None,
+        scheduled_times=["09:00"],
+        scheduled_operations=["create_hard_links"],
+    )
+    target_dir = tmp_path / "hard-links"
+    client = _empty_client(tmp_path)
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.create_hard_links") as create_hard_links,
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--create-hard-links",
+                "--target-dir",
+                str(target_dir),
+                "--dry-run",
+                "--yes",
+            ]
+        )
+
+    assert result == EXIT_SUCCESS
+    create_hard_links.assert_called_once_with(
+        str(target_dir),
+        [],
+        dry_run=True,
+        planned_links=None,
+    )
+
+
 def test_invalid_configured_dry_run_aborts_before_connection(tmp_path) -> None:
     config_path = _write_config(tmp_path, dry_run="true")
 
@@ -209,6 +245,7 @@ def test_combined_preview_targets_are_reused_for_execution(tmp_path, capsys) -> 
     torrent.name = "completed.mkv"
     torrent.state_enum.is_complete = True
     client.torrents.info.return_value = [torrent]
+    client.torrents_files.return_value = []
 
     with (
         patch("qbitunregistered.cli.create_client", return_value=client),
@@ -235,3 +272,68 @@ def test_combined_preview_targets_are_reused_for_execution(tmp_path, capsys) -> 
     assert str(orphan) in capsys.readouterr().out
     assert not orphan.exists()
     client.torrents_delete.assert_called_once_with(torrent_hashes=["completed"], delete_files=False)
+
+
+@pytest.mark.parametrize("use_recycle_bin", [False, True], ids=["permanent", "recycle"])
+def test_orphan_owner_added_during_confirmation_blocks_all_mutation(tmp_path, use_recycle_bin) -> None:
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    claimed_orphan = downloads / "claimed.mkv"
+    other_orphan = downloads / "other.mkv"
+    claimed_orphan.write_text("claimed", encoding="utf-8")
+    other_orphan.write_text("other", encoding="utf-8")
+    recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
+    config_path = _write_config(tmp_path, recycle_bin=str(recycle_bin) if recycle_bin else None)
+    client = _empty_client(downloads)
+
+    new_owner = Mock(hash="new-owner", save_path=str(downloads))
+
+    def add_owner_during_confirmation(_prompt):
+        client.torrents.info.return_value = [new_owner]
+        client.torrents_files.return_value = [{"name": claimed_orphan.name}]
+        return "y"
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("builtins.input", side_effect=add_owner_during_confirmation),
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(["--config", str(config_path), "--orphaned"])
+
+    assert result == EXIT_GENERAL_ERROR
+    assert claimed_orphan.read_text(encoding="utf-8") == "claimed"
+    assert other_orphan.read_text(encoding="utf-8") == "other"
+    if recycle_bin is not None:
+        assert not recycle_bin.exists()
+    client.torrents_files.assert_called_once_with("new-owner")
+
+
+def test_orphan_execution_does_not_add_files_newly_orphaned_during_confirmation(tmp_path) -> None:
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    confirmed_orphan = downloads / "confirmed.mkv"
+    newly_orphaned = downloads / "newly-orphaned.mkv"
+    confirmed_orphan.write_text("confirmed", encoding="utf-8")
+    newly_orphaned.write_text("tracked", encoding="utf-8")
+    config_path = _write_config(tmp_path)
+    client = _empty_client(downloads)
+
+    tracked_file = Mock()
+    tracked_file.name = newly_orphaned.name
+    initial_owner = Mock(hash="initial-owner", save_path=str(downloads), files=[tracked_file])
+    client.torrents.info.return_value = [initial_owner]
+
+    def remove_owner_during_confirmation(_prompt):
+        client.torrents.info.return_value = []
+        return "y"
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("builtins.input", side_effect=remove_owner_during_confirmation),
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(["--config", str(config_path), "--orphaned"])
+
+    assert result == EXIT_SUCCESS
+    assert not confirmed_orphan.exists()
+    assert newly_orphaned.read_text(encoding="utf-8") == "tracked"

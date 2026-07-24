@@ -4,6 +4,7 @@ from pathlib import Path
 from fnmatch import fnmatch
 from unittest.mock import MagicMock
 import pytest
+from qbitunregistered.file_operations import SafetyCheckError
 from qbitunregistered.operations.orphaned import build_orphan_file_plan, delete_orphaned_files
 
 
@@ -229,6 +230,52 @@ class TestRecycleBin:
         assert source.read_text() == "replacement"
         assert list(recycle_bin.rglob("orphaned.mkv")) == []
         assert "Planned file changed after preview" in caplog.text
+
+    def test_ownership_refresh_failure_blocks_every_orphan_mutation(self, mock_client, tmp_path):
+        """An unavailable final qBittorrent snapshot aborts the whole plan."""
+        first = tmp_path / "first.mkv"
+        second = tmp_path / "second.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        plan = build_orphan_file_plan([str(first), str(second)])
+        mock_client.torrents.info.side_effect = RuntimeError("temporary API failure")
+
+        with pytest.raises(SafetyCheckError, match="Could not refresh qBittorrent state"):
+            delete_orphaned_files(
+                [str(first), str(second)],
+                dry_run=False,
+                client=mock_client,
+                torrents=[],
+                plan=plan,
+            )
+
+        assert first.read_text(encoding="utf-8") == "first"
+        assert second.read_text(encoding="utf-8") == "second"
+
+    def test_malformed_final_file_metadata_blocks_every_orphan_mutation(self, mock_client, tmp_path):
+        """Incomplete ownership metadata cannot authorize any orphan mutation."""
+        first = tmp_path / "first.mkv"
+        second = tmp_path / "second.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        plan = build_orphan_file_plan([str(first), str(second)])
+        owner = MagicMock(hash="owner", save_path=str(tmp_path))
+        mock_client.torrents.info.return_value = [owner]
+        mock_client.torrents_files.return_value = [{}]
+
+        with pytest.raises(SafetyCheckError, match="malformed file metadata"):
+            delete_orphaned_files(
+                [str(first), str(second)],
+                dry_run=False,
+                client=mock_client,
+                torrents=[],
+                recycle_bin=str(tmp_path / "recycle"),
+                plan=plan,
+            )
+
+        assert first.read_text(encoding="utf-8") == "first"
+        assert second.read_text(encoding="utf-8") == "second"
+        assert not (tmp_path / "recycle").exists()
 
     def test_dry_run_consumes_confirmed_plan_without_mutation(self, mock_client, tmp_path):
         """Dry-run validates and reports the same immutable plan."""

@@ -180,8 +180,10 @@ qbitunregistered-scheduler --config /absolute/path/to/config.json
 ```
 
 Scheduled runs forward those operation flags and add `--yes` automatically.
-The scheduler rejects configured times with no operations. Test the same
-operations with `"dry_run": true` before enabling real scheduled mutations.
+The scheduler rejects configured times with no operations. A scheduled
+`create_hard_links` operation also requires an absolute `target_dir` in the
+configuration. Test the same operations with `"dry_run": true` before enabling
+real scheduled mutations.
 
 ### Legacy source-checkout commands
 

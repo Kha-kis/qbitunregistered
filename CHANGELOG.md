@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Validated `scheduled_operations` configuration so the built-in scheduler
-  forwards an explicit maintenance operation set
+  forwards an explicit maintenance operation set and rejects scheduled hard-link
+  jobs without an absolute target directory
 - Installable `qbitunregistered` and `qbitunregistered-scheduler` console commands
 - Package-build smoke testing in CI
 - Codex-compatible `AGENTS.md` guidance for Python implementation and review
@@ -60,7 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   auto-remove, and hard-link targets, reuses confirmed filesystem plans, and
   aborts on analyzer failure or conflicting hard-link destinations
 - Orphan cleanup now binds previewed paths to immutable file identities and
-  refuses missing, modified, substituted, non-regular, or symlinked targets
+  refuses missing, modified, substituted, non-regular, or symlinked targets.
+  Immediately before mutation, it also refreshes qBittorrent ownership without
+  cache and aborts the entire confirmed plan if a target is now owned or
+  ownership cannot be established
 - Unregistered preview and execution now share one ownership/deletion plan,
   report the exact file action, build one per-run ownership index, and refresh
   qBittorrent ownership state before file mutation
