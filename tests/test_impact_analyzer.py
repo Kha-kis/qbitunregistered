@@ -2,9 +2,16 @@
 
 import pytest
 from unittest.mock import Mock, patch
-from utils.impact_analyzer import (
+from qbitunregistered.impact import (
+    ImpactAnalysisError,
     ImpactSummary,
+    OrphanFileAction,
     analyze_impact,
+    _analyze_create_hard_links,
+    _analyze_orphaned,
+    _analyze_seeding_management,
+    _analyze_tag_cross_seeding,
+    _analyze_tag_by_tracker,
     _analyze_unregistered,
     _analyze_pause,
     _analyze_resume,
@@ -49,7 +56,27 @@ class TestImpactSummary:
 
         assert not summary.is_empty()
         assert len(summary.orphaned_files) == 2
+        assert summary.orphan_file_action is OrphanFileAction.PERMANENT_DELETE
+        assert summary.orphaned_file_bytes == 3072
         assert summary.disk_to_free_bytes == 3072
+
+    def test_add_recycled_orphaned_file_does_not_claim_freed_space(self):
+        """Recycled orphan bytes are moved, not freed."""
+        summary = ImpactSummary()
+
+        summary.add_orphaned_file("/path/to/file.txt", 3072, OrphanFileAction.RECYCLE)
+
+        assert summary.orphan_file_action is OrphanFileAction.RECYCLE
+        assert summary.orphaned_file_bytes == 3072
+        assert summary.disk_to_free_bytes == 0
+
+    def test_orphaned_file_actions_cannot_be_mixed(self):
+        """A summary rejects ambiguous orphan cleanup actions."""
+        summary = ImpactSummary()
+        summary.add_orphaned_file("/path/to/delete.txt")
+
+        with pytest.raises(ValueError, match="different orphan file actions"):
+            summary.add_orphaned_file("/path/to/recycle.txt", action=OrphanFileAction.RECYCLE)
 
     def test_add_pause_resume(self):
         """Test adding pause and resume impacts."""
@@ -104,6 +131,17 @@ class TestImpactSummary:
         assert len(warnings) > 0
         assert any("orphaned files will be deleted" in w for w in warnings)
 
+    def test_warning_many_recycled_orphaned_files(self):
+        """Recycle warnings do not claim files will be deleted."""
+        summary = ImpactSummary()
+        for i in range(60):
+            summary.add_orphaned_file(f"/path/file{i}", action=OrphanFileAction.RECYCLE)
+
+        warnings = summary.get_warning_messages()
+
+        assert any("orphaned files will be moved to the recycle bin" in warning for warning in warnings)
+        assert not any("orphaned files will be deleted" in warning for warning in warnings)
+
     def test_format_summary_empty(self):
         """Test formatting empty summary."""
         summary = ImpactSummary()
@@ -145,6 +183,34 @@ class TestImpactSummary:
 
         assert "Orphaned files to DELETE: 3" in formatted
         assert "/path/file0.txt" in formatted  # First file should be shown
+
+    def test_format_summary_with_recycled_orphaned_files(self):
+        """Recycle previews describe moved data without deletion claims."""
+        summary = ImpactSummary()
+        summary.add_orphaned_file("/path/file.txt", 2 * 1024**2, OrphanFileAction.RECYCLE)
+
+        formatted = summary.format_summary(show_details=True)
+
+        assert "Orphaned files to MOVE TO RECYCLE BIN: 1" in formatted
+        assert "Data to move to recycle bin: 2.00 MB" in formatted
+        assert "/path/file.txt" in formatted
+        assert "Orphaned files to DELETE" not in formatted
+        assert "Disk space to free" not in formatted
+
+    def test_format_summary_keeps_recycle_and_other_impacts_distinct(self):
+        """Mixed previews attribute moved and freed bytes to the right actions."""
+        summary = ImpactSummary()
+        summary.add_orphaned_file("/path/file.txt", 2 * 1024**2, OrphanFileAction.RECYCLE)
+        summary.add_deletion("completed", "hash1", 3 * 1024**2)
+        summary.add_tagging("reviewed", "hash2")
+
+        formatted = summary.format_summary()
+
+        assert "Orphaned files to MOVE TO RECYCLE BIN: 1" in formatted
+        assert "Data to move to recycle bin: 2.00 MB" in formatted
+        assert "Torrents to DELETE: 1" in formatted
+        assert "Disk space to free: 3.00 MB" in formatted
+        assert "Torrents to TAG: 1" in formatted
 
     def test_format_summary_with_details(self):
         """Test formatting summary with details enabled."""
@@ -189,12 +255,10 @@ class TestAnalyzeImpact:
         torrents = []
         config = {}
 
-        # Should not raise, just log warning
-        summary = analyze_impact(mock_client, torrents, config, ["unknown_operation"])
+        with pytest.raises(ImpactAnalysisError):
+            analyze_impact(mock_client, torrents, config, ["unknown_operation"])
 
-        assert summary.is_empty()
-
-    @patch("utils.impact_analyzer._analyze_pause")
+    @patch("qbitunregistered.impact._analyze_pause")
     def test_analyze_pause_operation(self, mock_analyze):
         """Test analyzing pause operation."""
         mock_client = Mock()
@@ -205,7 +269,7 @@ class TestAnalyzeImpact:
 
         mock_analyze.assert_called_once()
 
-    @patch("utils.impact_analyzer._analyze_resume")
+    @patch("qbitunregistered.impact._analyze_resume")
     def test_analyze_resume_operation(self, mock_analyze):
         """Test analyzing resume operation."""
         mock_client = Mock()
@@ -215,6 +279,59 @@ class TestAnalyzeImpact:
         analyze_impact(mock_client, torrents, config, ["resume"])
 
         mock_analyze.assert_called_once()
+
+
+class TestAnalyzeOrphaned:
+    """Tests for action-aware orphan impact analysis."""
+
+    @pytest.mark.parametrize("use_recycle_bin", [False, True], ids=["permanent", "recycle"])
+    def test_analyze_orphaned_carries_configured_action(self, tmp_path, use_recycle_bin):
+        """The analyzer carries the action used by execution into formatting."""
+        orphan = tmp_path / "orphan.mkv"
+        orphan.write_bytes(b"x" * (2 * 1024**2))
+        recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
+        config = {"recycle_bin": str(recycle_bin)} if recycle_bin else {}
+        summary = ImpactSummary()
+
+        with patch(
+            "qbitunregistered.operations.orphaned.check_files_on_disk",
+            return_value=[str(orphan)],
+        ):
+            _analyze_orphaned(Mock(), [], config, summary)
+
+        formatted = summary.format_summary()
+        expected_action = OrphanFileAction.RECYCLE if use_recycle_bin else OrphanFileAction.PERMANENT_DELETE
+        assert summary.orphan_file_action is expected_action
+        assert summary.orphaned_file_bytes == 2 * 1024**2
+        if use_recycle_bin:
+            assert summary.disk_to_free_bytes == 0
+            assert "Orphaned files to MOVE TO RECYCLE BIN: 1" in formatted
+            assert "Data to move to recycle bin: 2.00 MB" in formatted
+            assert "Orphaned files to DELETE" not in formatted
+            assert "Disk space to free" not in formatted
+        else:
+            assert summary.disk_to_free_bytes == 2 * 1024**2
+            assert "Orphaned files to DELETE: 1" in formatted
+            assert "Disk space to free: 2.00 MB" in formatted
+            assert "MOVE TO RECYCLE BIN" not in formatted
+
+    def test_empty_recycle_analysis_remains_an_empty_summary(self, tmp_path):
+        """A configured recycle bin without orphan targets reports no changes."""
+        summary = ImpactSummary()
+
+        with patch(
+            "qbitunregistered.operations.orphaned.check_files_on_disk",
+            return_value=[],
+        ):
+            _analyze_orphaned(Mock(), [], {"recycle_bin": str(tmp_path / "recycle")}, summary)
+
+        formatted = summary.format_summary()
+        assert summary.is_empty()
+        assert summary.orphan_file_action is None
+        assert summary.orphaned_file_bytes == 0
+        assert "No changes will be made" in formatted
+        assert "MOVE TO RECYCLE BIN" not in formatted
+        assert "Disk space to free" not in formatted
 
 
 class TestAnalyzeUnregistered:
@@ -239,15 +356,19 @@ class TestAnalyzeUnregistered:
         mock_torrent = Mock()
         mock_torrent.hash = "hash1"
         mock_torrent.name = "Test Torrent"
+        mock_torrent.save_path = "/data"
+        mock_torrent.tags = ""
 
         # Mock tracker response - create tracker objects with .msg attribute
         mock_tracker = Mock()
         mock_tracker.msg = "not registered"
         mock_tracker.url = "http://tracker.example.com"
+        mock_tracker.status = 4
         # Also support dict-style access for backward compatibility
         mock_tracker.get = lambda k, d=None: {"msg": "not registered", "url": "http://tracker.example.com"}.get(k, d)
 
         mock_client.torrents_trackers.return_value = [mock_tracker]
+        mock_torrent.trackers = [mock_tracker]
         mock_client.torrents_info.return_value = [{"size": 1024**3}]  # 1 GB
 
         torrents = [mock_torrent]
@@ -271,14 +392,18 @@ class TestAnalyzeUnregistered:
 
         mock_torrent = Mock()
         mock_torrent.hash = "hash1"
+        mock_torrent.save_path = "/data"
+        mock_torrent.tags = "unregistered"
 
         # Mock tracker with .msg attribute
         mock_tracker = Mock()
         mock_tracker.msg = "not registered"
         mock_tracker.url = "http://tracker.example.com"
+        mock_tracker.status = 4
         mock_tracker.get = lambda k, d=None: {"msg": "not registered", "url": "http://tracker.example.com"}.get(k, d)
 
         mock_client.torrents_trackers.return_value = [mock_tracker]
+        mock_torrent.trackers = [mock_tracker]
         mock_client.torrents_info.return_value = [{"size": 2 * 1024**3}]  # 2 GB
 
         torrents = [mock_torrent]
@@ -295,7 +420,76 @@ class TestAnalyzeUnregistered:
         # Should be tagged AND deleted
         assert len(summary.torrents_to_tag["unregistered"]) == 1
         assert len(summary.torrents_to_delete["unregistered"]) == 1
-        assert summary.disk_to_free_bytes == 2 * 1024**3
+        assert summary.disk_to_free_bytes == 0
+        assert "files to permanently delete" not in summary.operation_targets
+
+    def test_analyze_unregistered_uses_ordered_delete_policy(self, tmp_path):
+        tracker = Mock(msg="not registered", status=4)
+        torrent_file = tmp_path / "movie.mkv"
+        torrent_file.write_bytes(b"movie")
+        torrent = Mock(
+            hash="hash1",
+            save_path=str(tmp_path),
+            category="movies",
+            tags="keep-files, delete-files",
+            trackers=[tracker],
+        )
+        torrent.name = "movie"
+        client = Mock()
+        file_info = Mock()
+        file_info.name = "movie.mkv"
+        client.torrents_files.return_value = [file_info]
+        config = {
+            "unregistered": ["not registered"],
+            "default_unregistered_tag": "unregistered",
+            "use_delete_tags": True,
+            "use_delete_files": True,
+            "delete_tags": ["keep-files", "delete-files"],
+            "delete_files": {"keep-files": False, "delete-files": True},
+        }
+        summary = ImpactSummary()
+
+        _analyze_unregistered(client, [torrent], config, summary)
+
+        assert summary.torrents_to_delete["keep-files"] == ["hash1"]
+        assert "delete-files" not in summary.torrents_to_delete
+        assert summary.disk_to_free_bytes == 0
+        assert summary.operation_targets["delete torrent only (keep files)"] == ["hash1"]
+
+        config["delete_tags"] = ["delete-files", "keep-files"]
+        summary = ImpactSummary()
+        _analyze_unregistered(client, [torrent], config, summary)
+
+        assert summary.torrents_to_delete["delete-files"] == ["hash1"]
+        assert summary.disk_to_free_bytes == torrent_file.stat().st_size
+        assert summary.operation_targets["permanently delete torrent and files"] == ["hash1"]
+
+    def test_analyze_unregistered_global_file_gate_prevents_file_claim(self):
+        tracker = Mock(msg="not registered", status=4)
+        torrent = Mock(
+            hash="hash1",
+            save_path="/data",
+            tags="delete-files",
+            trackers=[tracker],
+            size=1024,
+        )
+        summary = ImpactSummary()
+
+        _analyze_unregistered(
+            Mock(),
+            [torrent],
+            {
+                "unregistered": ["not registered"],
+                "use_delete_tags": True,
+                "use_delete_files": False,
+                "delete_tags": ["delete-files"],
+                "delete_files": {"delete-files": True},
+            },
+            summary,
+        )
+
+        assert summary.disk_to_free_bytes == 0
+        assert "files to permanently delete" not in summary.operation_targets
 
     def test_analyze_unregistered_cross_seeding(self):
         """Test analyzing unregistered with cross-seeding detection."""
@@ -303,21 +497,28 @@ class TestAnalyzeUnregistered:
 
         mock_torrent = Mock()
         mock_torrent.hash = "hash1"
+        mock_torrent.save_path = "/data"
+        mock_torrent.tags = ""
 
         # Two trackers: one unregistered, one working
         mock_tracker1 = Mock()
         mock_tracker1.msg = "not registered"
         mock_tracker1.url = "http://tracker1.example.com"
+        mock_tracker1.status = 4
         mock_tracker1.get = lambda k, d=None: {"msg": "not registered", "url": "http://tracker1.example.com"}.get(k, d)
 
         mock_tracker2 = Mock()
         mock_tracker2.msg = "Working"
         mock_tracker2.url = "http://tracker2.example.com"
+        mock_tracker2.status = 2
         mock_tracker2.get = lambda k, d=None: {"msg": "Working", "url": "http://tracker2.example.com"}.get(k, d)
 
         mock_client.torrents_trackers.return_value = [mock_tracker1, mock_tracker2]
+        mock_torrent.trackers = [mock_tracker1, mock_tracker2]
+        working_torrent = Mock(hash="hash2", save_path="/data", tags="")
+        working_torrent.trackers = [mock_tracker2]
 
-        torrents = [mock_torrent]
+        torrents = [mock_torrent, working_torrent]
         config = {
             "unregistered": ["not registered"],
             "default_unregistered_tag": "unregistered",
@@ -330,6 +531,445 @@ class TestAnalyzeUnregistered:
         # Should use cross-seeding tag
         assert len(summary.torrents_to_tag["unregistered:crossseeding"]) == 1
         assert len(summary.torrents_to_tag.get("unregistered", [])) == 0
+
+    def test_preview_distinguishes_cross_seed_preservation_from_file_deletion(self, tmp_path):
+        """Impact output reports shared files as preserved, not authorized for deletion."""
+        shared_file = tmp_path / "movie.mkv"
+        shared_file.write_text("content")
+        tracker = Mock(msg="not registered", status=4)
+        source = Mock(
+            hash="source",
+            save_path=str(tmp_path),
+            category="movies",
+            tags="unregistered",
+            trackers=[tracker],
+        )
+        source.name = "source"
+        peer = Mock(
+            hash="peer",
+            save_path=str(tmp_path),
+            category="movies",
+            tags="",
+            trackers=[],
+        )
+        peer.name = "peer"
+        file_info = Mock()
+        file_info.name = "movie.mkv"
+        client = Mock()
+        client.torrents_files.return_value = [file_info]
+        summary = ImpactSummary()
+
+        _analyze_unregistered(
+            client,
+            [source, peer],
+            {
+                "unregistered": ["not registered"],
+                "default_unregistered_tag": "unregistered",
+                "cross_seeding_tag": "unregistered:crossseeding",
+                "use_delete_tags": True,
+                "use_delete_files": True,
+                "delete_tags": ["unregistered"],
+                "delete_files": {"unregistered": True},
+            },
+            summary,
+        )
+
+        assert summary.operation_targets["delete torrent only (preserve cross-seeded files)"] == ["source"]
+        assert "permanently delete torrent and files" not in summary.operation_targets
+        assert "recycle files, then delete torrent" not in summary.operation_targets
+        assert summary.disk_to_free_bytes == 0
+
+    def test_dry_run_preview_deletes_fully_selected_shared_group_once(self, tmp_path):
+        """Preview and dry-run share one deduplicated all-owner deletion plan."""
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+
+        shared_file = tmp_path / "movie.mkv"
+        shared_file.write_text("content", encoding="utf-8")
+        tracker = Mock(msg="not registered", status=4)
+        first = Mock(
+            hash="first",
+            save_path=str(tmp_path),
+            category="movies",
+            tags="unregistered",
+            trackers=[tracker],
+        )
+        first.name = "first"
+        second = Mock(
+            hash="second",
+            save_path=str(tmp_path),
+            category="movies",
+            tags="unregistered",
+            trackers=[tracker],
+        )
+        second.name = "second"
+        file_info = Mock()
+        file_info.name = shared_file.name
+        client = Mock()
+        client.torrents_files.return_value = [file_info]
+        config = {
+            "unregistered": ["not registered"],
+            "default_unregistered_tag": "unregistered",
+            "cross_seeding_tag": "unregistered:crossseeding",
+            "use_delete_tags": True,
+            "use_delete_files": True,
+            "delete_tags": ["unregistered"],
+            "delete_files": {"unregistered": True},
+            "dry_run": True,
+        }
+        torrents = [first, second]
+        summary = ImpactSummary()
+
+        _analyze_unregistered(client, torrents, config, summary)
+
+        assert summary.operation_targets["permanently delete torrent and files"] == ["first", "second"]
+        assert "delete torrent only (preserve cross-seeded files)" not in summary.operation_targets
+        assert summary.disk_to_free_bytes == len("content")
+        assert summary.unregistered_deletion_plan is not None
+        assert sum(len(deletion.files) for deletion in summary.unregistered_deletion_plan.deletions) == 1
+
+        delete_torrents_and_files(
+            client,
+            config,
+            True,
+            ["unregistered"],
+            {"unregistered": True},
+            True,
+            torrents,
+            plan=summary.unregistered_deletion_plan,
+        )
+
+        assert shared_file.read_text(encoding="utf-8") == "content"
+        client.torrents_delete.assert_not_called()
+
+    def test_analyze_unregistered_ignores_non_error_tracker_status(self):
+        """Preview only matches statuses handled by the real operation."""
+        mock_client = Mock()
+        mock_torrent = Mock(hash="hash1")
+        mock_torrent.save_path = "/data"
+        mock_torrent.tags = ""
+        mock_tracker = Mock(msg="not registered", url="http://tracker.example.com", status=2)
+        mock_tracker.get = lambda key, default=None: {
+            "msg": "not registered",
+            "url": "http://tracker.example.com",
+            "status": 2,
+        }.get(key, default)
+        mock_client.torrents_trackers.return_value = [mock_tracker]
+        mock_torrent.trackers = [mock_tracker]
+        summary = ImpactSummary()
+
+        _analyze_unregistered(
+            mock_client,
+            [mock_torrent],
+            {"unregistered": ["not registered"]},
+            summary,
+        )
+
+        assert summary.is_empty()
+
+
+class TestAnalyzeTagByTracker:
+    """Tests for tracker-tag impact analysis."""
+
+    def test_matches_configured_tracker(self):
+        mock_client = Mock()
+        mock_client.torrents_trackers.return_value = [{"url": "https://tracker.example.com/announce"}]
+        torrent = Mock(hash="hash1")
+        summary = ImpactSummary()
+
+        _analyze_tag_by_tracker(
+            mock_client,
+            [torrent],
+            {
+                "tracker_tags": {
+                    "tracker.example.com": {
+                        "tag": "example",
+                        "seed_time_limit": 60,
+                    }
+                }
+            },
+            summary,
+        )
+
+        assert summary.torrents_to_tag["example"] == ["hash1"]
+        assert summary.operation_targets["share limits"] == ["hash1"]
+
+    def test_limit_only_config_is_skipped_like_execution(self):
+        from qbitunregistered.cache import clear_cache
+        from qbitunregistered.operations.tag_by_tracker import tag_by_tracker
+
+        clear_cache()
+        mock_client = Mock()
+        mock_client.torrents_trackers.return_value = [{"url": "https://tracker.example.com/announce"}]
+        torrent = Mock(hash="hash1", name="torrent")
+        config = {"tracker_tags": {"tracker.example.com": {"seed_time_limit": 60}}}
+        summary = ImpactSummary()
+
+        _analyze_tag_by_tracker(mock_client, [torrent], config, summary)
+        tag_by_tracker(mock_client, [torrent], config)
+
+        assert summary.is_empty()
+        mock_client.torrents_add_tags.assert_not_called()
+        mock_client.torrents_set_share_limits.assert_not_called()
+
+    def test_object_tracker_metadata_is_skipped_like_execution(self):
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
+        mock_client = Mock()
+        mock_client.torrents_trackers.return_value = [Mock(url="https://tracker.example.com/announce")]
+        torrent = Mock(hash="hash1")
+        config = {
+            "tracker_tags": {
+                "tracker.example.com": {
+                    "tag": "example",
+                    "seed_time_limit": 60,
+                }
+            }
+        }
+        tag_summary = ImpactSummary()
+        seeding_summary = ImpactSummary()
+
+        _analyze_tag_by_tracker(mock_client, [torrent], config, tag_summary)
+        _analyze_seeding_management(mock_client, [torrent], config, seeding_summary)
+
+        assert tag_summary.is_empty()
+        assert seeding_summary.is_empty()
+
+
+class TestAnalyzeCrossSeeding:
+    def test_preview_includes_contradictory_tag_removals(self):
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
+        client = Mock()
+        client.torrents_files.side_effect = lambda torrent_hash: {
+            "shared1": [{"name": "movie.mkv"}],
+            "shared2": [{"name": "movie.mkv"}],
+            "unique": [{"name": "other.mkv"}],
+        }[torrent_hash]
+        shared_with_opposite = Mock(hash="shared1", tags="not-cross-seeding, keep")
+        shared_without_opposite = Mock(hash="shared2", tags="keep")
+        unique_with_opposite = Mock(hash="unique", tags="cross-seed")
+        summary = ImpactSummary()
+
+        _analyze_tag_cross_seeding(
+            client,
+            [shared_with_opposite, shared_without_opposite, unique_with_opposite],
+            {},
+            summary,
+        )
+
+        assert summary.torrents_to_tag["cross-seed"] == ["shared1", "shared2"]
+        assert summary.torrents_to_tag["not-cross-seeding"] == ["unique"]
+        assert summary.operation_targets["remove tag 'not-cross-seeding'"] == ["shared1"]
+        assert summary.operation_targets["remove tag 'cross-seed'"] == ["unique"]
+        formatted = summary.format_summary(show_details=True)
+        assert "remove tag 'not-cross-seeding': 1" in formatted
+        assert "remove tag 'cross-seed': 1" in formatted
+
+    def test_object_file_metadata_is_skipped_like_execution(self):
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
+        client = Mock()
+        client.torrents_files.return_value = [Mock(name="movie.mkv")]
+        torrent = Mock(hash="hash1")
+        summary = ImpactSummary()
+
+        _analyze_tag_cross_seeding(client, [torrent], {}, summary)
+
+        assert summary.is_empty()
+
+
+class TestAnalyzeCreateHardLinks:
+    def test_previews_concrete_sanitized_destination_and_skips_existing(self, tmp_path):
+        from qbitunregistered.operations.create_hardlinks import create_hard_links
+
+        source_root = tmp_path / "source"
+        content_root = source_root / "Show"
+        content_root.mkdir(parents=True)
+        (content_root / "episode.mkv").write_text("episode")
+        (content_root / "existing.mkv").write_text("existing")
+        target_root = tmp_path / "target"
+        existing_target = target_root / "TV_Shows" / "existing.mkv"
+        existing_target.parent.mkdir(parents=True)
+        existing_target.write_text("already linked")
+        torrent = Mock(
+            hash="hash1",
+            save_path=str(source_root),
+            category="TV / Shows",
+        )
+        torrent.name = "Show"
+        torrent.state_enum.is_complete = True
+        summary = ImpactSummary()
+
+        _analyze_create_hard_links(
+            Mock(),
+            [torrent],
+            {"target_dir": str(target_root)},
+            summary,
+        )
+
+        expected_target = target_root / "TV_Shows" / "episode.mkv"
+        assert summary.operation_targets["create hard links"] == [str(expected_target)]
+        assert summary.hard_link_plan is not None
+        assert not expected_target.exists()
+
+        create_hard_links(
+            str(target_root),
+            [torrent],
+            planned_links=summary.hard_link_plan,
+        )
+
+        assert expected_target.exists()
+        assert expected_target.stat().st_ino == (content_root / "episode.mkv").stat().st_ino
+
+    def test_missing_source_fails_closed_without_mutation(self, tmp_path):
+        target_root = tmp_path / "target"
+        target_root.mkdir()
+        torrent = Mock(
+            hash="hash1",
+            save_path=str(tmp_path / "source"),
+            category="movies",
+        )
+        torrent.name = "missing.mkv"
+        torrent.state_enum.is_complete = True
+
+        with pytest.raises(ImpactAnalysisError):
+            analyze_impact(
+                Mock(),
+                [torrent],
+                {"target_dir": str(target_root)},
+                ["create_hard_links"],
+            )
+
+        assert list(target_root.iterdir()) == []
+
+    def test_duplicate_destination_fails_closed_without_mutation(self, tmp_path):
+        target_root = tmp_path / "target"
+        target_root.mkdir()
+        torrents = []
+        for source_name, contents in (("source-a", "first"), ("source-b", "second")):
+            source_root = tmp_path / source_name
+            source_root.mkdir()
+            (source_root / "movie.mkv").write_text(contents)
+            torrent = Mock(
+                hash=source_name,
+                save_path=str(source_root),
+                category="movies",
+            )
+            torrent.name = "movie.mkv"
+            torrent.state_enum.is_complete = True
+            torrents.append(torrent)
+
+        with pytest.raises(ImpactAnalysisError) as exc_info:
+            analyze_impact(
+                Mock(),
+                torrents,
+                {"target_dir": str(target_root)},
+                ["create_hard_links"],
+            )
+
+        assert "Multiple sources map" in str(exc_info.value.__cause__)
+        assert list(target_root.iterdir()) == []
+
+    def test_symlink_source_outside_torrent_content_fails_closed(self, tmp_path):
+        source_root = tmp_path / "source"
+        content_root = source_root / "Show"
+        content_root.mkdir(parents=True)
+        outside_file = tmp_path / "secret.txt"
+        outside_file.write_text("not torrent content")
+        (content_root / "episode.mkv").symlink_to(outside_file)
+        target_root = tmp_path / "target"
+        target_root.mkdir()
+        torrent = Mock(
+            hash="hash1",
+            save_path=str(source_root),
+            category="tv",
+        )
+        torrent.name = "Show"
+        torrent.state_enum.is_complete = True
+
+        with pytest.raises(ImpactAnalysisError):
+            analyze_impact(
+                Mock(),
+                [torrent],
+                {"target_dir": str(target_root)},
+                ["create_hard_links"],
+            )
+
+        assert list(target_root.iterdir()) == []
+
+    def test_source_swapped_to_external_symlink_after_planning_is_rejected(self, tmp_path):
+        from qbitunregistered.operations.create_hardlinks import HardLinkPlanningError, create_hard_links
+
+        source_root = tmp_path / "source"
+        source_root.mkdir()
+        source = source_root / "movie.mkv"
+        source.write_text("torrent content")
+        outside_file = tmp_path / "secret.txt"
+        outside_file.write_text("not torrent content")
+        target_root = tmp_path / "target"
+        target_root.mkdir()
+        torrent = Mock(
+            hash="hash1",
+            save_path=str(source_root),
+            category="movies",
+        )
+        torrent.name = "movie.mkv"
+        torrent.state_enum.is_complete = True
+        summary = ImpactSummary()
+        _analyze_create_hard_links(
+            Mock(),
+            [torrent],
+            {"target_dir": str(target_root)},
+            summary,
+        )
+        assert summary.hard_link_plan is not None
+
+        source.unlink()
+        source.symlink_to(outside_file)
+        with pytest.raises(HardLinkPlanningError, match="Failed to create 1"):
+            create_hard_links(
+                str(target_root),
+                [torrent],
+                planned_links=summary.hard_link_plan,
+            )
+
+        assert not (target_root / "movies" / "movie.mkv").exists()
+
+    def test_completed_destructive_source_must_be_covered_by_hard_link_targets(self, tmp_path):
+        from qbitunregistered.file_operations import capture_file_identity
+        from qbitunregistered.operations.create_hardlinks import (
+            HardLinkPlanningError,
+            plan_hard_links,
+            verify_hard_link_preservation,
+        )
+
+        source_root = tmp_path / "source"
+        source_root.mkdir()
+        (source_root / "movie.mkv").write_text("torrent content")
+        uncovered_source = source_root / "uncovered.mkv"
+        uncovered_source.write_text("destructive content")
+        target_root = tmp_path / "target"
+        target_root.mkdir()
+        torrent = Mock(
+            hash="hash1",
+            save_path=str(source_root),
+            category="movies",
+        )
+        torrent.name = "movie.mkv"
+        torrent.state_enum.is_complete = True
+        planned_links = plan_hard_links(str(target_root), [torrent])
+
+        with pytest.raises(HardLinkPlanningError, match="not covered"):
+            verify_hard_link_preservation(
+                str(target_root),
+                [torrent],
+                [capture_file_identity(uncovered_source)],
+                dry_run=True,
+                planned_links=planned_links,
+            )
 
 
 class TestAnalyzePauseResume:
@@ -356,10 +996,10 @@ class TestAnalyzePauseResume:
 
         _analyze_pause(mock_client, torrents, config, summary)
 
-        # Only active torrent should be in pause list
-        assert len(summary.torrents_to_pause) == 1
+        # Execution passes every torrent to the batched pause call.
+        assert len(summary.torrents_to_pause) == 2
         assert "hash1" in summary.torrents_to_pause
-        assert "hash2" not in summary.torrents_to_pause
+        assert "hash2" in summary.torrents_to_pause
 
     def test_analyze_resume_paused_torrents(self):
         """Test analyzing resume for paused torrents."""
@@ -382,10 +1022,10 @@ class TestAnalyzePauseResume:
 
         _analyze_resume(mock_client, torrents, config, summary)
 
-        # Only paused torrent should be in resume list
-        assert len(summary.torrents_to_resume) == 1
+        # Execution passes every torrent to the batched resume call.
+        assert len(summary.torrents_to_resume) == 2
         assert "hash1" in summary.torrents_to_resume
-        assert "hash2" not in summary.torrents_to_resume
+        assert "hash2" in summary.torrents_to_resume
 
 
 @pytest.mark.integration
@@ -399,6 +1039,8 @@ class TestImpactAnalyzerIntegration:
         # Create mock torrents
         mock_torrent1 = Mock()
         mock_torrent1.hash = "hash1"
+        mock_torrent1.save_path = "/data"
+        mock_torrent1.tags = "unregistered"
         mock_torrent1.state_enum = Mock()
         mock_torrent1.state_enum.is_paused = False
 
@@ -406,9 +1048,11 @@ class TestImpactAnalyzerIntegration:
         mock_tracker = Mock()
         mock_tracker.msg = "not registered"
         mock_tracker.url = "http://tracker.example.com"
+        mock_tracker.status = 4
         mock_tracker.get = lambda k, d=None: {"msg": "not registered", "url": "http://tracker.example.com"}.get(k, d)
 
         mock_client.torrents_trackers.return_value = [mock_tracker]
+        mock_torrent1.trackers = [mock_tracker]
         mock_client.torrents_info.return_value = [{"size": 5 * 1024**3}]
 
         torrents = [mock_torrent1]
@@ -426,7 +1070,7 @@ class TestImpactAnalyzerIntegration:
         assert not summary.is_empty()
         assert len(summary.torrents_to_tag) > 0
         assert len(summary.torrents_to_pause) > 0
-        assert summary.disk_to_free_bytes > 0
+        assert summary.disk_to_free_bytes == 0
 
         # Verify formatted output
         formatted = summary.format_summary()

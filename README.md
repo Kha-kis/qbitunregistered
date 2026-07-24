@@ -1,6 +1,6 @@
 # qbitunregistered
 
-`qbitunregistered` is a powerful Python script for automating and managing a range of tasks in qBittorrent. It's designed to streamline the management of torrents with features for handling orphaned files, unregistered torrents, and more, all customizable through command-line arguments and a configuration file.
+`qbitunregistered` automates common qBittorrent maintenance tasks, including orphan cleanup, unregistered torrent handling, tagging, seeding limits, and notifications.
 
 ## Features
 
@@ -20,17 +20,20 @@
 
 - Python 3.11 or newer installed on your system.
 - qBittorrent with Web UI access.
-- Dependencies from `requirements.txt` installed.
 
 ## Installation
 
-Clone the repository and install the required Python packages:
+Clone the repository, create a virtual environment, and install the application:
 
 ```bash
-git clone https://github.com/your-username/qbitunregistered.git
+git clone https://github.com/Kha-kis/qbitunregistered.git
 cd qbitunregistered
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install .
 ```
+
+This installs the `qbitunregistered` and `qbitunregistered-scheduler` commands.
 
 ## Upgrading
 
@@ -50,9 +53,9 @@ If you're upgrading from an older version:
    - macOS (Homebrew): `brew install python@3.11`
    - Windows: Download from [python.org](https://www.python.org/downloads/)
 
-3. **Update dependencies:**
+3. **Reinstall the application:**
    ```bash
-   pip install -r requirements.txt --upgrade
+   python -m pip install --upgrade .
    ```
 
 4. **Key Changes in This Version:**
@@ -140,7 +143,7 @@ sudo chown cronuser:cronuser config.json
 chmod 600 config.json
 
 # Example cron entry (runs daily at 2 AM)
-0 2 * * * cd /path/to/qbitunregistered && /usr/bin/python3 qbitunregistered.py --unregistered --log-file /var/log/qbitunregistered.log
+0 2 * * * /path/to/.venv/bin/qbitunregistered --config /path/to/config.json --unregistered --yes --log-file /var/log/qbitunregistered.log
 ```
 
 **Best Practices:**
@@ -151,11 +154,55 @@ chmod 600 config.json
 
 ## Usage
 
-Execute the script with Python, appending any command-line arguments you wish to use:
+Run the installed command with the operations you want:
 
 ```bash
-python qbitunregistered.py --option1 --option2
+qbitunregistered --config config.json --unregistered --dry-run
 ```
+
+Use `python -m qbitunregistered` if you prefer module execution. New
+installations and automation should use one of these two supported entry
+points instead of the legacy root scripts.
+
+To run the built-in scheduler, set both `scheduled_times` and
+`scheduled_operations` in the configuration, then pass that same file to the
+scheduler:
+
+```json
+{
+  "scheduled_times": ["09:00", "21:00"],
+  "scheduled_operations": ["unregistered", "orphaned"]
+}
+```
+
+```bash
+qbitunregistered-scheduler --config /absolute/path/to/config.json
+```
+
+Scheduled runs forward those operation flags and add `--yes` automatically.
+The scheduler rejects configured times with no operations. A scheduled
+`create_hard_links` operation also requires an absolute `target_dir` in the
+configuration. Test the same operations with `"dry_run": true` before enabling
+real scheduled mutations.
+
+### Legacy source-checkout commands
+
+The following commands were documented before the project became an
+installable package:
+
+```bash
+python qbitunregistered.py --config config.json --unregistered
+python scheduler.py
+```
+
+They remain supported throughout the 2.x series so existing cron jobs and
+source-checkout workflows do not break. Both root scripts are deprecated and
+planned for removal in 3.0. Migrate new and existing automation to
+`qbitunregistered` and `qbitunregistered-scheduler`. The legacy `scheduler.py`
+wrapper continues to find `config.json` beside the script rather than in the
+current working directory, and its scheduled child runs from that source
+checkout so existing absolute-path cron invocations do not require installing
+`qbitunregistered` as a package.
 
 ### Command-Line Arguments
 
@@ -164,11 +211,13 @@ Here's what you can specify when running `qbitunregistered`:
 - `--config`: Custom path to your configuration file.
 - `--orphaned`: Activate orphaned file checking.
 - `--unregistered`: Enable checks for unregistered torrents.
+- `--recycle-bin`: Override the configured recycle-bin path with a nonblank
+  path. Empty or whitespace-only values are rejected before connection.
 - `--dry-run` / `--no-dry-run`: Override dry-run mode from the configuration file.
 - `--host`: Specify the host and port where qBittorrent is running.
 - `--username`: Your username for logging into the qBittorrent Web UI.
 - `--password`: Your password for logging into the qBittorrent Web UI.
-- `--api-key`: API key for qBittorrent v5.2.0 or newer. Takes precedence over username/password.
+- `--api-key`: API key for qBittorrent v5.2.0 or newer. A non-blank value takes precedence over username/password; an explicitly blank value selects username/password fallback.
 - `--tag-by-tracker`: Perform tagging based on the associated tracker.
 - `--seeding-management`: Apply seed time and seed ratio limits based on tracker tags.
 - `--auto-tmm`: Enable Automatic Torrent Management (auto TMM).
@@ -182,7 +231,28 @@ Here's what you can specify when running `qbitunregistered`:
 - `--exclude-dirs`: Exclude directories from being scanned for orphaned files. Full paths should be specified, and wildcards can be used to match multiple directories (e.g., `/path/to/exclude/*`). Multiple paths can be specified separated by spaces.
 - `--log-level`: Set logging verbosity (DEBUG, INFO, WARNING, ERROR). Overrides config.json setting.
 - `--log-file`: Write logs to specified file in addition to console. Useful for scheduled/cron runs.
-- `--yes`, `-y`: Skip confirmation prompt and proceed with operations automatically. Use with caution! Recommended for automation/cron jobs after testing with dry-run.
+- `--yes`, `-y`: Skip impact analysis and confirmation and proceed with operations automatically. Use with caution and only after testing the same operation set with dry-run.
+
+Without `--yes`, every selected non-dry-run operation is previewed and requires
+confirmation. If any target cannot be analyzed reliably, execution aborts
+before mutation. Orphaned-file targets and hard-link destinations shown in the
+preview are reused for execution so the confirmed list is the list processed.
+Orphan plans also bind each path to its device, inode, type, size, and
+modification time; missing, modified, substituted, or symlinked targets are
+preserved. Orphan previews distinguish permanent deletion from recycle-bin
+moves: only permanent deletion contributes to "Disk space to free," while
+recycling reports the amount of data to move. Unregistered previews distinguish
+torrent-only deletion, cross-seeded-file preservation, recycling, and permanent
+deletion. Cross-seed tagging previews also list contradictory tags that will be
+removed. Before file mutation, execution refreshes qBittorrent's ownership
+state without the preview cache and aborts if it changed.
+
+Orphan cleanup also revalidates every confirmed file identity before a real
+mutation. If any planned file cannot be deleted or recycled, the operation is
+reported as incomplete, notifications show a failure, and the CLI exits
+nonzero. Recycle batches roll earlier moves back when a later move fails;
+permanent deletions cannot be rolled back, so any runtime partial completion is
+reported with completed and planned counts rather than as success.
 
 ## Recycle Bin Feature
 
@@ -257,8 +327,20 @@ The recycle bin uses a **hybrid structure** combining deletion type and category
 - If a file with the same name already exists in the recycle bin, a timestamp suffix is automatically added
 - Format: `filename_YYYYMMDD_HHMMSS.ext`
 - Example: `movie.mkv` → `movie_20250123_143045.mkv`
+- Repeated collisions in the same second add a numeric suffix and never overwrite
+  an existing recycled file
 - This prevents overwriting previously recycled files
 - Useful when the same file is deleted multiple times
+- If qBittorrent cannot remove an unregistered torrent after its files are
+  recycled, the application restores those files without overwriting any path
+  created concurrently.
+- Before removing a recycled source path, the application atomically captures
+  its current directory entry in a private staging directory and verifies the
+  captured file. A concurrently inserted replacement is restored without
+  overwrite; if its original path is already occupied, the failed operation
+  reports the preserved staging path for manual recovery.
+- Internal `.qbitunregistered-recycle-*` staging and recovery directories are
+  reserved and automatically excluded from orphan scanning and pruning.
 
 **Automatic Exclusion:**
 - The recycle bin directory is automatically excluded from orphan scanning
@@ -278,7 +360,13 @@ The recycle bin uses a **hybrid structure** combining deletion type and category
 
 ### Unregistered Torrent Handling
 
-When deleting unregistered torrents with `delete_files=True`:
+File removal for unregistered torrents requires all three controls:
+`use_delete_tags: true`, an exact tag in `delete_tags`, and
+`use_delete_files: true` with a boolean `true` value for that tag in
+`delete_files`. qBittorrent's comma-separated tags are matched exactly, not as
+substrings.
+
+When those controls authorize file removal:
 
 **With Recycle Bin Configured:**
 1. Script gets all file paths for the torrent
@@ -287,26 +375,40 @@ When deleting unregistered torrents with `delete_files=True`:
 4. Result: Files safely preserved in organized recycle bin, torrent removed
 
 **Without Recycle Bin:**
-1. Torrent is deleted with `delete_files=True`
-2. qBittorrent permanently deletes both torrent and files
-3. Result: Permanent deletion (original behavior)
+1. The script resolves the torrent's files and scans all other torrents for shared ownership
+2. Only after that complete scan succeeds is the torrent deleted with `delete_files=True`
+3. qBittorrent permanently deletes both torrent and files
 
 **Important Notes:**
-- Cross-seeded torrents are handled intelligently
-- Files are only moved once, even if multiple torrents reference them
-- If file paths cannot be retrieved, torrent is still deleted (logged as warning)
+- When `--create-hard-links` and file-removing `--unregistered` cleanup are
+  selected together, hard links are created before unregistered files are
+  deleted or recycled. Every affected completed-torrent source must then have a
+  distinct destination with the same file identity; an unrelated file already
+  occupying the destination is not accepted. If creation or verification
+  fails, the unregistered cleanup is blocked and the command reports a
+  non-zero exit status.
+- Cross-seeded files are preserved while any current owner is not authorized
+  for file deletion. If every owner is selected and file deletion is enabled
+  for each, shared content is deleted or recycled once before all owners are
+  removed.
+- A failed, incomplete, or malformed file/ownership check aborts deletion of that torrent
+- Missing files are treated as an unsafe state, not as an empty torrent
+- The same ownership checks protect recycle-bin and permanent-deletion modes
+- If any file for one unregistered torrent fails to move, earlier moves for that
+  torrent are rolled back, the torrent is preserved, and the operation reports
+  failure with a non-zero exit status
 
 ### Example Usage
 
 ```bash
 # Test with dry-run first (see what would be recycled)
-python qbitunregistered.py --orphaned --unregistered --dry-run
+qbitunregistered --orphaned --unregistered --dry-run
 
 # Run orphaned check with recycle bin
-python qbitunregistered.py --orphaned
+qbitunregistered --orphaned
 
 # Run unregistered check with recycle bin
-python qbitunregistered.py --unregistered
+qbitunregistered --unregistered
 
 # Browse recycle bin structure
 ls -R /path/to/recycle/bin
@@ -409,12 +511,15 @@ Example notification:
 qbitunregistered Summary
 
 ✅ Succeeded: 3
-  - Orphaned files check: 5 files processed
+  - Orphaned files check: 5 files moved to recycle bin
   - Unregistered checks
   - Tag by tracker
 
 ❌ Failed: 0
 ```
+
+Orphan notification entries report whether files were permanently deleted,
+moved to the recycle bin, or would receive either action during a dry run.
 
 ## Troubleshooting
 

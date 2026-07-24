@@ -1,3 +1,5 @@
+"""Notification integrations for qbitunregistered."""
+
 import logging
 import json
 import urllib.request
@@ -6,11 +8,13 @@ import time
 from typing import Dict, List, Optional, Any, Callable
 
 try:
-    import apprise
-
-    APPRISE_AVAILABLE = True
+    import apprise as _apprise
 except ImportError:
+    apprise: Any = None
     APPRISE_AVAILABLE = False
+else:
+    apprise = _apprise
+    APPRISE_AVAILABLE = True
 
 
 class NotifiarrError(Exception):
@@ -44,7 +48,7 @@ class NotificationManager:
 
         self.apprise_obj = None
         if self.apprise_url:
-            if APPRISE_AVAILABLE:
+            if APPRISE_AVAILABLE and apprise is not None:
                 self.apprise_obj = apprise.Apprise()
                 self.apprise_obj.add(self.apprise_url)
             else:
@@ -195,7 +199,8 @@ class NotificationManager:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
             # Keep notification I/O bounded so the main script doesn't hang
-            with urllib.request.urlopen(req, timeout=10) as response:
+            # The destination is the fixed HTTPS Notifiarr endpoint above.
+            with urllib.request.urlopen(req, timeout=10) as response:  # nosec B310
                 if 200 <= response.status < 300:
                     return  # Success
                 else:

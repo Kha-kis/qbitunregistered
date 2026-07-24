@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Validated `scheduled_operations` configuration so the built-in scheduler
+  forwards an explicit maintenance operation set and rejects scheduled hard-link
+  jobs without an absolute target directory
+- Installable `qbitunregistered` and `qbitunregistered-scheduler` console commands
+- Package-build smoke testing in CI
+- Codex-compatible `AGENTS.md` guidance for Python implementation and review
+- BasedPyright development dependency, project configuration, language-server
+  instructions, and required CI type analysis
 - **qBittorrent 5.2 API-key authentication** as an alternative to username/password credentials
 - Tracker error status support for qBittorrent WebAPI v2.13+
 - **Dry-Run Impact Preview**: New impact analysis system that shows what will happen before executing operations
@@ -18,20 +26,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Detailed operation summaries with affected torrent counts
   - New `--yes` / `-y` flag to skip confirmation prompt (for automation/cron)
   - Non-interactive environment detection (prevents hangs in CI/CD)
-  - New module `utils/impact_analyzer.py` with `ImpactSummary` class
+  - New module `qbitunregistered.impact` with `ImpactSummary` class
   - 26 comprehensive tests for impact analysis
 
 ### Changed
+- Application modules now live in the installable `qbitunregistered` package
+- Auto-remove batches all completed torrent hashes into one qBittorrent API
+  call and reports batch failures to the operation summary
+- `pyproject.toml` is the single source for runtime and development dependencies
+- Added a generated `uv.lock` for reproducible development environments
+- GitHub Actions use the current Node 24 action releases
+- Removed Claude-specific workflows and configuration; Codex review now uses
+  repository guidance from `AGENTS.md`
 - **Python 3.11+ required** to align with supported Python releases and current `qbittorrent-api`
 - **qbittorrent-api 2026.5.3+ required** for native API-key authentication
 - **Configuration Validation**:
-  - Refactored `utils/config_validator.validate_config` into focused helper functions for easier maintenance and testing
+  - Refactored `qbitunregistered.config.validate_config` into focused helper functions for easier maintenance and testing
   - Added stricter validation for Notifiarr settings:
     - `notifiarr_key` and `notifiarr_channel` must be provided together
     - `notifiarr_channel` must be a numeric Discord channel ID string (17–20 digits)
   - Added validation for `recycle_bin` configuration (absolute path requirement, directory and writability checks)
 
+### Deprecated
+
+- The root `qbitunregistered.py` and `scheduler.py` source-checkout commands
+  remain supported throughout 2.x for existing automation but are planned for
+  removal in 3.0. New automation should use the installed
+  `qbitunregistered` and `qbitunregistered-scheduler` commands.
+
 ### Fixed
+- Combined hard-link and unregistered file-cleanup runs now create the confirmed
+  hard links before deleting or recycling source files. Failed or stale-source
+  hard-link plans, uncovered completed sources, and unrelated files occupying
+  required destinations block the dependent cleanup and produce a truthful
+  failed summary, notification, and exit status.
+- Invalid non-boolean `dry_run` configuration now fails before connecting or
+  mutating, while explicit `--dry-run` and `--no-dry-run` still take precedence
+- Impact analysis now covers every mutating flag, shows concrete orphaned,
+  auto-remove, and hard-link targets, reuses confirmed filesystem plans, and
+  aborts on analyzer failure or conflicting hard-link destinations
+- Orphan impact previews now distinguish permanent deletion from recycle-bin
+  moves. Recycled bytes are reported as data to move rather than disk space to
+  free, and operation notifications use the same action-specific wording.
+- Cross-seed impact previews now show contradictory tag removals before
+  confirmation
+- Orphan cleanup now binds previewed paths to immutable file identities and
+  refuses missing, modified, substituted, non-regular, or symlinked targets.
+  Immediately before mutation, it also refreshes qBittorrent ownership without
+  cache and aborts the entire confirmed plan if a target is now owned or
+  ownership cannot be established. Canonical default, category, and current
+  torrent save roots are preserved during empty-directory pruning, while
+  nested empty parents below those roots are removed. Any incomplete file
+  cleanup now fails the operation instead of logging success: recycle batches
+  roll prior moves back, while permanent runtime partials report exact
+  completed and planned counts.
+- Unregistered preview and execution now share one ownership/deletion plan,
+  report the exact file action, build one per-run ownership index, and refresh
+  qBittorrent ownership state before file mutation. Current delete tags are
+  revalidated before deletion, and uncertainty or tag removal preserves the
+  torrent and rolls back any pending recycle move
+- Fully selected cross-seed owner groups now delete or recycle each canonical
+  shared path once instead of treating another planned deletion as a surviving
+  owner. Torrent-only, ineligible, and unselected owners still preserve shared
+  content, and grouped recycle failures roll every completed move back.
+- Unregistered deletion now matches comma-separated tags exactly, validates
+  every `delete_files` value, and honors the global `use_delete_files` gate
+- Permanent deletion now performs the same fail-closed file discovery and
+  cross-seed ownership scan as recycle-bin deletion
+- Recycle-bin moves refuse destination overwrites, reject non-regular sources,
+  and roll back earlier files when an unregistered torrent cannot be moved
+  completely; incomplete moves now fail the operation and produce a non-zero
+  CLI result instead of being reported as successful. Files are also restored
+  if the subsequent torrent deletion fails.
+  Source removal now uses atomic capture into a private staging directory before
+  identity verification, so same- and cross-filesystem moves do not unlink a
+  concurrently inserted replacement; restoration conflicts report a preserved
+  recovery path. Cleanup also compares complete file state before removing a
+  verified destination, preventing inode reuse from discarding the remaining
+  copy. Internal staging and recovery directories are automatically excluded
+  from later orphan discovery and pruning.
+  A source-directory durability error after unlink is logged without losing the
+  completed move's rollback record
+- Hard-link planning rejects symlinked files that resolve outside the torrent
+  content directory
+- API caches are cleared at the start of each CLI execution and isolated by
+  client within that execution; an explicitly blank CLI API key correctly
+  selects username/password authentication
+- Empty or whitespace-only `--recycle-bin` overrides are rejected before
+  connection so they cannot disable a configured recycle bin and select
+  permanent deletion
+- Scheduler runs now forward the selected configuration path to the application
+- The root scheduler compatibility wrapper again defaults to its adjacent
+  `config.json` and runs scheduled children from the source checkout, preserving
+  absolute-path cron and systemd setups without requiring package installation
+- Tracker-tag impact preview now uses the same URL matcher and required-tag gate
+  as the real operation
+- Unregistered impact preview now requires the same tracker error statuses as the real operation
 - Empty or omitted API keys now fall back to username/password authentication
 - Configuration-based `dry_run` is no longer overridden by the CLI argument's default value
 - **Notification Reliability & Security**:

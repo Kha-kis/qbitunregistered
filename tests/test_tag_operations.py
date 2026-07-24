@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from collections import defaultdict
+from unittest.mock import Mock, patch
 
 
 class MockTorrent:
@@ -49,7 +50,7 @@ class TestTagByAge:
 
     def test_age_bucket_assignments(self):
         """Test that torrents are assigned to correct age buckets."""
-        from scripts.tag_by_age import tag_by_age
+        from qbitunregistered.operations.tag_by_age import tag_by_age
         from datetime import datetime, timedelta
 
         client = MockClient()
@@ -73,7 +74,7 @@ class TestTagByAge:
 
     def test_dry_run_mode(self):
         """Test that dry_run mode doesn't make API calls."""
-        from scripts.tag_by_age import tag_by_age
+        from qbitunregistered.operations.tag_by_age import tag_by_age
 
         client = MockClient()
         torrents = [MockTorrent("test", "hash1", datetime.now())]
@@ -86,7 +87,7 @@ class TestTagByAge:
 
     def test_empty_torrent_list(self):
         """Test handling of empty torrent list."""
-        from scripts.tag_by_age import tag_by_age
+        from qbitunregistered.operations.tag_by_age import tag_by_age
 
         client = MockClient()
         torrents = []
@@ -103,7 +104,7 @@ class TestAutoRemove:
 
     def test_removes_completed_torrents(self):
         """Test that completed torrents are identified."""
-        from scripts.auto_remove import auto_remove
+        from qbitunregistered.operations.auto_remove import auto_remove
 
         client = MockClient()
         client.torrents_delete = lambda torrent_hashes, delete_files: client.api_calls.append(("delete", torrent_hashes))
@@ -117,13 +118,14 @@ class TestAutoRemove:
         # Run auto remove
         auto_remove(client, torrents, dry_run=False)
 
-        # Should have tried to delete 2 completed torrents
+        # Should delete all completed torrents in one API call.
         delete_calls = [call for call in client.api_calls if call[0] == "delete"]
-        assert len(delete_calls) == 2
+        assert len(delete_calls) == 1
+        assert delete_calls[0][1] == ["hash1", "hash2"]
 
     def test_dry_run_no_deletion(self):
         """Test that dry_run mode doesn't delete torrents."""
-        from scripts.auto_remove import auto_remove
+        from qbitunregistered.operations.auto_remove import auto_remove
 
         client = MockClient()
         client.torrents_delete = lambda torrent_hashes, delete_files: client.api_calls.append(("delete", torrent_hashes))
@@ -146,7 +148,7 @@ class TestTorrentManagement:
 
     def test_pause_torrents_batched(self):
         """Test that pause operation is batched."""
-        from scripts.torrent_management import pause_torrents
+        from qbitunregistered.operations.torrent_management import pause_torrents
 
         client = MockClient()
         client.torrents_pause = lambda torrent_hashes: client.api_calls.append(("pause", torrent_hashes))
@@ -170,7 +172,7 @@ class TestTorrentManagement:
 
     def test_resume_torrents_batched(self):
         """Test that resume operation is batched."""
-        from scripts.torrent_management import resume_torrents
+        from qbitunregistered.operations.torrent_management import resume_torrents
 
         client = MockClient()
         client.torrents_resume = lambda torrent_hashes: client.api_calls.append(("resume", torrent_hashes))
@@ -189,7 +191,7 @@ class TestTorrentManagement:
 
     def test_pause_dry_run(self):
         """Test pause in dry-run mode."""
-        from scripts.torrent_management import pause_torrents
+        from qbitunregistered.operations.torrent_management import pause_torrents
 
         client = MockClient()
         client.torrents_pause = lambda torrent_hashes: client.api_calls.append(("pause", torrent_hashes))
@@ -204,7 +206,7 @@ class TestTorrentManagement:
 
     def test_empty_torrent_list_handling(self):
         """Test handling of empty torrent lists."""
-        from scripts.torrent_management import pause_torrents, resume_torrents
+        from qbitunregistered.operations.torrent_management import pause_torrents, resume_torrents
 
         client = MockClient()
         client.torrents_pause = lambda torrent_hashes: client.api_calls.append(("pause", torrent_hashes))
@@ -223,7 +225,7 @@ class TestAutoTMM:
 
     def test_auto_tmm_batched(self):
         """Test that auto TMM is applied in batch."""
-        from scripts.auto_tmm import apply_auto_tmm_per_torrent
+        from qbitunregistered.operations.auto_tmm import apply_auto_tmm_per_torrent
 
         client = MockClient()
         client.torrents_set_auto_management = lambda enable, torrent_hashes: client.api_calls.append(
@@ -252,7 +254,7 @@ class TestAutoTMM:
 
     def test_auto_tmm_dry_run(self):
         """Test auto TMM in dry-run mode."""
-        from scripts.auto_tmm import apply_auto_tmm_per_torrent
+        from qbitunregistered.operations.auto_tmm import apply_auto_tmm_per_torrent
 
         client = MockClient()
         client.torrents_set_auto_management = lambda enable, torrent_hashes: client.api_calls.append(
@@ -266,3 +268,107 @@ class TestAutoTMM:
 
         # Should not have made API call
         assert len(client.api_calls) == 0
+
+
+class TestTrackerTagging:
+    """Test tracker-based batching."""
+
+    def test_batches_tags_and_limits(self):
+        from qbitunregistered.operations.tag_by_tracker import tag_by_tracker
+
+        client = Mock()
+        torrents = [MockTorrent("one", "hash1"), MockTorrent("two", "hash2")]
+        tracker_config = {
+            "tag": "example",
+            "seed_time_limit": "120",
+            "seed_ratio_limit": "2.5",
+        }
+
+        with patch(
+            "qbitunregistered.operations.tag_by_tracker.find_tracker_config",
+            return_value=tracker_config,
+        ):
+            tag_by_tracker(client, torrents, {}, dry_run=False)
+
+        client.torrents_add_tags.assert_called_once_with(torrent_hashes=["hash1", "hash2"], tags="example")
+        client.torrents_set_share_limits.assert_called_once_with(
+            torrent_hashes=["hash1", "hash2"],
+            ratio_limit=2.5,
+            seeding_time_limit=120,
+        )
+
+    def test_dry_run_does_not_mutate(self):
+        from qbitunregistered.operations.tag_by_tracker import tag_by_tracker
+
+        client = Mock()
+        with patch(
+            "qbitunregistered.operations.tag_by_tracker.find_tracker_config",
+            return_value={"tag": "example"},
+        ):
+            tag_by_tracker(client, [MockTorrent("one", "hash1")], {}, dry_run=True)
+
+        client.torrents_add_tags.assert_not_called()
+
+    def test_tracker_cache_is_isolated_by_client(self):
+        from qbitunregistered.cache import clear_cache
+        from qbitunregistered.operations.seeding_management import find_tracker_config
+
+        clear_cache()
+        torrent = Mock(hash="same-hash")
+        first_client = Mock()
+        second_client = Mock()
+        first_client.torrents_trackers.return_value = [{"url": "https://first.example/announce"}]
+        second_client.torrents_trackers.return_value = [{"url": "https://second.example/announce"}]
+        config = {
+            "tracker_tags": {
+                "first.example": {"tag": "first"},
+                "second.example": {"tag": "second"},
+            }
+        }
+
+        assert find_tracker_config(first_client, torrent, config) == {"tag": "first"}
+        assert find_tracker_config(second_client, torrent, config) == {"tag": "second"}
+        first_client.torrents_trackers.assert_called_once()
+        second_client.torrents_trackers.assert_called_once()
+
+
+class TestCrossSeedTagging:
+    """Test file-structure based cross-seed tagging."""
+
+    def test_groups_cross_seeded_and_unique_torrents(self):
+        from qbitunregistered.operations.tag_cross_seeding import tag_cross_seeds
+
+        client = Mock()
+        torrents = [
+            Mock(name="one", hash="hash1", save_path="/data"),
+            Mock(name="two", hash="hash2", save_path="/data"),
+            Mock(name="unique", hash="hash3", save_path="/other"),
+        ]
+
+        with patch(
+            "qbitunregistered.operations.tag_cross_seeding.fetch_torrent_files",
+            side_effect=[
+                [{"name": "shared.mkv"}],
+                [{"name": "shared.mkv"}],
+                [{"name": "unique.mkv"}],
+            ],
+        ):
+            tag_cross_seeds(client, torrents)
+
+        client.torrents_remove_tags.assert_any_call(torrent_hashes=["hash1", "hash2"], tags="not-cross-seeding")
+        client.torrents_add_tags.assert_any_call(torrent_hashes=["hash1", "hash2"], tags="cross-seed")
+        client.torrents_add_tags.assert_any_call(torrent_hashes=["hash3"], tags="not-cross-seeding")
+
+    def test_dry_run_does_not_mutate(self):
+        from qbitunregistered.operations.tag_cross_seeding import tag_cross_seeds
+
+        client = Mock()
+        torrent = Mock(name="one", hash="hash1", save_path="/data")
+        with patch(
+            "qbitunregistered.operations.tag_cross_seeding.fetch_torrent_files",
+            return_value=[{"name": "one.mkv"}],
+        ):
+            tag_cross_seeds(client, [torrent], dry_run=True)
+
+        client.torrents_add_tags.assert_not_called()
+        client.torrents_remove_tags.assert_not_called()

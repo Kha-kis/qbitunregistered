@@ -1,13 +1,15 @@
 import logging
 from collections import defaultdict
-from typing import Sequence
+from typing import Any, Sequence
 from tqdm import tqdm
-from pathlib import Path
-import sys
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.file_operations import fetch_torrent_files  # noqa: E402
-from utils.types import TorrentInfo, QBittorrentClient  # noqa: E402
+from qbitunregistered.file_operations import fetch_torrent_files
+from qbitunregistered.types import TorrentInfo, QBittorrentClient
+
+
+def _build_file_structure(torrent_files: Sequence[Any]) -> frozenset[Any]:
+    """Build the file-structure identity used by preview and execution."""
+    return frozenset(file_info["name"] for file_info in torrent_files if isinstance(file_info, dict) and "name" in file_info)
 
 
 def tag_cross_seeds(client: QBittorrentClient, torrents: Sequence[TorrentInfo], dry_run: bool = False) -> None:
@@ -55,7 +57,7 @@ def tag_cross_seeds(client: QBittorrentClient, torrents: Sequence[TorrentInfo], 
                     continue
 
                 # Create a frozen set of file names for comparison
-                file_structure = frozenset(f["name"] for f in torrent_files if isinstance(f, dict) and "name" in f)
+                file_structure = _build_file_structure(torrent_files)
 
                 if not file_structure:
                     logging.warning(f"Skipping torrent '{torrent.name}': could not determine file structure")

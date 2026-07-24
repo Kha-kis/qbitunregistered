@@ -1,8 +1,8 @@
-"""Configuration validation utilities for qbitunregistered."""
+"""Configuration loading and validation utilities for qbitunregistered."""
 
 import logging
 import os
-from typing import Dict, List, Any
+from typing import Any, Mapping
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -13,7 +13,22 @@ class ConfigValidationError(Exception):
     pass
 
 
-def validate_config(config: Dict[str, Any]) -> None:
+SCHEDULED_OPERATION_FLAGS: dict[str, str] = {
+    "orphaned": "--orphaned",
+    "unregistered": "--unregistered",
+    "tag_by_tracker": "--tag-by-tracker",
+    "seeding_management": "--seeding-management",
+    "auto_tmm": "--auto-tmm",
+    "pause_torrents": "--pause-torrents",
+    "resume_torrents": "--resume-torrents",
+    "auto_remove": "--auto-remove",
+    "create_hard_links": "--create-hard-links",
+    "tag_by_age": "--tag-by-age",
+    "tag_by_cross_seed": "--tag-by-cross-seed",
+}
+
+
+def validate_config(config: dict[str, Any]) -> None:
     """
     Validate the configuration dictionary.
 
@@ -23,7 +38,7 @@ def validate_config(config: Dict[str, Any]) -> None:
     Raises:
         ConfigValidationError: If configuration is invalid
     """
-    errors: List[str] = []
+    errors: list[str] = []
 
     _validate_required_fields(config, errors)
     _validate_host(config, errors)
@@ -41,24 +56,49 @@ def validate_config(config: Dict[str, Any]) -> None:
     logging.info("Configuration validation passed")
 
 
-def _validate_required_fields(config: Dict[str, Any], errors: List[str]) -> None:
-    """Validate required connection fields like host/username/password."""
-    required_fields = ["host", "username", "password"]
-    for field in required_fields:
-        if field not in config:
-            errors.append(f"Missing required field: '{field}'")
-        elif not isinstance(config[field], str):
-            errors.append(f"Field '{field}' must be a string, got: {type(config[field]).__name__}")
-        elif not config[field].strip():
-            errors.append(f"Field '{field}' cannot be empty or whitespace-only")
+def _validate_required_fields(config: dict[str, Any], errors: list[str]) -> None:
+    """Validate required connection fields: host + either api_key or username/password."""
+    if "host" not in config:
+        errors.append("Missing required field: 'host'")
+    elif not isinstance(config["host"], str):
+        errors.append(f"Field 'host' must be a string, got: {type(config['host']).__name__}")
+    elif not config["host"].strip():
+        errors.append("Field 'host' cannot be empty or whitespace-only")
+
+    api_key = config.get("api_key")
+    if api_key is not None and not isinstance(api_key, str):
+        errors.append(f"Field 'api_key' must be a string, got: {type(api_key).__name__}")
+
+    has_api_key = isinstance(api_key, str) and bool(api_key.strip())
+    if not has_api_key:
+        for field in ["username", "password"]:
+            if field not in config:
+                errors.append(f"Missing required field: '{field}'")
+            elif not isinstance(config[field], str):
+                errors.append(f"Field '{field}' must be a string, got: {type(config[field]).__name__}")
+            elif not config[field].strip():
+                errors.append(f"Field '{field}' cannot be empty or whitespace-only")
 
 
-def _validate_host(config: Dict[str, Any], errors: List[str]) -> None:
+def resolve_dry_run(cli_value: bool | None, config: Mapping[str, Any]) -> bool:
+    """Resolve dry-run mode, rejecting an invalid configured value."""
+    if cli_value is not None:
+        return cli_value
+    config_value = config.get("dry_run", False)
+    if not isinstance(config_value, bool):
+        raise ConfigValidationError(f"'dry_run' must be a boolean, got: {type(config_value).__name__}")
+    return config_value
+
+
+def _validate_host(config: dict[str, Any], errors: list[str]) -> None:
     """Validate qBittorrent host configuration."""
     if "host" not in config:
         return
 
     host = config["host"]
+    if not isinstance(host, str):
+        # Non-string values are caught by _validate_required_fields
+        return
     if not host:
         return
 
@@ -99,7 +139,7 @@ def _validate_host(config: Dict[str, Any], errors: List[str]) -> None:
             errors.append(f"Invalid port in host: '{parts[1]}'. Must be a number")
 
 
-def _validate_basic_types(config: Dict[str, Any], errors: List[str]) -> None:
+def _validate_basic_types(config: dict[str, Any], errors: list[str]) -> None:
     """Validate basic scalar/list/dict configuration fields."""
     # Validate dry_run is boolean
     if "dry_run" in config and not isinstance(config["dry_run"], bool):
@@ -119,6 +159,11 @@ def _validate_basic_types(config: Dict[str, Any], errors: List[str]) -> None:
         if not isinstance(config["log_file"], str):
             errors.append(f"'log_file' must be a string path, got: {type(config['log_file']).__name__}")
 
+    # Validate target_dir is a string if provided
+    if "target_dir" in config and config["target_dir"]:
+        if not isinstance(config["target_dir"], str):
+            errors.append(f"'target_dir' must be a string path, got: {type(config['target_dir']).__name__}")
+
     # Validate tags are strings
     for tag_field in ["default_unregistered_tag", "cross_seeding_tag", "other_issues_tag"]:
         if tag_field in config and not isinstance(config[tag_field], str):
@@ -137,7 +182,14 @@ def _validate_basic_types(config: Dict[str, Any], errors: List[str]) -> None:
             errors.append(f"'{bool_field}' must be a boolean, got: {type(config[bool_field]).__name__}")
 
     # Validate lists
-    for list_field in ["delete_tags", "exclude_files", "exclude_dirs", "unregistered", "scheduled_times"]:
+    for list_field in [
+        "delete_tags",
+        "exclude_files",
+        "exclude_dirs",
+        "unregistered",
+        "scheduled_times",
+        "scheduled_operations",
+    ]:
         if list_field in config:
             if not isinstance(config[list_field], list):
                 errors.append(f"'{list_field}' must be a list, got: {type(config[list_field]).__name__}")
@@ -146,9 +198,15 @@ def _validate_basic_types(config: Dict[str, Any], errors: List[str]) -> None:
     if "delete_files" in config:
         if not isinstance(config["delete_files"], dict):
             errors.append(f"'delete_files' must be a dictionary, got: {type(config['delete_files']).__name__}")
+        else:
+            for tag, delete_value in config["delete_files"].items():
+                if not isinstance(tag, str) or not tag.strip():
+                    errors.append("'delete_files' keys must be non-empty strings")
+                if not isinstance(delete_value, bool):
+                    errors.append(f"'delete_files[{tag}]' must be a boolean, got: {type(delete_value).__name__}")
 
 
-def _validate_tracker_tags(config: Dict[str, Any], errors: List[str]) -> None:
+def _validate_tracker_tags(config: dict[str, Any], errors: list[str]) -> None:
     """Validate tracker_tags structure and limits."""
     tracker_tags = config.get("tracker_tags")
     if tracker_tags is None:
@@ -217,16 +275,20 @@ def _validate_tracker_tags(config: Dict[str, Any], errors: List[str]) -> None:
                 )
 
 
-def _validate_target_dir(config: Dict[str, Any]) -> None:
+def _validate_target_dir(config: dict[str, Any]) -> None:
     """Validate target_dir path format if present."""
     if "target_dir" in config and config["target_dir"]:
-        target_dir = Path(config["target_dir"])
+        value = config["target_dir"]
+        if not isinstance(value, (str, os.PathLike)):
+            logging.warning(f"target_dir must be a string or path-like object, got: {type(value).__name__}")
+            return
+        target_dir = Path(value)
         # Don't validate existence, just format
         if not target_dir.is_absolute():
-            logging.warning(f"target_dir should be an absolute path: {config['target_dir']}")
+            logging.warning(f"target_dir should be an absolute path: {value}")
 
 
-def _validate_scheduled_times(config: Dict[str, Any], errors: List[str]) -> None:
+def _validate_scheduled_times(config: dict[str, Any], errors: list[str]) -> None:
     """Validate scheduled_times entries if present."""
     if "scheduled_times" not in config:
         return
@@ -260,8 +322,31 @@ def _validate_scheduled_times(config: Dict[str, Any], errors: List[str]) -> None
             except ValueError:
                 errors.append(f"Invalid time format in scheduled_times: '{time_str}'")
 
+        scheduled_operations = config.get("scheduled_operations")
+        if not isinstance(scheduled_operations, list) or not scheduled_operations:
+            errors.append("'scheduled_operations' must contain at least one operation when 'scheduled_times' is set")
 
-def _validate_recycle_bin(config: Dict[str, Any], errors: List[str]) -> None:
+    scheduled_operations = config.get("scheduled_operations")
+    if isinstance(scheduled_operations, list):
+        for operation in scheduled_operations:
+            if not isinstance(operation, str):
+                errors.append(f"scheduled_operations must contain strings, got: {type(operation).__name__}")
+            elif operation not in SCHEDULED_OPERATION_FLAGS:
+                allowed = ", ".join(sorted(SCHEDULED_OPERATION_FLAGS))
+                errors.append(f"Unknown scheduled operation '{operation}'. Allowed values: {allowed}")
+
+        if isinstance(scheduled_times, list) and scheduled_times and "create_hard_links" in scheduled_operations:
+            target_dir = config.get("target_dir")
+            if not isinstance(target_dir, str) or not target_dir.strip():
+                errors.append(
+                    "'target_dir' must be a non-empty absolute path when 'scheduled_operations' includes "
+                    "'create_hard_links'"
+                )
+            elif not Path(target_dir).is_absolute():
+                errors.append("'target_dir' must be an absolute path when 'scheduled_operations' includes 'create_hard_links'")
+
+
+def _validate_recycle_bin(config: dict[str, Any], errors: list[str]) -> None:
     """Validate recycle_bin configuration if present."""
     recycle_bin = config.get("recycle_bin")
     if not recycle_bin:
@@ -288,7 +373,7 @@ def _validate_recycle_bin(config: Dict[str, Any], errors: List[str]) -> None:
         errors.append(f"Invalid recycle bin path '{recycle_bin}': {e}")
 
 
-def _validate_notifications(config: Dict[str, Any], errors: List[str]) -> None:
+def _validate_notifications(config: dict[str, Any], errors: list[str]) -> None:
     """Validate notification-related configuration (Apprise and Notifiarr)."""
     # Validate notification settings
     if "apprise_url" in config and config["apprise_url"]:
@@ -317,7 +402,7 @@ def _validate_notifications(config: Dict[str, Any], errors: List[str]) -> None:
             errors.append(f"'notifiarr_channel' appears invalid (expected 17-20 digits, got {len(notifiarr_channel)} digits)")
 
 
-def validate_exclude_patterns(exclude_files: List[str], exclude_dirs: List[str]) -> None:
+def validate_exclude_patterns(exclude_files: list[str], exclude_dirs: list[str]) -> None:
     """
     Validate exclude patterns for potential issues.
 

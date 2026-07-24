@@ -1,31 +1,36 @@
 import logging
-from typing import Dict, Any, Optional
+from typing import Any, cast
 from collections import defaultdict
-from utils.tracker_matcher import match_tracker_url
-from utils.cache import cached
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.types import QBittorrentClient  # noqa: E402
+from qbitunregistered.tracker_matcher import match_tracker_url
+from qbitunregistered.cache import cached
+from qbitunregistered.types import QBittorrentClient
 
 
 @cached(ttl=300, key_prefix="tracker_config")
-def _fetch_trackers(client: QBittorrentClient, torrent_hash: str) -> list:
+def _fetch_trackers(client: QBittorrentClient, torrent_hash: str, *, cache_scope: int) -> list[dict[str, Any]]:
     """
     Fetch trackers for a torrent with caching.
 
     Args:
         client: qBittorrent client instance
         torrent_hash: Torrent hash
+        cache_scope: Client-specific cache identity; pass ``id(client)``.
 
     Returns:
         List of tracker dictionaries
     """
-    return client.torrents_trackers(torrent_hash=torrent_hash)
+    if cache_scope is None:
+        raise ValueError("cache_scope must be provided (use id(client))")
+    return cast(list[dict[str, Any]], client.torrents_trackers(torrent_hash=torrent_hash))
 
 
-def find_tracker_config(client: QBittorrentClient, torrent, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def find_tracker_config(
+    client: QBittorrentClient,
+    torrent: Any,
+    config: dict[str, Any],
+    *,
+    raise_on_error: bool = False,
+) -> dict[str, Any] | None:
     """
     Find matching tracker configuration for a torrent.
 
@@ -35,15 +40,18 @@ def find_tracker_config(client: QBittorrentClient, torrent, config: Dict[str, An
         client: qBittorrent client instance
         torrent: Torrent object
         config: Configuration dictionary with tracker_tags
+        raise_on_error: Propagate tracker API failures for fail-closed callers.
 
     Returns:
         Matching tracker configuration dict or None if no match found.
-        Returns None on API errors (logged but not raised).
+        Returns None on API errors unless ``raise_on_error`` is true.
     """
     try:
         # Use cached tracker fetch
-        trackers = _fetch_trackers(client, torrent.hash)
+        trackers = _fetch_trackers(client, torrent.hash, cache_scope=id(client))
     except Exception:
+        if raise_on_error:
+            raise
         logging.exception(f"Failed to fetch trackers for torrent {torrent.hash}")
         return None
 
@@ -66,7 +74,12 @@ def find_tracker_config(client: QBittorrentClient, torrent, config: Dict[str, An
     return None
 
 
-def apply_seed_limits(client: QBittorrentClient, config: Dict[str, Any], torrents=None, dry_run: bool = False) -> None:
+def apply_seed_limits(
+    client: QBittorrentClient,
+    config: dict[str, Any],
+    torrents: list[Any] | None = None,
+    dry_run: bool = False,
+) -> None:
     """
     Apply both seeding time and ratio limits using batched API calls.
 
@@ -89,12 +102,18 @@ def apply_seed_limits(client: QBittorrentClient, config: Dict[str, Any], torrent
     """
     if torrents is None:
         try:
-            torrents = client.torrents.info()
+            fetched_torrents = client.torrents.info()
         except Exception:
             logging.exception("Failed to fetch torrent list")
             return
+        if fetched_torrents is None:
+            logging.error("qBittorrent returned no torrent list; seed limits were not changed")
+            return
+        resolved_torrents = fetched_torrents
+    else:
+        resolved_torrents = torrents
 
-    logging.debug(f"Applying seed limits to {len(torrents)} torrents")
+    logging.debug(f"Applying seed limits to {len(resolved_torrents)} torrents")
 
     # Group torrents by share limit configuration for batching
     # Key: (time_limit_int, ratio_limit_float)
@@ -102,7 +121,7 @@ def apply_seed_limits(client: QBittorrentClient, config: Dict[str, Any], torrent
     torrents_by_limits = defaultdict(list)
 
     # First pass: Collect and validate all torrents
-    for torrent in torrents:
+    for torrent in resolved_torrents:
         tracker_tag_config = find_tracker_config(client, torrent, config)
 
         if tracker_tag_config is not None:

@@ -4,7 +4,17 @@ from pathlib import Path
 from fnmatch import fnmatch
 from unittest.mock import MagicMock, patch
 import pytest
-from scripts.orphaned import delete_orphaned_files
+from qbitunregistered.file_operations import (
+    RECYCLE_STAGING_DIRECTORY_PREFIX,
+    SafetyCheckError,
+    capture_file_identity,
+)
+from qbitunregistered.operations.orphaned import (
+    OrphanFilePlan,
+    build_orphan_file_plan,
+    check_files_on_disk,
+    delete_orphaned_files,
+)
 
 
 class TestFileExclusionPatterns:
@@ -188,6 +198,400 @@ class TestRecycleBin:
         delete_orphaned_files(orphaned_files, dry_run=False, client=mock_client, recycle_bin=None)
 
         assert not dummy_file.exists()
+
+    def test_permanent_delete_refuses_file_substituted_after_preview(self, mock_client, tmp_path, caplog):
+        """A confirmed orphan identity cannot authorize a replacement file."""
+        source = tmp_path / "orphaned.mkv"
+        source.write_text("previewed")
+        plan = build_orphan_file_plan([str(source)])
+
+        source.unlink()
+        source.write_text("replacement")
+
+        with pytest.raises(SafetyCheckError, match="0 of 1 planned files were deleted"):
+            delete_orphaned_files(
+                [str(source)],
+                dry_run=False,
+                client=mock_client,
+                plan=plan,
+            )
+
+        assert source.read_text() == "replacement"
+        assert "Planned file changed after preview" in caplog.text
+        assert "Successfully deleted" not in caplog.text
+
+    def test_recycle_refuses_file_substituted_after_preview(self, mock_client, tmp_path, caplog):
+        """Recycle execution cannot move a regular file substituted after preview."""
+        source = tmp_path / "orphaned.mkv"
+        recycle_bin = tmp_path / "recycle"
+        source.write_text("previewed")
+        plan = build_orphan_file_plan([str(source)])
+
+        source.unlink()
+        source.write_text("replacement")
+
+        with pytest.raises(SafetyCheckError, match="0 of 1 planned files were moved to the recycle bin"):
+            delete_orphaned_files(
+                [str(source)],
+                dry_run=False,
+                client=mock_client,
+                recycle_bin=str(recycle_bin),
+                plan=plan,
+            )
+
+        assert source.read_text() == "replacement"
+        assert list(recycle_bin.rglob("orphaned.mkv")) == []
+        assert "Planned file changed after preview" in caplog.text
+        assert "Successfully moved to recycle bin" not in caplog.text
+
+    @pytest.mark.parametrize("use_recycle_bin", [False, True], ids=["permanent", "recycle"])
+    def test_missing_confirmed_orphan_surfaces_incomplete_cleanup(self, mock_client, tmp_path, use_recycle_bin):
+        """A missing preview target is an operation failure in either mode."""
+        source = tmp_path / "orphaned.mkv"
+        source.write_text("previewed", encoding="utf-8")
+        plan = build_orphan_file_plan([str(source)])
+        source.unlink()
+        recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
+
+        with pytest.raises(SafetyCheckError, match="0 of 1 planned files"):
+            delete_orphaned_files(
+                [str(source)],
+                dry_run=False,
+                client=mock_client,
+                recycle_bin=str(recycle_bin) if recycle_bin else None,
+                plan=plan,
+            )
+
+        assert not source.exists()
+        assert recycle_bin is None or not recycle_bin.exists()
+
+    def test_permanent_partial_failure_reports_counts_without_success(self, mock_client, tmp_path, caplog):
+        """An unlink failure reports a partial permanent cleanup accurately."""
+        first = tmp_path / "first.mkv"
+        second = tmp_path / "second.mkv"
+        third = tmp_path / "third.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        third.write_text("third", encoding="utf-8")
+        plan = build_orphan_file_plan([str(first), str(second), str(third)])
+        real_unlink = Path.unlink
+
+        def fail_second_unlink(path, *args, **kwargs):
+            if path == second:
+                raise OSError("simulated unlink failure")
+            return real_unlink(path, *args, **kwargs)
+
+        with (
+            patch.object(Path, "unlink", autospec=True, side_effect=fail_second_unlink),
+            pytest.raises(SafetyCheckError, match="1 of 3 planned files were deleted; 2 remain"),
+        ):
+            delete_orphaned_files(
+                [str(first), str(second), str(third)],
+                dry_run=False,
+                client=mock_client,
+                plan=plan,
+            )
+
+        assert not first.exists()
+        assert second.read_text(encoding="utf-8") == "second"
+        assert third.read_text(encoding="utf-8") == "third"
+        assert "Successfully deleted" not in caplog.text
+
+    def test_recycle_partial_failure_rolls_back_and_surfaces_failure(self, mock_client, tmp_path, caplog):
+        """A later recycle failure restores earlier moves and fails the operation."""
+        from qbitunregistered import file_operations
+
+        first = tmp_path / "first.mkv"
+        second = tmp_path / "second.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        recycle_bin = tmp_path / "recycle"
+        plan = build_orphan_file_plan([str(first), str(second)])
+        real_move_batch = file_operations.move_files_to_recycle_bin
+        real_move_one = file_operations._move_without_overwrite
+        second_path = second.resolve()
+        failed_second = False
+
+        def move_in_path_order(*args, **kwargs):
+            kwargs["file_paths"] = sorted(kwargs["file_paths"])
+            return real_move_batch(*args, **kwargs)
+
+        def fail_second_move(source, destination, *, expected_identity=None):
+            nonlocal failed_second
+            if source == second_path and not failed_second:
+                failed_second = True
+                raise OSError("simulated recycle move failure")
+            return real_move_one(source, destination, expected_identity=expected_identity)
+
+        with (
+            patch(
+                "qbitunregistered.operations.orphaned.move_files_to_recycle_bin",
+                side_effect=move_in_path_order,
+            ) as move_batch,
+            patch(
+                "qbitunregistered.file_operations._move_without_overwrite",
+                side_effect=fail_second_move,
+            ),
+            pytest.raises(SafetyCheckError, match="0 of 2 planned files were moved to the recycle bin"),
+        ):
+            delete_orphaned_files(
+                [str(first), str(second)],
+                dry_run=False,
+                client=mock_client,
+                recycle_bin=str(recycle_bin),
+                plan=plan,
+            )
+
+        assert move_batch.call_args.kwargs["all_or_nothing"] is True
+        assert first.read_text(encoding="utf-8") == "first"
+        assert second.read_text(encoding="utf-8") == "second"
+        assert list(recycle_bin.rglob("*.mkv")) == []
+        assert "Successfully moved to recycle bin" not in caplog.text
+
+    def test_ownership_refresh_failure_blocks_every_orphan_mutation(self, mock_client, tmp_path):
+        """An unavailable final qBittorrent snapshot aborts the whole plan."""
+        first = tmp_path / "first.mkv"
+        second = tmp_path / "second.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        plan = build_orphan_file_plan([str(first), str(second)])
+        mock_client.torrents.info.side_effect = RuntimeError("temporary API failure")
+
+        with pytest.raises(SafetyCheckError, match="Could not refresh qBittorrent state"):
+            delete_orphaned_files(
+                [str(first), str(second)],
+                dry_run=False,
+                client=mock_client,
+                torrents=[],
+                plan=plan,
+            )
+
+        assert first.read_text(encoding="utf-8") == "first"
+        assert second.read_text(encoding="utf-8") == "second"
+
+    def test_malformed_final_file_metadata_blocks_every_orphan_mutation(self, mock_client, tmp_path):
+        """Incomplete ownership metadata cannot authorize any orphan mutation."""
+        first = tmp_path / "first.mkv"
+        second = tmp_path / "second.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        plan = build_orphan_file_plan([str(first), str(second)])
+        owner = MagicMock(hash="owner", save_path=str(tmp_path))
+        mock_client.torrents.info.return_value = [owner]
+        mock_client.torrents_files.return_value = [{}]
+
+        with pytest.raises(SafetyCheckError, match="malformed file metadata"):
+            delete_orphaned_files(
+                [str(first), str(second)],
+                dry_run=False,
+                client=mock_client,
+                torrents=[],
+                recycle_bin=str(tmp_path / "recycle"),
+                plan=plan,
+            )
+
+        assert first.read_text(encoding="utf-8") == "first"
+        assert second.read_text(encoding="utf-8") == "second"
+        assert not (tmp_path / "recycle").exists()
+
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+    def test_symlinked_default_save_root_is_never_pruned(self, mock_client, tmp_path, caplog, dry_run):
+        """Canonical default roots protect their real directories."""
+        real_save_root = tmp_path / "real-default"
+        real_save_root.mkdir()
+        configured_save_root = tmp_path / "configured-default"
+        configured_save_root.symlink_to(real_save_root, target_is_directory=True)
+        orphan = real_save_root / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        mock_client.application.default_save_path = str(configured_save_root)
+
+        delete_orphaned_files(
+            [str(orphan)],
+            dry_run=dry_run,
+            client=mock_client,
+        )
+
+        assert real_save_root.is_dir()
+        assert configured_save_root.resolve(strict=True) == real_save_root
+        assert f"remove empty directory: {real_save_root}" not in caplog.text
+        assert orphan.exists() is dry_run
+
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+    def test_nested_empty_directories_are_pruned_below_active_root(self, mock_client, tmp_path, caplog, dry_run):
+        """Queued child removals make their empty parents eligible for pruning."""
+        import logging
+
+        caplog.set_level(logging.INFO)
+        save_root = tmp_path / "downloads"
+        season_dir = save_root / "Show" / "Season 01"
+        season_dir.mkdir(parents=True)
+        orphan = season_dir / "episode.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        mock_client.application.default_save_path = str(save_root)
+
+        delete_orphaned_files(
+            [str(orphan)],
+            dry_run=dry_run,
+            client=mock_client,
+            torrents=[],
+        )
+
+        assert save_root.is_dir()
+        action = "Would remove" if dry_run else "Deleted"
+        assert f"{action} empty directory: {season_dir}" in caplog.messages
+        assert f"{action} empty directory: {season_dir.parent}" in caplog.messages
+        assert f"{action} empty directory: {save_root}" not in caplog.messages
+        assert orphan.exists() is dry_run
+        assert season_dir.exists() is dry_run
+        assert season_dir.parent.exists() is dry_run
+
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+    def test_internal_recovery_path_is_excluded_from_scan_and_pruning(
+        self,
+        mock_client,
+        tmp_path,
+        caplog,
+        dry_run,
+    ):
+        """Preserved staging data under an active root is never orphaned."""
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
+        save_root = tmp_path / "downloads"
+        content_dir = save_root / "Show"
+        content_dir.mkdir(parents=True)
+        orphan = content_dir / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        recovery_directory = content_dir / f"{RECYCLE_STAGING_DIRECTORY_PREFIX}recovery"
+        recovery_directory.mkdir()
+        captured = recovery_directory / "captured"
+        captured.write_text("preserved replacement", encoding="utf-8")
+        mock_client.application.default_save_path = str(save_root)
+        mock_client.torrent_categories.categories = {}
+        mock_client.torrents.info.return_value = []
+
+        orphaned_files = check_files_on_disk(mock_client, [])
+        assert orphaned_files == [str(orphan)]
+
+        delete_orphaned_files(
+            orphaned_files,
+            dry_run=dry_run,
+            client=mock_client,
+            torrents=[],
+        )
+
+        assert captured.read_text(encoding="utf-8") == "preserved replacement"
+        assert recovery_directory.is_dir()
+        assert content_dir.is_dir()
+        assert orphan.exists() is dry_run
+        assert all(str(recovery_directory) not in message for message in caplog.messages if "empty directory" in message)
+
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+    def test_supplied_plan_cannot_delete_internal_recovery_path(self, mock_client, tmp_path, dry_run):
+        """The execution boundary rejects internal paths from caller plans."""
+        save_root = tmp_path / "downloads"
+        recovery_directory = save_root / f"{RECYCLE_STAGING_DIRECTORY_PREFIX}recovery"
+        recovery_directory.mkdir(parents=True)
+        captured = recovery_directory / "captured"
+        captured.write_text("preserved replacement", encoding="utf-8")
+        mock_client.application.default_save_path = str(save_root)
+        assert build_orphan_file_plan([str(captured)]).files == ()
+        plan = OrphanFilePlan(files=(capture_file_identity(captured),))
+
+        with pytest.raises(SafetyCheckError, match="0 of 1 planned files"):
+            delete_orphaned_files(
+                [str(captured)],
+                dry_run=dry_run,
+                client=mock_client,
+                torrents=[],
+                plan=plan,
+            )
+
+        assert captured.read_text(encoding="utf-8") == "preserved replacement"
+        assert recovery_directory.is_dir()
+
+    def test_final_current_torrent_save_root_is_never_pruned(self, mock_client, tmp_path):
+        """The uncached current torrent snapshot protects canonical save roots."""
+        default_save_root = tmp_path / "default"
+        default_save_root.mkdir()
+        real_torrent_root = tmp_path / "real-current"
+        real_torrent_root.mkdir()
+        configured_torrent_root = tmp_path / "configured-current"
+        configured_torrent_root.symlink_to(real_torrent_root, target_is_directory=True)
+        orphan = real_torrent_root / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        mock_client.application.default_save_path = str(default_save_root)
+        current_torrent = MagicMock(hash="current", save_path=str(configured_torrent_root))
+        mock_client.torrents.info.return_value = [current_torrent]
+        mock_client.torrents_files.return_value = []
+
+        delete_orphaned_files(
+            [str(orphan)],
+            dry_run=False,
+            client=mock_client,
+            torrents=[],
+        )
+
+        assert not orphan.exists()
+        assert real_torrent_root.is_dir()
+        assert configured_torrent_root.resolve(strict=True) == real_torrent_root
+        mock_client.torrents.info.assert_called_once_with()
+
+    @pytest.mark.parametrize("root_source", ["default", "category"])
+    def test_execute_refreshes_configured_save_roots_without_cache(self, mock_client, tmp_path, root_source):
+        """Final pruning uses current default and category roots, not preview cache."""
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
+        old_root = tmp_path / "old-root"
+        old_root.mkdir()
+        default_root = tmp_path / "default"
+        default_root.mkdir()
+        real_current_root = tmp_path / "real-current"
+        real_current_root.mkdir()
+        configured_current_root = tmp_path / "configured-current"
+        configured_current_root.symlink_to(real_current_root, target_is_directory=True)
+
+        if root_source == "default":
+            mock_client.application.default_save_path = str(old_root)
+            mock_client.torrent_categories.categories = {}
+        else:
+            mock_client.application.default_save_path = str(default_root)
+            mock_client.torrent_categories.categories = {"movies": {"savePath": str(old_root)}}
+        assert check_files_on_disk(mock_client, []) == []
+
+        if root_source == "default":
+            mock_client.application.default_save_path = str(configured_current_root)
+        else:
+            mock_client.torrent_categories.categories = {"movies": {"savePath": str(configured_current_root)}}
+        orphan = real_current_root / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+
+        delete_orphaned_files(
+            [str(orphan)],
+            dry_run=False,
+            client=mock_client,
+            torrents=[],
+        )
+
+        assert not orphan.exists()
+        assert real_current_root.is_dir()
+        assert configured_current_root.resolve(strict=True) == real_current_root
+
+    def test_dry_run_consumes_confirmed_plan_without_mutation(self, mock_client, tmp_path):
+        """Dry-run validates and reports the same immutable plan."""
+        source = tmp_path / "orphaned.mkv"
+        source.write_text("previewed")
+        plan = build_orphan_file_plan([str(source)])
+
+        delete_orphaned_files(
+            [str(source)],
+            dry_run=True,
+            client=mock_client,
+            plan=plan,
+        )
+
+        assert source.read_text() == "previewed"
 
     def test_dry_run_recycle_bin(self, mock_client, caplog, tmp_path):
         """Test dry run with recycle bin."""

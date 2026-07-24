@@ -1,4 +1,4 @@
-"""qBittorrent client construction helpers."""
+"""Construct authenticated qBittorrent API clients."""
 
 from typing import Any, Callable, Dict, Mapping
 

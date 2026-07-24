@@ -14,21 +14,23 @@ Thank you for your interest in contributing to qbitunregistered! This document p
 
 1. **Clone the repository**:
 ```bash
-git clone https://github.com/your-username/qbitunregistered.git
+git clone https://github.com/Kha-kis/qbitunregistered.git
 cd qbitunregistered
 ```
 
 2. **Create a virtual environment**:
 ```bash
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
 3. **Install dependencies**:
 ```bash
-pip install -r requirements.txt
-pip install -e ".[dev]"  # Install dev dependencies
+python -m pip install -e ".[dev]"
 ```
+
+If you use [uv](https://docs.astral.sh/uv/), `uv sync --extra dev` installs the
+same development environment from the committed cross-platform lockfile.
 
 4. **Run tests to verify setup**:
 ```bash
@@ -68,8 +70,21 @@ pytest tests/ -v --cov
 # Run linting
 flake8 .
 black --check .
-mypy qbitunregistered.py scripts/ utils/
+basedpyright
+mypy qbitunregistered/
 ```
+
+BasedPyright is the project language-server and primary type-analysis engine.
+Run `uv run basedpyright` for a non-interactive project check. Editors and
+other LSP clients can start it with:
+
+```bash
+uv run basedpyright-langserver --stdio
+```
+
+The language-server command waits for LSP messages on standard input, so use it
+through an editor or LSP client rather than as an interactive shell command.
+Mypy remains an advisory compatibility check.
 
 4. **Format code**:
 ```bash
@@ -144,13 +159,13 @@ We follow PEP 8 with some modifications:
 - **Docstrings**: Use Google-style docstrings for all public functions/classes
 - **Comments**: Explain *why*, not *what* (code should be self-explanatory)
 - **README**: Update for user-facing changes
-- **CLAUDE.md**: Update for architecture changes
+- **ARCHITECTURE.md**: Update for architecture changes
 
 ### Example Function
 
 ```python
 from typing import Dict, List, Any
-from utils.types import TorrentInfo, QBittorrentClient
+from qbitunregistered.types import TorrentInfo, QBittorrentClient
 
 
 def process_torrents(
@@ -210,7 +225,7 @@ tests/
 
 ```python
 import pytest
-from utils.cache import SimpleCache
+from qbitunregistered.cache import SimpleCache
 
 
 class TestSimpleCache:
@@ -261,7 +276,7 @@ pytest -m "not slow"
 
 All PRs and pushes trigger our CI pipeline:
 
-1. **Linting**: flake8, black, mypy
+1. **Linting**: flake8, black, BasedPyright, and advisory mypy
 2. **Tests**: pytest with coverage
 3. **Security**: safety, bandit scans
 4. **Smoke tests**: Basic functionality checks
@@ -289,7 +304,7 @@ Releases are managed by maintainers:
 
 - **Issues**: Check existing issues or create a new one
 - **Discussions**: Use GitHub Discussions for questions
-- **Documentation**: See README.md and CLAUDE.md
+- **Documentation**: See README.md, AGENTS.md, and ARCHITECTURE.md
 
 ## Code of Conduct
 

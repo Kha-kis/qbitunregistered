@@ -7,7 +7,12 @@ dependencies = [
     "qbittorrent-api>=2026.5.3",  # API-key authentication support
     "schedule>=1.2.0",
     "tqdm>=4.66.3",  # Security fix for CLI injection vulnerability
+    "apprise>=1.9,<2",
 ]
+
+[project.scripts]
+qbitunregistered = "qbitunregistered.cli:main"
+qbitunregistered-scheduler = "qbitunregistered.scheduler:main"
 
 [project.optional-dependencies]
 dev = [
@@ -17,12 +22,16 @@ dev = [
     "flake8>=6.0.0",
     "black>=23.0.0",
     "mypy>=1.0.0",
+    "basedpyright>=1.31.4",
     "types-requests>=2.31.0",
 ]
 
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+requires = ["setuptools>=83", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["qbitunregistered*"]
 
 [tool.black]
 line-length = 127
@@ -50,12 +59,24 @@ exclude = [
     ".venv/",
 ]
 
+[tool.basedpyright]
+include = ["qbitunregistered"]
+exclude = [
+    "build",
+    "dist",
+    "venv",
+    ".venv",
+]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+reportMissingTypeStubs = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "-v --strict-markers --tb=short"
+addopts = "-v --strict-markers --tb=short --disable-warnings"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
@@ -65,8 +86,8 @@ markers = [
 
 [tool.coverage.run]
 omit = [
-    "qbitunregistered.py",  # Main entry point script
-    "scheduler.py",          # Scheduler entry point
+    "qbitunregistered/__main__.py",
+    "qbitunregistered/scheduler.py",
     "tests/*",               # Test files
     "*/venv/*",              # Virtual environments
     "*/.venv/*",

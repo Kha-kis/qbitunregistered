@@ -1,11 +1,11 @@
 """
-Type definitions for qbitunregistered.
+Shared type definitions for qbitunregistered.
 
 Provides Protocol classes for type hints to improve IDE support and type checking
 without tight coupling to qbittorrent-api implementation details.
 """
 
-from typing import Protocol, Any, runtime_checkable, Optional, List
+from typing import Any, Protocol, runtime_checkable
 from enum import Enum
 
 
@@ -20,6 +20,7 @@ class TorrentStateEnum(Protocol):
     """Protocol for torrent state enum with completion check."""
 
     is_complete: bool
+    is_paused: bool
 
 
 @runtime_checkable
@@ -45,7 +46,7 @@ class TorrentInfo(Protocol):
     ratio: float
     uploaded: int
     downloaded: int
-    files: Optional[List[Any]]  # List of file information dictionaries
+    files: list[Any] | None
 
 
 @runtime_checkable
@@ -79,27 +80,32 @@ class QBittorrentClient(Protocol):
         """Application API endpoint."""
         ...
 
-    def torrents_info(self, **kwargs) -> list:
+    @property
+    def torrent_categories(self) -> Any:
+        """Torrent categories API endpoint."""
+        ...
+
+    def torrents_info(self, **kwargs: Any) -> list[Any]:
         """Get torrent information."""
         ...
 
-    def torrents_trackers(self, torrent_hash: str) -> list:
+    def torrents_trackers(self, torrent_hash: str | None = None, **kwargs: Any) -> list[Any]:
         """Get torrent trackers."""
         ...
 
-    def torrents_files(self, torrent_hash: str) -> list:
+    def torrents_files(self, torrent_hash: str | None = None, **kwargs: Any) -> list[Any]:
         """Get torrent files."""
         ...
 
-    def torrents_tags(self, torrent_hashes: Any, tags: str) -> None:
+    def torrents_tags(self, torrent_hashes: Any, tags: str | list[str]) -> None:
         """Add tags to torrents."""
         ...
 
-    def torrents_add_tags(self, torrent_hashes: Any, tags: str) -> None:
+    def torrents_add_tags(self, torrent_hashes: Any, tags: str | list[str]) -> None:
         """Add tags to torrents."""
         ...
 
-    def torrents_remove_tags(self, torrent_hashes: Any, tags: str) -> None:
+    def torrents_remove_tags(self, torrent_hashes: Any, tags: str | list[str]) -> None:
         """Remove tags from torrents."""
         ...
 

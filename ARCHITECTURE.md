@@ -4,7 +4,15 @@
 
 **qbitunregistered** is a comprehensive Python automation tool for managing torrents in qBittorrent. It provides a modular, extensible architecture for handling torrent lifecycle management including orphaned file detection, unregistered torrent identification, intelligent tagging, and seeding management.
 
-The application follows a **plugin-like pattern** with a centralized coordinator (main script) that orchestrates specialized modules for different operational concerns.
+The installable package has a centralized CLI coordinator that orchestrates specialized operation modules.
+
+The root `qbitunregistered.py` and `scheduler.py` files are deprecated
+compatibility boundaries, not application modules. They preserve commands
+documented for source checkouts before packaging, including the scheduler's
+adjacent-`config.json` lookup and checkout-based child execution. They contain
+no business logic, remain supported throughout 2.x, and are planned for removal
+in 3.0. New integrations should use the installed console commands or
+`python -m qbitunregistered`.
 
 ## Architecture Principles
 
@@ -13,12 +21,12 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 3. **Type Safety**: Protocol-based type hints decouple from qbittorrent-api implementation details
 4. **In-Memory Caching**: Single-execution caching reduces redundant API calls within one script run
 5. **Configuration-Driven**: All behavior controlled via JSON config with CLI overrides
-6. **Error Resilience**: Operations fail gracefully with comprehensive logging; one module failure doesn't block others
+6. **Fail-Closed Safety**: Preview and file-ownership uncertainty aborts destructive work
 7. **Dry-Run Support**: All operations support dry-run mode for safe testing
 
 ## Core Components
 
-### 1. Main Orchestrator: `qbitunregistered.py`
+### 1. Main Orchestrator: `qbitunregistered/cli.py`
 
 **Responsibility**: Central coordinator that orchestrates all operations
 **Key Patterns**:
@@ -34,21 +42,27 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 3. Setup logging (console + optional file)
 4. Connect to qBittorrent API
 5. Fetch all torrents once (reused by all modules)
-6. Execute enabled operations (orphaned check, unregistered check, tagging, etc.)
-7. Log cache statistics
-8. Report operation summary
-9. Logout and cleanup
+6. Build a complete impact preview for every selected operation unless `--yes` explicitly bypasses it
+7. Require confirmation for non-dry-run execution and reuse confirmed filesystem plans
+8. Execute enabled operations. Orphan scanning precedes hard-link creation;
+   when hard links and unregistered file cleanup are both planned, hard links
+   must then succeed before the dependent deletion or recycle step can run.
+   Every destructive completed-torrent source is verified against its distinct
+   destination inode, including destinations that already existed.
+9. Log cache statistics, report the summary, and clean up
 ```
 
 **Key Features**:
 - Exit codes for CI/CD integration (0=success, 1=general error, 2=config error, 3=connection error)
 - Graceful exception handling per operation (failure in one doesn't block others)
+- A hard-link failure blocks only dependent unregistered file cleanup; unrelated
+  selected operations continue and both failures appear in the final summary
 - Torrents fetched once and passed to all modules (avoid redundant API calls)
 - Operation results tracked for summary reporting
 
-### 2. Utility Modules
+### 2. Application Modules
 
-#### `utils/types.py` - Protocol Definitions
+#### `qbitunregistered/types.py` - Protocol Definitions
 **Purpose**: Type hints without coupling to qbittorrent-api implementation
 
 **Key Protocols**:
@@ -59,7 +73,7 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 
 **Design Pattern**: Runtime checkable protocols allow type checking while remaining agnostic to concrete implementations.
 
-#### `utils/config_validator.py` - Configuration Management
+#### `qbitunregistered/config_validator.py` - Configuration Management
 **Purpose**: Validates all configuration before execution
 
 **Validation Scope**:
@@ -74,12 +88,13 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 
 **Error Handling**: Collects all errors and reports them together for better user experience.
 
-#### `utils/cache.py` - API Call Caching
+#### `qbitunregistered/cache.py` - API Call Caching
 **Purpose**: In-memory caching with TTL to reduce redundant API calls
 
 **Design**:
 - Simple TTL-based cache (default 300 seconds)
 - Global singleton instance accessible to all modules
+- Cleared when each CLI execution begins, then shared only within that execution
 - Decorator pattern for easy application to functions
 - Sentinel object to distinguish cache misses from cached None values
 - Automatic periodic cleanup triggered after threshold accesses or time
@@ -99,7 +114,7 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - Cache size
 - Hit rate percentage
 
-#### `utils/tracker_matcher.py` - Tracker Matching
+#### `qbitunregistered/tracker_matcher.py` - Tracker Matching
 **Purpose**: Match tracker URLs against configured patterns
 
 **Matching Strategy**:
@@ -109,15 +124,11 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 
 **Design Pattern**: Decouples tracker identification from seeding management and tagging logic.
 
-#### `utils/rate_limiter.py` - Rate Limiting (Unused)
-**Purpose**: Token bucket rate limiter for API calls
-
-**Current Status**: Not used in production code due to aggressive batching optimization.
 **Future Use Cases**: Long-running daemon mode, rate-limited external services, environments with strict API quotas.
 
 ### 3. Script Modules (Operations)
 
-#### `scripts/unregistered_checks.py` - Identify & Handle Unregistered Torrents
+#### `qbitunregistered/operations/unregistered_checks.py` - Identify & Handle Unregistered Torrents
 
 **Core Responsibility**: Detect and manage torrents with unregistered tracker messages
 
@@ -141,7 +152,23 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - `process_torrent()`: Count unregistered trackers per torrent
 - `delete_torrents_and_files()`: Batch delete with tag-based filtering
 
-#### `scripts/orphaned.py` - Detect & Delete Orphaned Files
+Deletion impact and execution share an immutable plan. One complete torrent
+snapshot and one file-list read per torrent build a path-to-owner index, so
+cross-seed checks do not rescan every torrent for every deletion candidate.
+The plan records torrent-only, shared-file preservation, recycle, or permanent
+deletion explicitly. Owners outside the file-deletion-eligible candidate set
+protect shared content; when every owner is eligible, canonical shared paths
+are claimed once across the plan. Permanent owners are deleted in one
+`delete_files=True` batch. Recycle paths are moved once before all owning
+torrents are deleted without files, and every completed move is rolled back if
+any later move, final tag check, or group deletion fails. File-mutating
+execution validates planned file identities and refreshes the full ownership
+snapshot without cache before mutation. Every planned torrent's current
+matching delete tag is also revalidated before its deletion request. An
+incomplete recycle move preserves the torrent and raises an operation failure
+so CLI summaries, notifications, and scheduled exit codes remain truthful.
+
+#### `qbitunregistered/operations/orphaned.py` - Detect & Delete Orphaned Files
 
 **Core Responsibility**: Find files on disk not associated with any torrent
 
@@ -158,13 +185,30 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 3. Build set of all files referenced by torrents
 4. Scan disk directories
 5. Identify orphaned files using glob pattern exclusions
-6. Delete or report based on dry-run flag
+6. Capture device, inode, type, size, and modification time for each target
+7. Delete or report from that same immutable plan
+
+The impact summary carries the configured orphan action with the plan.
+Permanent deletion contributes target bytes to estimated freed space; recycle
+mode reports the same bytes as data to move and uses matching confirmation,
+dry-run, execution-summary, and notification wording.
+
+Before a real orphan cleanup, every planned identity is preflighted without
+mutation. Recycle execution is all-or-nothing and rolls prior moves back if a
+later path fails. A permanent unlink failure cannot restore already deleted
+files, so it aborts remaining cleanup with explicit completed/planned counts.
+Neither path emits a success summary when a planned file action is incomplete;
+the exception flows through CLI results, notifications, and exit status.
+
+Empty-directory pruning simulates already queued child-directory removals while
+walking upward, which removes nested empty parents but stops at canonical active
+save roots in both dry-run and mutating modes.
 
 **Exclude Patterns**:
 - File patterns: glob syntax (e.g., `*.tmp`, `*.part`, `*.!qB`)
 - Directory patterns: exact paths (for performance, must be absolute)
 
-#### `scripts/tag_by_tracker.py` - Tagging by Tracker
+#### `qbitunregistered/operations/tag_by_tracker.py` - Tagging by Tracker
 
 **Core Responsibility**: Apply tags based on torrent tracker source
 
@@ -179,9 +223,11 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 3. Group torrents by tag for batch tagging
 4. Group torrents by limits for batch limit application
 
-**Share Limits Integration**: Applies seed_time_limit and seed_ratio_limit from tracker config.
+**Share Limits Integration**: Applies seed_time_limit and seed_ratio_limit from
+tracker configs that also define a tag. Limit-only configs are handled by the
+separate seeding-management operation.
 
-#### `scripts/seeding_management.py` - Apply Seed Limits
+#### `qbitunregistered/operations/seeding_management.py` - Apply Seed Limits
 
 **Core Responsibility**: Enforce seed time and ratio limits per tracker
 
@@ -198,25 +244,28 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - `-1`: No limit
 - `0+`: Specific limit (minutes for time, ratio for ratio)
 
-#### `scripts/tag_by_age.py` - Tagging by Torrent Age
+#### `qbitunregistered/operations/tag_by_age.py` - Tagging by Torrent Age
 
 **Core Responsibility**: Tag torrents based on completion age
 
 **Time Buckets**: Configurable age thresholds for categorizing torrents
 
-#### `scripts/tag_cross_seeding.py` - Cross-Seeding Detection
+#### `qbitunregistered/operations/tag_cross_seeding.py` - Cross-Seeding Detection
 
 **Core Responsibility**: Identify and tag torrents seeding on multiple trackers
 
 **Detection**: Analyzes tracker count and status to identify cross-seeding patterns
 
-#### `scripts/auto_remove.py` - Automatic Removal
+Impact analysis uses the same file-structure grouping and includes removal of
+an existing contradictory tag before the batched add operation.
+
+#### `qbitunregistered/operations/auto_remove.py` - Automatic Removal
 
 **Core Responsibility**: Remove completed torrents matching criteria
 
 **Criteria**: Based on completion status and optional tag filters
 
-#### `scripts/auto_tmm.py` - Automatic Torrent Management
+#### `qbitunregistered/operations/auto_tmm.py` - Automatic Torrent Management
 
 **Core Responsibility**: Enable Auto TMM for torrents with category changes
 
@@ -226,13 +275,17 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - `save_path_changed_tmm_enabled`: When save path changes
 - `category_changed_tmm_enabled`: When category changes
 
-#### `scripts/create_hardlinks.py` - Hard Link Creation
+#### `qbitunregistered/operations/create_hardlinks.py` - Hard Link Creation
 
 **Core Responsibility**: Create hard links for completed torrents in target directory
 
 **Use Cases**: Organize completed downloads without duplicating storage
 
-#### `scripts/torrent_management.py` - Basic Control
+Impact analysis builds the exact source-to-destination plan without filesystem
+mutation. Execution reuses that confirmed plan and fails closed if source
+inspection is uncertain or multiple sources map to one destination.
+
+#### `qbitunregistered/operations/torrent_management.py` - Basic Control
 
 **Core Responsibility**: Pause/resume operations
 
@@ -240,14 +293,18 @@ The application follows a **plugin-like pattern** with a centralized coordinator
 - `pause_torrents()`: Pause all torrents
 - `resume_torrents()`: Resume all torrents
 
-### 4. Scheduler: `scheduler.py`
+### 4. Scheduler: `qbitunregistered/scheduler.py`
 
-**Purpose**: Run qbitunregistered.py on a schedule
+**Purpose**: Run the installed application on a schedule
 
 **Architecture**:
-- Loads scheduled_times from config.json
+- Loads and validates `scheduled_times` plus `scheduled_operations` from the selected configuration file
 - Uses `schedule` library for cron-like scheduling
-- Executes qbitunregistered.py as subprocess with 1-hour timeout
+- Maps each configured operation to its CLI flag and executes
+  `python -m qbitunregistered --config <path> <operation flags> --yes` with a
+  1-hour timeout
+- Accepts an optional child working directory used only by the deprecated root
+  wrapper; the installed scheduler continues to inherit its process directory
 - Captures and logs output
 - Runs continuously until interrupted
 
@@ -270,6 +327,7 @@ The application follows a **plugin-like pattern** with a centralized coordinator
   "other_issues_tag": "issue",                          // General issue tag
 
   "use_delete_tags": false,            // Enable tag-based deletion
+  "use_delete_files": false,           // Global gate for filesystem deletion
   "delete_tags": ["unregistered"],     // Tags to delete
   "delete_files": {
     "unregistered": false              // Whether to delete files too
@@ -295,14 +353,16 @@ The application follows a **plugin-like pattern** with a centralized coordinator
     }
   },
 
-  "scheduled_times": ["09:00", "15:00"]    // For scheduler.py
+  "scheduled_times": ["09:00", "15:00"],   // For scheduler.py
+  "scheduled_operations": ["unregistered", "orphaned"]
 }
 ```
 
 ### CLI Override System
 
 - Command-line arguments override config.json values
-- Pattern: `arg.value or config.get('key')`
+- Explicitly provided CLI values replace configuration values, including blank
+  values where blank has defined behavior (such as API-key credential fallback)
 - Supports:
   - Host, username, password
   - Target directory
@@ -361,7 +421,7 @@ Main Script
 
 ### Design Principles
 
-1. **Per-Operation Isolation**: One operation's failure doesn't block others
+1. **Preflight Safety**: Incomplete impact analysis aborts all operations before mutation
 2. **Comprehensive Logging**: All errors logged with context and recommendations
 3. **Result Tracking**: Operations marked as succeeded/failed in summary
 4. **Exit Codes**: CLI-friendly exit codes for scripting and CI/CD
@@ -375,6 +435,33 @@ Main Script
 ### Error Recovery
 
 - Configuration validation happens early (before connection)
+- File discovery and cross-seed ownership scans raise a distinct safety failure;
+  callers do not interpret that failure as an empty result
+- Unregistered recycle-bin moves are all-or-nothing: a partial failure rolls
+  prior files back before the torrent is preserved
+- A qBittorrent deletion failure after a successful recycle move restores the
+  moved files, refusing to overwrite a path created concurrently
+- A source-directory fsync error after unlink is reported as durability
+  uncertainty, while the completed recycle move remains recorded and available
+  for rollback
+- Same- and cross-filesystem recycle moves never unlink the public source
+  pathname after a check. They atomically rename that entry into a random,
+  mode-0700 staging directory on the source filesystem, verify the captured
+  object, and unlink only its private name. A captured replacement is restored
+  through an exclusive hard link or retained at a reported recovery path when
+  restoration would overwrite a newer entry. This portable guarantee protects
+  ordinary concurrent pathname replacement; hostile processes running as the
+  same OS account remain outside the filesystem permission boundary. Failure
+  cleanup requires the source to match its complete captured file state, not
+  only its device and inode, so inode reuse cannot authorize deletion of the
+  verified destination or recovery copy.
+- The shared `.qbitunregistered-recycle-` directory prefix is reserved for
+  internal recovery. Orphan discovery, immutable plan construction, execution,
+  and empty-directory pruning all exclude paths beneath that prefix without
+  relying on operator configuration.
+- Final ownership revalidation closes the preview-to-execution interval, but
+  qBittorrent provides no transaction spanning its final response and the
+  subsequent deletion request; that short external race remains unavoidable
 - Connection tested before operations begin
 - Each operation wrapped in try-except with specific logging
 - Cache cleanup failures are non-critical (debug-level logging)
@@ -516,7 +603,7 @@ for tag, hashes in torrents_by_tag.items():
 
 ### Adding New Operations
 
-1. Create new module in `scripts/`:
+1. Create new module in `qbitunregistered/operations/`:
 ```python
 def new_operation(client, torrents, config, dry_run=False):
     # Implementation
@@ -579,4 +666,3 @@ OPERATION SUMMARY
 3. **Advanced Filtering**: Additional tag/filter combinations
 4. **Performance Tuning**: Configurable cache TTLs and batch sizes
 5. **Metrics Export**: Prometheus-style metrics output
-

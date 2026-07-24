@@ -1,4 +1,4 @@
-"""Deprecated 2.x source-checkout wrapper; use the installed CLI."""
+"""Run qbitunregistered with ``python -m qbitunregistered``."""
 
 from qbitunregistered.cli import main
 
