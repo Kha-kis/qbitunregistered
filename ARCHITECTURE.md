@@ -426,7 +426,10 @@ Main Script
   through an exclusive hard link or retained at a reported recovery path when
   restoration would overwrite a newer entry. This portable guarantee protects
   ordinary concurrent pathname replacement; hostile processes running as the
-  same OS account remain outside the filesystem permission boundary.
+  same OS account remain outside the filesystem permission boundary. Failure
+  cleanup requires the source to match its complete captured file state, not
+  only its device and inode, so inode reuse cannot authorize deletion of the
+  verified destination or recovery copy.
 - The shared `.qbitunregistered-recycle-` directory prefix is reserved for
   internal recovery. Orphan discovery, immutable plan construction, execution,
   and empty-directory pruning all exclude paths beneath that prefix without

@@ -333,8 +333,8 @@ def _move_without_overwrite(
         _fsync_directory(destination.parent)
         _unlink_captured_source(source, source_stat)
     except BaseException:
-        if _path_has_identity(source, source_stat):
-            _unlink_if_identity(destination, destination_stat)
+        if _path_matches_file_state(source, source_stat):
+            _unlink_if_same_file_state(destination, destination_stat)
         raise
 
 
@@ -398,8 +398,12 @@ def _copy_then_unlink_without_overwrite(source: Path, destination: Path, expecte
         if destination_descriptor is not None:
             os.close(destination_descriptor)
             destination_descriptor = None
-        if destination_stat is not None and opened_source_stat is not None and _path_has_identity(source, opened_source_stat):
-            _unlink_if_identity(destination, destination_stat)
+        if (
+            destination_stat is not None
+            and opened_source_stat is not None
+            and _path_matches_file_state(source, opened_source_stat)
+        ):
+            _unlink_if_same_file_state(destination, destination_stat)
         raise
     finally:
         if destination_descriptor is not None:
@@ -443,7 +447,7 @@ def _unlink_captured_source(source: Path, expected_stat: os.stat_result) -> None
     except BaseException:
         if captured_stat is not None:
             try:
-                if _path_has_identity(staged_source, captured_stat):
+                if _path_matches_file_state(staged_source, captured_stat):
                     _restore_staged_source_without_overwrite(staged_source, source, captured_stat)
             except OSError:
                 pass
@@ -478,7 +482,7 @@ def _restore_staged_source_without_overwrite(
     try:
         os.link(staged_source, source, follow_symlinks=False)
     except OSError:
-        if not _path_has_identity(source, staged_stat):
+        if not _path_matches_file_state(source, staged_stat):
             return False
     try:
         staged_source.unlink()
@@ -503,8 +507,8 @@ def _same_file_state(current_stat: os.stat_result, expected_stat: os.stat_result
     )
 
 
-def _unlink_if_identity(path: Path, expected_stat: os.stat_result) -> None:
-    """Remove a path only when it still names the expected filesystem object."""
+def _unlink_if_same_file_state(path: Path, expected_stat: os.stat_result) -> None:
+    """Remove a path only when it still names the expected unchanged file."""
     try:
         _unlink_captured_source(path, expected_stat)
     except FileNotFoundError:
@@ -513,13 +517,13 @@ def _unlink_if_identity(path: Path, expected_stat: os.stat_result) -> None:
         logging.warning("Preserved changed cleanup target %s: %s", path, error)
 
 
-def _path_has_identity(path: Path, expected_stat: os.stat_result) -> bool:
-    """Return whether a path still names the expected filesystem object."""
+def _path_matches_file_state(path: Path, expected_stat: os.stat_result) -> bool:
+    """Return whether a path still names the expected unchanged regular file."""
     try:
         current_stat = path.lstat()
-    except FileNotFoundError:
+    except OSError:
         return False
-    return (current_stat.st_dev, current_stat.st_ino) == (expected_stat.st_dev, expected_stat.st_ino)
+    return _same_file_state(current_stat, expected_stat)
 
 
 def _path_is_present(path: Path) -> bool:

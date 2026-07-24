@@ -5,6 +5,7 @@ import os
 import pytest
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from qbitunregistered.file_operations import (
     SafetyCheckError,
@@ -383,8 +384,8 @@ class TestMoveFilesToRecycleBin:
         assert not list(tmp_path.glob(".qbitunregistered-recycle-*"))
 
     @pytest.mark.parametrize("cross_filesystem", [False, True], ids=["same-fs", "cross-fs"])
-    def test_atomic_source_capture_reports_recovery_path_on_restore_conflict(self, tmp_path, cross_filesystem):
-        """A conflicting new source cannot overwrite or delete the captured replacement."""
+    def test_inode_reuse_during_restore_conflict_preserves_destination(self, tmp_path, cross_filesystem):
+        """Cleanup rejects a changed source even when its inode appears reused."""
         from qbitunregistered.file_operations import _move_without_overwrite
 
         source = tmp_path / "source.txt"
@@ -392,14 +393,20 @@ class TestMoveFilesToRecycleBin:
         destination = tmp_path / "destination.txt"
         source.write_text("original", encoding="utf-8")
         replacement.write_text("replacement", encoding="utf-8")
+        original_stat = source.lstat()
         real_link = os.link
         real_rename = os.rename
+        real_lstat = Path.lstat
+        simulate_inode_reuse = False
+        reused_inode_observed = False
 
         def link_with_restore_conflict(link_source, link_destination, **kwargs):
+            nonlocal simulate_inode_reuse
             if cross_filesystem and Path(link_source) == source and Path(link_destination) == destination:
                 raise OSError(errno.EXDEV, "cross-device link")
             if Path(link_destination) == source and Path(link_source).name == "captured":
                 source.write_text("newer replacement", encoding="utf-8")
+                simulate_inode_reuse = True
             return real_link(link_source, link_destination, **kwargs)
 
         def replace_before_capture(rename_source, rename_destination, **kwargs):
@@ -407,13 +414,29 @@ class TestMoveFilesToRecycleBin:
                 os.replace(replacement, source)
             return real_rename(rename_source, rename_destination, **kwargs)
 
+        def lstat_with_reused_inode(path):
+            nonlocal reused_inode_observed
+            current_stat = real_lstat(path)
+            if Path(path) != source or not simulate_inode_reuse:
+                return current_stat
+            reused_inode_observed = True
+            return SimpleNamespace(
+                st_dev=original_stat.st_dev,
+                st_ino=original_stat.st_ino,
+                st_mode=current_stat.st_mode,
+                st_size=current_stat.st_size,
+                st_mtime_ns=current_stat.st_mtime_ns,
+            )
+
         with (
             patch("qbitunregistered.file_operations.os.link", side_effect=link_with_restore_conflict),
             patch("qbitunregistered.file_operations.os.rename", side_effect=replace_before_capture),
+            patch.object(Path, "lstat", autospec=True, side_effect=lstat_with_reused_inode),
             pytest.raises(SafetyCheckError, match="replacement preserved for recovery at"),
         ):
             _move_without_overwrite(source, destination)
 
+        assert reused_inode_observed
         recovery_paths = list(tmp_path.glob(".qbitunregistered-recycle-*/captured"))
         assert len(recovery_paths) == 1
         assert recovery_paths[0].read_text(encoding="utf-8") == "replacement"
