@@ -314,6 +314,10 @@ class TestMoveFilesToRecycleBin:
         assert not source.exists()
         assert destination.read_text() == "original"
 
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Windows prevents replacing a file while its source descriptor is open",
+    )
     def test_cross_filesystem_source_replacement_preserves_verified_copy(self, tmp_path):
         from qbitunregistered.file_operations import _move_without_overwrite
 

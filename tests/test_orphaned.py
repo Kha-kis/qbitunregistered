@@ -17,6 +17,15 @@ from qbitunregistered.operations.orphaned import (
 )
 
 
+def _expected_recycled_path(recycle_bin: Path, source: Path) -> Path:
+    """Return the documented recycle destination for a source path."""
+    resolved_source = source.resolve()
+    relative_path = resolved_source.relative_to(resolved_source.anchor)
+    if resolved_source.drive:
+        relative_path = Path(resolved_source.drive.replace(":", "_")) / relative_path
+    return recycle_bin / "orphaned" / "uncategorized" / relative_path
+
+
 class TestFileExclusionPatterns:
     """Test file exclusion pattern matching."""
 
@@ -178,10 +187,7 @@ class TestRecycleBin:
         # Verify file is moved
         assert not dummy_file.exists()
 
-        # Calculate expected destination path with new hybrid structure
-        # Files go to: recycle_bin/orphaned/uncategorized/[original_path]
-        relative_path = dummy_file.resolve().relative_to(dummy_file.resolve().anchor)
-        dest_path = recycle_bin / "orphaned" / "uncategorized" / relative_path
+        dest_path = _expected_recycled_path(recycle_bin, dummy_file)
 
         assert dest_path.exists(), f"Expected file at {dest_path}"
         assert dest_path.read_text() == "dummy content"
@@ -676,8 +682,7 @@ class TestRecycleBin:
         delete_orphaned_files(orphaned_files, dry_run=False, client=mock_client, recycle_bin=str(recycle_bin))
 
         # Verify both files exist in recycle bin with different names
-        relative_path = dummy_file1.resolve().relative_to(dummy_file1.resolve().anchor)
-        dest_dir = recycle_bin / "orphaned" / "uncategorized" / relative_path.parent
+        dest_dir = _expected_recycled_path(recycle_bin, dummy_file1).parent
 
         # Should have original file and one with timestamp
         files = list(dest_dir.glob("orphaned1*.mkv"))
@@ -703,8 +708,7 @@ class TestRecycleBin:
         delete_orphaned_files(orphaned_files, dry_run=False, client=mock_client, recycle_bin=str(recycle_bin))
 
         # Verify directory structure is preserved with hybrid structure
-        relative_path = dummy_file.resolve().relative_to(dummy_file.resolve().anchor)
-        dest_path = recycle_bin / "orphaned" / "uncategorized" / relative_path
+        dest_path = _expected_recycled_path(recycle_bin, dummy_file)
 
         assert dest_path.exists(), f"Expected file at {dest_path}"
         assert dest_path.read_text() == "movie content"
