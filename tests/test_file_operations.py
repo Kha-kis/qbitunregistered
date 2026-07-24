@@ -285,7 +285,7 @@ class TestMoveFilesToRecycleBin:
 
         with (
             patch("qbitunregistered.file_operations.os.link", side_effect=replace_source_after_link),
-            pytest.raises(OSError, match="changed"),
+            pytest.raises(SafetyCheckError, match="replacement restored"),
         ):
             _move_without_overwrite(source, destination)
 
@@ -321,26 +321,181 @@ class TestMoveFilesToRecycleBin:
         destination = tmp_path / "destination.txt"
         source.write_text("original")
         replacement.write_text("replacement")
+        real_link = os.link
 
         def replace_source_after_copy(_directory):
             if replacement.exists():
                 os.replace(replacement, source)
 
+        def force_cross_filesystem_move(link_source, link_destination, **kwargs):
+            if Path(link_source) == source and Path(link_destination) == destination:
+                raise OSError(errno.EXDEV, "cross-device link")
+            return real_link(link_source, link_destination, **kwargs)
+
         with (
             patch(
                 "qbitunregistered.file_operations.os.link",
-                side_effect=OSError(errno.EXDEV, "cross-device link"),
+                side_effect=force_cross_filesystem_move,
             ),
             patch(
                 "qbitunregistered.file_operations._fsync_directory",
                 side_effect=replace_source_after_copy,
             ),
-            pytest.raises(OSError, match="changed"),
+            pytest.raises(SafetyCheckError, match="replacement restored"),
         ):
             _move_without_overwrite(source, destination)
 
         assert source.read_text() == "replacement"
         assert destination.read_text() == "original"
+
+    @pytest.mark.parametrize("cross_filesystem", [False, True], ids=["same-fs", "cross-fs"])
+    def test_atomic_source_capture_restores_replacement_without_deletion(self, tmp_path, cross_filesystem):
+        """A replacement immediately before capture is restored, never unlinked."""
+        from qbitunregistered.file_operations import _move_without_overwrite
+
+        source = tmp_path / "source.txt"
+        replacement = tmp_path / "replacement.txt"
+        destination = tmp_path / "destination.txt"
+        source.write_text("original", encoding="utf-8")
+        replacement.write_text("replacement", encoding="utf-8")
+        real_link = os.link
+        real_rename = os.rename
+
+        def link_or_force_cross_filesystem(link_source, link_destination, **kwargs):
+            if cross_filesystem and Path(link_source) == source and Path(link_destination) == destination:
+                raise OSError(errno.EXDEV, "cross-device link")
+            return real_link(link_source, link_destination, **kwargs)
+
+        def replace_before_capture(rename_source, rename_destination, **kwargs):
+            if Path(rename_source) == source and replacement.exists():
+                os.replace(replacement, source)
+            return real_rename(rename_source, rename_destination, **kwargs)
+
+        with (
+            patch("qbitunregistered.file_operations.os.link", side_effect=link_or_force_cross_filesystem),
+            patch("qbitunregistered.file_operations.os.rename", side_effect=replace_before_capture),
+            pytest.raises(SafetyCheckError, match="replacement restored without deletion"),
+        ):
+            _move_without_overwrite(source, destination)
+
+        assert source.read_text(encoding="utf-8") == "replacement"
+        assert destination.read_text(encoding="utf-8") == "original"
+        assert not list(tmp_path.glob(".qbitunregistered-recycle-*"))
+
+    @pytest.mark.parametrize("cross_filesystem", [False, True], ids=["same-fs", "cross-fs"])
+    def test_atomic_source_capture_reports_recovery_path_on_restore_conflict(self, tmp_path, cross_filesystem):
+        """A conflicting new source cannot overwrite or delete the captured replacement."""
+        from qbitunregistered.file_operations import _move_without_overwrite
+
+        source = tmp_path / "source.txt"
+        replacement = tmp_path / "replacement.txt"
+        destination = tmp_path / "destination.txt"
+        source.write_text("original", encoding="utf-8")
+        replacement.write_text("replacement", encoding="utf-8")
+        real_link = os.link
+        real_rename = os.rename
+
+        def link_with_restore_conflict(link_source, link_destination, **kwargs):
+            if cross_filesystem and Path(link_source) == source and Path(link_destination) == destination:
+                raise OSError(errno.EXDEV, "cross-device link")
+            if Path(link_destination) == source and Path(link_source).name == "captured":
+                source.write_text("newer replacement", encoding="utf-8")
+            return real_link(link_source, link_destination, **kwargs)
+
+        def replace_before_capture(rename_source, rename_destination, **kwargs):
+            if Path(rename_source) == source and replacement.exists():
+                os.replace(replacement, source)
+            return real_rename(rename_source, rename_destination, **kwargs)
+
+        with (
+            patch("qbitunregistered.file_operations.os.link", side_effect=link_with_restore_conflict),
+            patch("qbitunregistered.file_operations.os.rename", side_effect=replace_before_capture),
+            pytest.raises(SafetyCheckError, match="replacement preserved for recovery at"),
+        ):
+            _move_without_overwrite(source, destination)
+
+        recovery_paths = list(tmp_path.glob(".qbitunregistered-recycle-*/captured"))
+        assert len(recovery_paths) == 1
+        assert recovery_paths[0].read_text(encoding="utf-8") == "replacement"
+        assert source.read_text(encoding="utf-8") == "newer replacement"
+        assert destination.read_text(encoding="utf-8") == "original"
+
+    def test_all_or_nothing_rolls_back_prior_move_after_capture_race(self, tmp_path):
+        """A later capture race fails the batch and rolls back earlier moves."""
+        recycle_bin = tmp_path / "recycle"
+        first = tmp_path / "first.txt"
+        second = tmp_path / "second.txt"
+        replacement = tmp_path / "replacement.txt"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second original", encoding="utf-8")
+        replacement.write_text("second replacement", encoding="utf-8")
+        real_rename = os.rename
+
+        def replace_second_before_capture(rename_source, rename_destination, **kwargs):
+            if Path(rename_source) == second and replacement.exists():
+                os.replace(replacement, second)
+            return real_rename(rename_source, rename_destination, **kwargs)
+
+        with patch("qbitunregistered.file_operations.os.rename", side_effect=replace_second_before_capture):
+            success_count, failed = move_files_to_recycle_bin(
+                [first, second],
+                recycle_bin,
+                "unregistered",
+                all_or_nothing=True,
+            )
+
+        assert success_count == 0
+        assert len(failed) == 1
+        assert first.read_text(encoding="utf-8") == "first"
+        assert second.read_text(encoding="utf-8") == "second replacement"
+        recycled_files = list(recycle_bin.rglob("*.txt"))
+        assert len(recycled_files) == 1
+        assert recycled_files[0].read_text(encoding="utf-8") == "second original"
+
+    def test_staging_creation_failure_preserves_source_and_destination(self, tmp_path):
+        """Failure before capture retains both verified filesystem objects."""
+        from qbitunregistered import file_operations
+
+        source = tmp_path / "source.txt"
+        destination = tmp_path / "destination.txt"
+        source.write_text("original", encoding="utf-8")
+
+        with (
+            patch.object(file_operations.tempfile, "mkdtemp", side_effect=OSError("staging unavailable")),
+            pytest.raises(OSError, match="staging unavailable"),
+        ):
+            file_operations._move_without_overwrite(source, destination)
+
+        assert source.read_text(encoding="utf-8") == "original"
+        assert destination.read_text(encoding="utf-8") == "original"
+        assert not list(tmp_path.glob(".qbitunregistered-recycle-*"))
+
+    def test_staged_unlink_failure_restores_source_and_cleans_destination(self, tmp_path):
+        """Failure removing the captured object restores it before propagating."""
+        from qbitunregistered import file_operations
+
+        source = tmp_path / "source.txt"
+        destination = tmp_path / "destination.txt"
+        source.write_text("original", encoding="utf-8")
+        real_unlink = Path.unlink
+        failed_once = False
+
+        def fail_first_staged_unlink(path, *args, **kwargs):
+            nonlocal failed_once
+            if path.name == "captured" and not failed_once:
+                failed_once = True
+                raise OSError("simulated staged unlink failure")
+            return real_unlink(path, *args, **kwargs)
+
+        with (
+            patch.object(Path, "unlink", autospec=True, side_effect=fail_first_staged_unlink),
+            pytest.raises(OSError, match="simulated staged unlink failure"),
+        ):
+            file_operations._move_without_overwrite(source, destination)
+
+        assert source.read_text(encoding="utf-8") == "original"
+        assert not destination.exists()
+        assert not list(tmp_path.glob(".qbitunregistered-recycle-*"))
 
     def test_cross_filesystem_metadata_update_uses_open_descriptor(self, tmp_path):
         from qbitunregistered.file_operations import _move_without_overwrite

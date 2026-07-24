@@ -321,6 +321,13 @@ The recycle bin uses a **hybrid structure** combining deletion type and category
 - If qBittorrent cannot remove an unregistered torrent after its files are
   recycled, the application restores those files without overwriting any path
   created concurrently.
+- Before removing a recycled source path, the application atomically captures
+  its current directory entry in a private staging directory and verifies the
+  captured file. A concurrently inserted replacement is restored without
+  overwrite; if its original path is already occupied, the failed operation
+  reports the preserved staging path for manual recovery.
+- Internal `.qbitunregistered-recycle-*` staging and recovery directories are
+  reserved and automatically excluded from orphan scanning and pruning.
 
 **Automatic Exclusion:**
 - The recycle bin directory is automatically excluded from orphan scanning

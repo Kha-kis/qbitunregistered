@@ -83,6 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   completely; incomplete moves now fail the operation and produce a non-zero
   CLI result instead of being reported as successful. Files are also restored
   if the subsequent torrent deletion fails.
+  Source removal now uses atomic capture into a private staging directory before
+  identity verification, so same- and cross-filesystem moves do not unlink a
+  concurrently inserted replacement; restoration conflicts report a preserved
+  recovery path. Internal staging and recovery directories are automatically
+  excluded from later orphan discovery and pruning.
   A source-directory durability error after unlink is logged without losing the
   completed move's rollback record
 - Hard-link planning rejects symlinked files that resolve outside the torrent

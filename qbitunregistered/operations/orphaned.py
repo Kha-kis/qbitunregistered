@@ -11,6 +11,7 @@ from qbitunregistered.file_operations import (
     FileIdentity,
     SafetyCheckError,
     capture_file_identity,
+    is_internal_recycle_staging_path,
     move_files_to_recycle_bin,
     verify_file_identity,
 )
@@ -175,6 +176,10 @@ def check_files_on_disk(  # noqa: C901
         logging.info(f"Checking files in: {save_path}")
 
         for entry in save_path.rglob("*"):  # Recursive check inside category paths
+            if is_internal_recycle_staging_path(entry):
+                files_excluded_by_dir += 1
+                continue
+
             # Resolve path once at the start of the loop for performance
             entry_resolved = entry.resolve()
 
@@ -230,7 +235,12 @@ def build_orphan_file_plan(orphaned_files: list[str]) -> OrphanFilePlan:
         SafetyCheckError: If any path cannot be confirmed as the same regular
             file discovered by the scan.
     """
-    identities = tuple(sorted((capture_file_identity(Path(path)) for path in orphaned_files), key=lambda item: item.path))
+    identities = tuple(
+        sorted(
+            (capture_file_identity(Path(path)) for path in orphaned_files if not is_internal_recycle_staging_path(Path(path))),
+            key=lambda item: item.path,
+        )
+    )
     return OrphanFilePlan(files=identities)
 
 
@@ -365,7 +375,13 @@ def delete_orphaned_files(  # noqa: C901
     """
     deleted_files_count = 0
     skipped_files: list[tuple[Path, str]] = []
-    resolved_plan = plan if plan is not None else build_orphan_file_plan(orphaned_files)
+    candidate_plan = plan if plan is not None else build_orphan_file_plan(orphaned_files)
+    protected_paths = [identity.path for identity in candidate_plan.files if is_internal_recycle_staging_path(identity.path)]
+    for protected_path in protected_paths:
+        logging.warning("Preserving internal recycle recovery path during orphan cleanup: %s", protected_path)
+    resolved_plan = OrphanFilePlan(
+        files=tuple(identity for identity in candidate_plan.files if not is_internal_recycle_staging_path(identity.path))
+    )
     orphaned_files_set = set(resolved_plan.paths)
     expected_identities = {identity.path: identity for identity in resolved_plan.files}
     processed_files: set[Path] = set()
@@ -453,6 +469,8 @@ def delete_orphaned_files(  # noqa: C901
 
     for dir_path in sorted(potential_empty_dirs, key=lambda p: len(str(p)), reverse=True):
         while dir_path not in active_save_paths and dir_path not in empty_dirs_to_delete:
+            if is_internal_recycle_staging_path(dir_path):
+                break
             try:
                 existing_files = set(dir_path.iterdir())  # Check existing files in the directory
             except (PermissionError, FileNotFoundError) as e:

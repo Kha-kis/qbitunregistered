@@ -4,8 +4,17 @@ from pathlib import Path
 from fnmatch import fnmatch
 from unittest.mock import MagicMock
 import pytest
-from qbitunregistered.file_operations import SafetyCheckError
-from qbitunregistered.operations.orphaned import build_orphan_file_plan, check_files_on_disk, delete_orphaned_files
+from qbitunregistered.file_operations import (
+    RECYCLE_STAGING_DIRECTORY_PREFIX,
+    SafetyCheckError,
+    capture_file_identity,
+)
+from qbitunregistered.operations.orphaned import (
+    OrphanFilePlan,
+    build_orphan_file_plan,
+    check_files_on_disk,
+    delete_orphaned_files,
+)
 
 
 class TestFileExclusionPatterns:
@@ -327,6 +336,70 @@ class TestRecycleBin:
         assert orphan.exists() is dry_run
         assert season_dir.exists() is dry_run
         assert season_dir.parent.exists() is dry_run
+
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+    def test_internal_recovery_path_is_excluded_from_scan_and_pruning(
+        self,
+        mock_client,
+        tmp_path,
+        caplog,
+        dry_run,
+    ):
+        """Preserved staging data under an active root is never orphaned."""
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
+        save_root = tmp_path / "downloads"
+        content_dir = save_root / "Show"
+        content_dir.mkdir(parents=True)
+        orphan = content_dir / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        recovery_directory = content_dir / f"{RECYCLE_STAGING_DIRECTORY_PREFIX}recovery"
+        recovery_directory.mkdir()
+        captured = recovery_directory / "captured"
+        captured.write_text("preserved replacement", encoding="utf-8")
+        mock_client.application.default_save_path = str(save_root)
+        mock_client.torrent_categories.categories = {}
+        mock_client.torrents.info.return_value = []
+
+        orphaned_files = check_files_on_disk(mock_client, [])
+        assert orphaned_files == [str(orphan)]
+
+        delete_orphaned_files(
+            orphaned_files,
+            dry_run=dry_run,
+            client=mock_client,
+            torrents=[],
+        )
+
+        assert captured.read_text(encoding="utf-8") == "preserved replacement"
+        assert recovery_directory.is_dir()
+        assert content_dir.is_dir()
+        assert orphan.exists() is dry_run
+        assert all(str(recovery_directory) not in message for message in caplog.messages if "empty directory" in message)
+
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+    def test_supplied_plan_cannot_delete_internal_recovery_path(self, mock_client, tmp_path, dry_run):
+        """The execution boundary rejects internal paths from caller plans."""
+        save_root = tmp_path / "downloads"
+        recovery_directory = save_root / f"{RECYCLE_STAGING_DIRECTORY_PREFIX}recovery"
+        recovery_directory.mkdir(parents=True)
+        captured = recovery_directory / "captured"
+        captured.write_text("preserved replacement", encoding="utf-8")
+        mock_client.application.default_save_path = str(save_root)
+        assert build_orphan_file_plan([str(captured)]).files == ()
+        plan = OrphanFilePlan(files=(capture_file_identity(captured),))
+
+        delete_orphaned_files(
+            [str(captured)],
+            dry_run=dry_run,
+            client=mock_client,
+            torrents=[],
+            plan=plan,
+        )
+
+        assert captured.read_text(encoding="utf-8") == "preserved replacement"
+        assert recovery_directory.is_dir()
 
     def test_final_current_torrent_save_root_is_never_pruned(self, mock_client, tmp_path):
         """The uncached current torrent snapshot protects canonical save roots."""

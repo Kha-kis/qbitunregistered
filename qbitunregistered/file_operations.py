@@ -4,6 +4,7 @@ import errno
 import logging
 import os
 import stat
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any, cast
 
 from qbitunregistered.cache import cached
 from qbitunregistered.types import QBittorrentClient
+
+RECYCLE_STAGING_DIRECTORY_PREFIX = ".qbitunregistered-recycle-"
 
 
 class SafetyCheckError(RuntimeError):
@@ -47,6 +50,11 @@ class RecycleBinMove:
 
     original_path: Path
     recycled_path: Path
+
+
+def is_internal_recycle_staging_path(path: Path) -> bool:
+    """Return whether any path component is reserved for recycle recovery."""
+    return any(part.startswith(RECYCLE_STAGING_DIRECTORY_PREFIX) for part in path.parts)
 
 
 def capture_file_identity(file_path: Path) -> FileIdentity:
@@ -322,20 +330,12 @@ def _move_without_overwrite(
     if expected_identity is not None and not expected_identity.matches(destination_stat):
         raise SafetyCheckError(f"Planned file changed during recycle-bin move: {source}")
     try:
-        current_source_stat = source.lstat()
-    except FileNotFoundError as error:
-        raise OSError("source disappeared during recycle-bin move; preserved destination") from error
-    if (current_source_stat.st_dev, current_source_stat.st_ino) != expected_inode:
-        raise OSError("source changed during recycle-bin move; preserved destination")
-
-    try:
         _fsync_directory(destination.parent)
-        source.unlink()
+        _unlink_captured_source(source, source_stat)
     except BaseException:
         if _path_has_identity(source, source_stat):
             _unlink_if_identity(destination, destination_stat)
         raise
-    _fsync_source_parent_after_unlink(source)
 
 
 def _copy_then_unlink_without_overwrite(source: Path, destination: Path, expected_source_stat: os.stat_result) -> None:
@@ -380,23 +380,18 @@ def _copy_then_unlink_without_overwrite(source: Path, destination: Path, expecte
             raise OSError("source changed during cross-filesystem copy")
 
         _fsync_directory(destination.parent)
-        current_source_stat = source.lstat()
         current_destination_stat = destination.lstat()
-        if (current_source_stat.st_dev, current_source_stat.st_ino) != (
-            opened_source_stat.st_dev,
-            opened_source_stat.st_ino,
-        ) or (current_destination_stat.st_dev, current_destination_stat.st_ino) != (
+        if (current_destination_stat.st_dev, current_destination_stat.st_ino) != (
             destination_stat.st_dev,
             destination_stat.st_ino,
         ):
-            raise OSError("source or destination changed during cross-filesystem move")
+            raise OSError("destination changed during cross-filesystem move")
 
         os.close(destination_descriptor)
         destination_descriptor = None
         os.close(source_descriptor)
         source_descriptor = None
-        source.unlink()
-        _fsync_source_parent_after_unlink(source)
+        _unlink_captured_source(source, opened_source_stat)
     except BaseException:
         if destination_stat is None and destination_descriptor is not None:
             destination_stat = os.fstat(destination_descriptor)
@@ -413,17 +408,109 @@ def _copy_then_unlink_without_overwrite(source: Path, destination: Path, expecte
             os.close(source_descriptor)
 
 
+def _unlink_captured_source(source: Path, expected_stat: os.stat_result) -> None:
+    """Atomically capture and remove only the verified source object.
+
+    POSIX has no portable conditional-unlink primitive. Renaming the public
+    source entry into a private directory first closes the ordinary pathname
+    replacement race: the captured entry is verified before its private name is
+    unlinked. A mismatched entry is restored without overwrite or left at an
+    actionable recovery path.
+    """
+    staging_directory = Path(tempfile.mkdtemp(prefix=RECYCLE_STAGING_DIRECTORY_PREFIX, dir=source.parent))
+    staged_source = staging_directory / "captured"
+    preserve_staging = False
+    captured_stat: os.stat_result | None = None
+    try:
+        try:
+            os.rename(source, staged_source)
+        except FileNotFoundError as error:
+            raise OSError("source disappeared during recycle-bin move; preserved destination") from error
+        captured_stat = staged_source.lstat()
+        if not _same_file_state(captured_stat, expected_stat):
+            restored = _restore_staged_source_without_overwrite(staged_source, source, captured_stat)
+            if restored:
+                raise SafetyCheckError(
+                    f"Source changed during recycle-bin move; replacement restored without deletion: {source}"
+                )
+            preserve_staging = True
+            raise SafetyCheckError(
+                "Source changed during recycle-bin move and its replacement could not be restored without "
+                f"overwriting {source}; replacement preserved for recovery at {staged_source}"
+            )
+
+        staged_source.unlink()
+    except BaseException:
+        if captured_stat is not None:
+            try:
+                if _path_has_identity(staged_source, captured_stat):
+                    _restore_staged_source_without_overwrite(staged_source, source, captured_stat)
+            except OSError:
+                pass
+        if _path_is_present(staged_source):
+            preserve_staging = True
+            logging.critical(
+                "Recycle source for %s remains preserved for recovery at %s",
+                source,
+                staged_source,
+            )
+        raise
+    finally:
+        if not preserve_staging:
+            try:
+                staging_directory.rmdir()
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logging.warning("Could not remove empty recycle staging directory %s: %s", staging_directory, error)
+
+    _fsync_source_parent_after_unlink(source)
+
+
+def _restore_staged_source_without_overwrite(
+    staged_source: Path,
+    source: Path,
+    staged_stat: os.stat_result,
+) -> bool:
+    """Restore a captured regular file atomically without overwriting its path."""
+    if not stat.S_ISREG(staged_stat.st_mode):
+        return False
+    try:
+        os.link(staged_source, source, follow_symlinks=False)
+    except OSError:
+        if not _path_has_identity(source, staged_stat):
+            return False
+    try:
+        staged_source.unlink()
+    except OSError as error:
+        logging.warning(
+            "Restored captured source %s but could not remove its staging hard link %s: %s",
+            source,
+            staged_source,
+            error,
+        )
+    return True
+
+
+def _same_file_state(current_stat: os.stat_result, expected_stat: os.stat_result) -> bool:
+    """Return whether two stat snapshots describe the same unchanged file."""
+    return (
+        (current_stat.st_dev, current_stat.st_ino) == (expected_stat.st_dev, expected_stat.st_ino)
+        and current_stat.st_mode == expected_stat.st_mode
+        and current_stat.st_size == expected_stat.st_size
+        and current_stat.st_mtime_ns == expected_stat.st_mtime_ns
+        and stat.S_ISREG(current_stat.st_mode)
+    )
+
+
 def _unlink_if_identity(path: Path, expected_stat: os.stat_result) -> None:
     """Remove a path only when it still names the expected filesystem object."""
     try:
-        current_stat = path.lstat()
+        _unlink_captured_source(path, expected_stat)
     except FileNotFoundError:
         return
-    if (current_stat.st_dev, current_stat.st_ino) == (expected_stat.st_dev, expected_stat.st_ino):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+    except (OSError, SafetyCheckError) as error:
+        logging.warning("Preserved changed cleanup target %s: %s", path, error)
 
 
 def _path_has_identity(path: Path, expected_stat: os.stat_result) -> bool:
@@ -433,6 +520,17 @@ def _path_has_identity(path: Path, expected_stat: os.stat_result) -> bool:
     except FileNotFoundError:
         return False
     return (current_stat.st_dev, current_stat.st_ino) == (expected_stat.st_dev, expected_stat.st_ino)
+
+
+def _path_is_present(path: Path) -> bool:
+    """Return whether a path may still contain a filesystem object."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _fsync_directory(directory: Path) -> None:

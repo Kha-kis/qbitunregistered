@@ -419,6 +419,18 @@ Main Script
 - A source-directory fsync error after unlink is reported as durability
   uncertainty, while the completed recycle move remains recorded and available
   for rollback
+- Same- and cross-filesystem recycle moves never unlink the public source
+  pathname after a check. They atomically rename that entry into a random,
+  mode-0700 staging directory on the source filesystem, verify the captured
+  object, and unlink only its private name. A captured replacement is restored
+  through an exclusive hard link or retained at a reported recovery path when
+  restoration would overwrite a newer entry. This portable guarantee protects
+  ordinary concurrent pathname replacement; hostile processes running as the
+  same OS account remain outside the filesystem permission boundary.
+- The shared `.qbitunregistered-recycle-` directory prefix is reserved for
+  internal recovery. Orphan discovery, immutable plan construction, execution,
+  and empty-directory pruning all exclude paths beneath that prefix without
+  relying on operator configuration.
 - Final ownership revalidation closes the preview-to-execution interval, but
   qBittorrent provides no transaction spanning its final response and the
   subsequent deletion request; that short external race remains unavoidable
