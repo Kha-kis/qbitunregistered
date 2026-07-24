@@ -247,6 +247,13 @@ deletion. Cross-seed tagging previews also list contradictory tags that will be
 removed. Before file mutation, execution refreshes qBittorrent's ownership
 state without the preview cache and aborts if it changed.
 
+Orphan cleanup also revalidates every confirmed file identity before a real
+mutation. If any planned file cannot be deleted or recycled, the operation is
+reported as incomplete, notifications show a failure, and the CLI exits
+nonzero. Recycle batches roll earlier moves back when a later move fails;
+permanent deletions cannot be rolled back, so any runtime partial completion is
+reported with completed and planned counts rather than as success.
+
 ## Recycle Bin Feature
 
 The recycle bin feature provides a safer alternative to permanent deletion for both orphaned files and unregistered torrent deletions. When enabled, files are moved to an organized recycle bin directory instead of being permanently deleted, allowing for easy recovery if needed.

@@ -187,6 +187,13 @@ Permanent deletion contributes target bytes to estimated freed space; recycle
 mode reports the same bytes as data to move and uses matching confirmation,
 dry-run, execution-summary, and notification wording.
 
+Before a real orphan cleanup, every planned identity is preflighted without
+mutation. Recycle execution is all-or-nothing and rolls prior moves back if a
+later path fails. A permanent unlink failure cannot restore already deleted
+files, so it aborts remaining cleanup with explicit completed/planned counts.
+Neither path emits a success summary when a planned file action is incomplete;
+the exception flows through CLI results, notifications, and exit status.
+
 Empty-directory pruning simulates already queued child-directory removals while
 walking upward, which removes nested empty parents but stops at canonical active
 save roots in both dry-run and mutating modes.

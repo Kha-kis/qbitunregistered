@@ -353,6 +353,36 @@ def test_yes_mode_reports_unregistered_recycle_failure(tmp_path) -> None:
     client.auth_log_out.assert_called_once_with()
 
 
+def test_yes_mode_reports_incomplete_orphan_cleanup_as_failure(tmp_path) -> None:
+    """Scheduled orphan cleanup cannot notify success after a skipped target."""
+    from qbitunregistered.file_operations import SafetyCheckError
+
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    orphan = downloads / "orphan.mkv"
+    orphan.write_text("orphan", encoding="utf-8")
+    config_path = _write_config(tmp_path)
+    client = _empty_client(downloads)
+    failure = SafetyCheckError("Orphan cleanup incomplete: 0 of 1 planned files were deleted; 1 remain. See logs for details.")
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.delete_orphaned_files", side_effect=failure),
+        patch("qbitunregistered.cli.NotificationManager") as notifications,
+    ):
+        result = main(["--config", str(config_path), "--orphaned", "--yes"])
+
+    assert result == EXIT_GENERAL_ERROR
+    notifications.return_value.send_summary.assert_called_once_with(
+        {
+            "succeeded": [],
+            "failed": [f"Orphaned files check: {failure}"],
+        }
+    )
+    assert orphan.read_text(encoding="utf-8") == "orphan"
+    client.auth_log_out.assert_called_once_with()
+
+
 def test_combined_preview_targets_are_reused_for_execution(tmp_path, capsys) -> None:
     from qbitunregistered.operations.orphaned import check_files_on_disk
 

@@ -71,7 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache and aborts the entire confirmed plan if a target is now owned or
   ownership cannot be established. Canonical default, category, and current
   torrent save roots are preserved during empty-directory pruning, while
-  nested empty parents below those roots are removed
+  nested empty parents below those roots are removed. Any incomplete file
+  cleanup now fails the operation instead of logging success: recycle batches
+  roll prior moves back, while permanent runtime partials report exact
+  completed and planned counts.
 - Unregistered preview and execution now share one ownership/deletion plan,
   report the exact file action, build one per-run ownership index, and refresh
   qBittorrent ownership state before file mutation. Current delete tags are

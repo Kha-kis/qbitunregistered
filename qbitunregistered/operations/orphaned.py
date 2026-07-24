@@ -3,7 +3,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 from fnmatch import translate
 
 from qbitunregistered.cache import cached
@@ -350,6 +350,30 @@ def _revalidate_orphan_ownership(client: QBittorrentClient, plan: OrphanFilePlan
     return active_save_paths
 
 
+def _raise_incomplete_orphan_cleanup(
+    skipped_files: Sequence[tuple[Path, str]],
+    *,
+    action: str,
+    completed_count: int,
+    planned_count: int,
+) -> NoReturn:
+    """Raise after logging an incomplete orphan cleanup without claiming success."""
+    incomplete_count = planned_count - completed_count
+    logging.error(
+        "Orphan cleanup incomplete: %d of %d planned files were %s; %d remain incomplete.",
+        completed_count,
+        planned_count,
+        action,
+        incomplete_count,
+    )
+    for file_path, reason in skipped_files:
+        logging.error("Skipped orphan path %s: %s", file_path, reason)
+    raise SafetyCheckError(
+        f"Orphan cleanup incomplete: {completed_count} of {planned_count} planned files were {action}; "
+        f"{incomplete_count} remain. See logs for details."
+    )
+
+
 def delete_orphaned_files(  # noqa: C901
     orphaned_files: list[str],
     dry_run: bool,
@@ -372,6 +396,10 @@ def delete_orphaned_files(  # noqa: C901
         plan: Optional identity plan produced during impact analysis. When
             omitted, identities are captured before any mutation for backward
             compatibility.
+
+    Raises:
+        SafetyCheckError: If ownership or identity validation fails, or any
+            planned file action cannot be completed.
     """
     deleted_files_count = 0
     skipped_files: list[tuple[Path, str]] = []
@@ -379,6 +407,14 @@ def delete_orphaned_files(  # noqa: C901
     protected_paths = [identity.path for identity in candidate_plan.files if is_internal_recycle_staging_path(identity.path)]
     for protected_path in protected_paths:
         logging.warning("Preserving internal recycle recovery path during orphan cleanup: %s", protected_path)
+    if protected_paths:
+        action = "moved to the recycle bin" if recycle_bin else "deleted"
+        _raise_incomplete_orphan_cleanup(
+            [(path, "internal recycle recovery paths cannot be orphan cleanup targets") for path in protected_paths],
+            action=action,
+            completed_count=0,
+            planned_count=len(candidate_plan.files),
+        )
     resolved_plan = OrphanFilePlan(
         files=tuple(identity for identity in candidate_plan.files if not is_internal_recycle_staging_path(identity.path))
     )
@@ -424,6 +460,22 @@ def delete_orphaned_files(  # noqa: C901
     else:
         active_save_paths.update(_revalidate_orphan_ownership(client, resolved_plan))
 
+    if not dry_run:
+        identity_failures: list[tuple[Path, str]] = []
+        for identity in resolved_plan.files:
+            try:
+                verify_file_identity(identity)
+            except SafetyCheckError as error:
+                identity_failures.append((identity.path, str(error)))
+        if identity_failures:
+            action = "moved to the recycle bin" if recycle_bin else "deleted"
+            _raise_incomplete_orphan_cleanup(
+                identity_failures,
+                action=action,
+                completed_count=0,
+                planned_count=len(resolved_plan.files),
+            )
+
     # Handle recycle bin or deletion
     if recycle_bin:
         recycle_bin_path = Path(recycle_bin)
@@ -436,13 +488,19 @@ def delete_orphaned_files(  # noqa: C901
             deletion_type="orphaned",
             category="uncategorized",  # Orphaned files don't have a category
             dry_run=dry_run,
+            all_or_nothing=True,
             expected_identities=expected_identities,
         )
 
         deleted_files_count = success_count
-        skipped_files = failed
-        failed_paths = {path for path, _reason in failed}
-        processed_files.update(path for path in orphaned_files_set if path not in failed_paths)
+        if failed or success_count != len(resolved_plan.files):
+            _raise_incomplete_orphan_cleanup(
+                failed,
+                action="moved to the recycle bin",
+                completed_count=success_count,
+                planned_count=len(resolved_plan.files),
+            )
+        processed_files.update(orphaned_files_set)
     else:
         # Permanent deletion (no recycle bin)
         for identity in resolved_plan.files:
@@ -463,6 +521,15 @@ def delete_orphaned_files(  # noqa: C901
             except (OSError, SafetyCheckError) as error:
                 logging.error("Refusing to delete changed orphaned file %s: %s", file_path, error)
                 skipped_files.append((file_path, str(error)))
+                break
+
+        if skipped_files or deleted_files_count != len(resolved_plan.files):
+            _raise_incomplete_orphan_cleanup(
+                skipped_files,
+                action="deleted",
+                completed_count=deleted_files_count,
+                planned_count=len(resolved_plan.files),
+            )
 
     # Determine which directories would be empty
     empty_dirs_to_delete: set[Path] = set()
@@ -515,8 +582,3 @@ def delete_orphaned_files(  # noqa: C901
         logging.info(
             f"Successfully {action} {deleted_files_count} orphaned files and removed {deleted_dirs_count} empty directories."
         )
-
-    if skipped_files:
-        logging.warning(f"Skipped {len(skipped_files)} files due to errors:")
-        for file_path, reason in skipped_files:
-            logging.warning(f" - {file_path}: {reason}")

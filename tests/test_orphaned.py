@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from fnmatch import fnmatch
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 from qbitunregistered.file_operations import (
     RECYCLE_STAGING_DIRECTORY_PREFIX,
@@ -208,15 +208,17 @@ class TestRecycleBin:
         source.unlink()
         source.write_text("replacement")
 
-        delete_orphaned_files(
-            [str(source)],
-            dry_run=False,
-            client=mock_client,
-            plan=plan,
-        )
+        with pytest.raises(SafetyCheckError, match="0 of 1 planned files were deleted"):
+            delete_orphaned_files(
+                [str(source)],
+                dry_run=False,
+                client=mock_client,
+                plan=plan,
+            )
 
         assert source.read_text() == "replacement"
         assert "Planned file changed after preview" in caplog.text
+        assert "Successfully deleted" not in caplog.text
 
     def test_recycle_refuses_file_substituted_after_preview(self, mock_client, tmp_path, caplog):
         """Recycle execution cannot move a regular file substituted after preview."""
@@ -228,17 +230,123 @@ class TestRecycleBin:
         source.unlink()
         source.write_text("replacement")
 
-        delete_orphaned_files(
-            [str(source)],
-            dry_run=False,
-            client=mock_client,
-            recycle_bin=str(recycle_bin),
-            plan=plan,
-        )
+        with pytest.raises(SafetyCheckError, match="0 of 1 planned files were moved to the recycle bin"):
+            delete_orphaned_files(
+                [str(source)],
+                dry_run=False,
+                client=mock_client,
+                recycle_bin=str(recycle_bin),
+                plan=plan,
+            )
 
         assert source.read_text() == "replacement"
         assert list(recycle_bin.rglob("orphaned.mkv")) == []
         assert "Planned file changed after preview" in caplog.text
+        assert "Successfully moved to recycle bin" not in caplog.text
+
+    @pytest.mark.parametrize("use_recycle_bin", [False, True], ids=["permanent", "recycle"])
+    def test_missing_confirmed_orphan_surfaces_incomplete_cleanup(self, mock_client, tmp_path, use_recycle_bin):
+        """A missing preview target is an operation failure in either mode."""
+        source = tmp_path / "orphaned.mkv"
+        source.write_text("previewed", encoding="utf-8")
+        plan = build_orphan_file_plan([str(source)])
+        source.unlink()
+        recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
+
+        with pytest.raises(SafetyCheckError, match="0 of 1 planned files"):
+            delete_orphaned_files(
+                [str(source)],
+                dry_run=False,
+                client=mock_client,
+                recycle_bin=str(recycle_bin) if recycle_bin else None,
+                plan=plan,
+            )
+
+        assert not source.exists()
+        assert recycle_bin is None or not recycle_bin.exists()
+
+    def test_permanent_partial_failure_reports_counts_without_success(self, mock_client, tmp_path, caplog):
+        """An unlink failure reports a partial permanent cleanup accurately."""
+        first = tmp_path / "first.mkv"
+        second = tmp_path / "second.mkv"
+        third = tmp_path / "third.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        third.write_text("third", encoding="utf-8")
+        plan = build_orphan_file_plan([str(first), str(second), str(third)])
+        real_unlink = Path.unlink
+
+        def fail_second_unlink(path, *args, **kwargs):
+            if path == second:
+                raise OSError("simulated unlink failure")
+            return real_unlink(path, *args, **kwargs)
+
+        with (
+            patch.object(Path, "unlink", autospec=True, side_effect=fail_second_unlink),
+            pytest.raises(SafetyCheckError, match="1 of 3 planned files were deleted; 2 remain"),
+        ):
+            delete_orphaned_files(
+                [str(first), str(second), str(third)],
+                dry_run=False,
+                client=mock_client,
+                plan=plan,
+            )
+
+        assert not first.exists()
+        assert second.read_text(encoding="utf-8") == "second"
+        assert third.read_text(encoding="utf-8") == "third"
+        assert "Successfully deleted" not in caplog.text
+
+    def test_recycle_partial_failure_rolls_back_and_surfaces_failure(self, mock_client, tmp_path, caplog):
+        """A later recycle failure restores earlier moves and fails the operation."""
+        from qbitunregistered import file_operations
+
+        first = tmp_path / "first.mkv"
+        second = tmp_path / "second.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        recycle_bin = tmp_path / "recycle"
+        plan = build_orphan_file_plan([str(first), str(second)])
+        real_move_batch = file_operations.move_files_to_recycle_bin
+        real_move_one = file_operations._move_without_overwrite
+        second_path = second.resolve()
+        failed_second = False
+
+        def move_in_path_order(*args, **kwargs):
+            kwargs["file_paths"] = sorted(kwargs["file_paths"])
+            return real_move_batch(*args, **kwargs)
+
+        def fail_second_move(source, destination, *, expected_identity=None):
+            nonlocal failed_second
+            if source == second_path and not failed_second:
+                failed_second = True
+                raise OSError("simulated recycle move failure")
+            return real_move_one(source, destination, expected_identity=expected_identity)
+
+        with (
+            patch(
+                "qbitunregistered.operations.orphaned.move_files_to_recycle_bin",
+                side_effect=move_in_path_order,
+            ) as move_batch,
+            patch(
+                "qbitunregistered.file_operations._move_without_overwrite",
+                side_effect=fail_second_move,
+            ),
+            pytest.raises(SafetyCheckError, match="0 of 2 planned files were moved to the recycle bin"),
+        ):
+            delete_orphaned_files(
+                [str(first), str(second)],
+                dry_run=False,
+                client=mock_client,
+                recycle_bin=str(recycle_bin),
+                plan=plan,
+            )
+
+        assert move_batch.call_args.kwargs["all_or_nothing"] is True
+        assert first.read_text(encoding="utf-8") == "first"
+        assert second.read_text(encoding="utf-8") == "second"
+        assert list(recycle_bin.rglob("*.mkv")) == []
+        assert "Successfully moved to recycle bin" not in caplog.text
 
     def test_ownership_refresh_failure_blocks_every_orphan_mutation(self, mock_client, tmp_path):
         """An unavailable final qBittorrent snapshot aborts the whole plan."""
@@ -390,13 +498,14 @@ class TestRecycleBin:
         assert build_orphan_file_plan([str(captured)]).files == ()
         plan = OrphanFilePlan(files=(capture_file_identity(captured),))
 
-        delete_orphaned_files(
-            [str(captured)],
-            dry_run=dry_run,
-            client=mock_client,
-            torrents=[],
-            plan=plan,
-        )
+        with pytest.raises(SafetyCheckError, match="0 of 1 planned files"):
+            delete_orphaned_files(
+                [str(captured)],
+                dry_run=dry_run,
+                client=mock_client,
+                torrents=[],
+                plan=plan,
+            )
 
         assert captured.read_text(encoding="utf-8") == "preserved replacement"
         assert recovery_directory.is_dir()
