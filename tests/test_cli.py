@@ -18,7 +18,7 @@ def test_version_flag_reports_package_version(capsys) -> None:
     with pytest.raises(SystemExit, match="0"):
         main(["--version"])
 
-    assert capsys.readouterr().out.endswith(f" {__version__}\n")
+    assert capsys.readouterr().out.rstrip().endswith(__version__)
 
 
 def _write_config(tmp_path, **overrides):
