@@ -236,9 +236,10 @@ preview are reused for execution so the confirmed list is the list processed.
 Orphan plans also bind each path to its device, inode, type, size, and
 modification time; missing, modified, substituted, or symlinked targets are
 preserved. Unregistered previews distinguish torrent-only deletion,
-cross-seeded-file preservation, recycling, and permanent deletion. Before
-file mutation, execution refreshes qBittorrent's ownership state without the
-preview cache and aborts if it changed.
+cross-seeded-file preservation, recycling, and permanent deletion. Cross-seed
+tagging previews also list contradictory tags that will be removed. Before file
+mutation, execution refreshes qBittorrent's ownership state without the preview
+cache and aborts if it changed.
 
 ## Recycle Bin Feature
 
@@ -364,7 +365,8 @@ When those controls authorize file removal:
 - Missing files are treated as an unsafe state, not as an empty torrent
 - The same ownership checks protect recycle-bin and permanent-deletion modes
 - If any file for one unregistered torrent fails to move, earlier moves for that
-  torrent are rolled back and the torrent is preserved
+  torrent are rolled back, the torrent is preserved, and the operation reports
+  failure with a non-zero exit status
 
 ### Example Usage
 

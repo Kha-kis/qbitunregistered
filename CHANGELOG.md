@@ -60,12 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Impact analysis now covers every mutating flag, shows concrete orphaned,
   auto-remove, and hard-link targets, reuses confirmed filesystem plans, and
   aborts on analyzer failure or conflicting hard-link destinations
+- Cross-seed impact previews now show contradictory tag removals before
+  confirmation
 - Orphan cleanup now binds previewed paths to immutable file identities and
   refuses missing, modified, substituted, non-regular, or symlinked targets.
   Immediately before mutation, it also refreshes qBittorrent ownership without
   cache and aborts the entire confirmed plan if a target is now owned or
   ownership cannot be established. Canonical default, category, and current
-  torrent save roots are preserved during empty-directory pruning
+  torrent save roots are preserved during empty-directory pruning, while
+  nested empty parents below those roots are removed
 - Unregistered preview and execution now share one ownership/deletion plan,
   report the exact file action, build one per-run ownership index, and refresh
   qBittorrent ownership state before file mutation. Current delete tags are
@@ -77,7 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-seed ownership scan as recycle-bin deletion
 - Recycle-bin moves refuse destination overwrites, reject non-regular sources,
   and roll back earlier files when an unregistered torrent cannot be moved
-  completely; files are also restored if the subsequent torrent deletion fails.
+  completely; incomplete moves now fail the operation and produce a non-zero
+  CLI result instead of being reported as successful. Files are also restored
+  if the subsequent torrent deletion fails.
   A source-directory durability error after unlink is logged without losing the
   completed move's rollback record
 - Hard-link planning rejects symlinked files that resolve outside the torrent

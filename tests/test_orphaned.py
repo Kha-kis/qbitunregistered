@@ -299,6 +299,35 @@ class TestRecycleBin:
         assert f"remove empty directory: {real_save_root}" not in caplog.text
         assert orphan.exists() is dry_run
 
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+    def test_nested_empty_directories_are_pruned_below_active_root(self, mock_client, tmp_path, caplog, dry_run):
+        """Queued child removals make their empty parents eligible for pruning."""
+        import logging
+
+        caplog.set_level(logging.INFO)
+        save_root = tmp_path / "downloads"
+        season_dir = save_root / "Show" / "Season 01"
+        season_dir.mkdir(parents=True)
+        orphan = season_dir / "episode.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        mock_client.application.default_save_path = str(save_root)
+
+        delete_orphaned_files(
+            [str(orphan)],
+            dry_run=dry_run,
+            client=mock_client,
+            torrents=[],
+        )
+
+        assert save_root.is_dir()
+        action = "Would remove" if dry_run else "Deleted"
+        assert f"{action} empty directory: {season_dir}" in caplog.messages
+        assert f"{action} empty directory: {season_dir.parent}" in caplog.messages
+        assert f"{action} empty directory: {save_root}" not in caplog.messages
+        assert orphan.exists() is dry_run
+        assert season_dir.exists() is dry_run
+        assert season_dir.parent.exists() is dry_run
+
     def test_final_current_torrent_save_root_is_never_pruned(self, mock_client, tmp_path):
         """The uncached current torrent snapshot protects canonical save roots."""
         default_save_root = tmp_path / "default"

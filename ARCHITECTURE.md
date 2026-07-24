@@ -153,6 +153,9 @@ deletion explicitly. File-mutating execution validates planned file identities
 and refreshes the full ownership snapshot without cache before mutation. Every
 planned torrent's current matching delete tag is also revalidated before its
 deletion request; recycle moves are rolled back if that final check fails.
+An incomplete recycle move preserves the torrent and raises an operation
+failure so CLI summaries, notifications, and scheduled exit codes remain
+truthful.
 
 #### `qbitunregistered/operations/orphaned.py` - Detect & Delete Orphaned Files
 
@@ -173,6 +176,10 @@ deletion request; recycle moves are rolled back if that final check fails.
 5. Identify orphaned files using glob pattern exclusions
 6. Capture device, inode, type, size, and modification time for each target
 7. Delete or report from that same immutable plan
+
+Empty-directory pruning simulates already queued child-directory removals while
+walking upward, which removes nested empty parents but stops at canonical active
+save roots in both dry-run and mutating modes.
 
 **Exclude Patterns**:
 - File patterns: glob syntax (e.g., `*.tmp`, `*.part`, `*.!qB`)
@@ -225,6 +232,9 @@ separate seeding-management operation.
 **Core Responsibility**: Identify and tag torrents seeding on multiple trackers
 
 **Detection**: Analyzes tracker count and status to identify cross-seeding patterns
+
+Impact analysis uses the same file-structure grouping and includes removal of
+an existing contradictory tag before the batched add operation.
 
 #### `qbitunregistered/operations/auto_remove.py` - Automatic Removal
 

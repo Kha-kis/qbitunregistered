@@ -1,7 +1,7 @@
 """Tests for unregistered checks functionality."""
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from qbitunregistered.operations.unregistered_checks import (
     compile_patterns,
     check_unregistered_message,
@@ -655,6 +655,46 @@ class TestUnregisteredRecycleBin:
 
         # Verify file was moved to recycle bin
         assert not test_file.exists(), "File should be moved from original location"
+
+    def test_incomplete_recycle_move_fails_operation_and_preserves_torrent(self, mock_client, config, tmp_path):
+        """A preserved torrent is reported as a failed destructive operation."""
+        from qbitunregistered.file_operations import SafetyCheckError
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+
+        source_file = tmp_path / "movie.mkv"
+        source_file.write_text("content", encoding="utf-8")
+        torrent = MagicMock(
+            hash="unreg123",
+            tags="unregistered",
+            save_path=str(tmp_path),
+            category="movies",
+        )
+        torrent.name = "Unregistered Movie"
+        file_info = MagicMock()
+        file_info.name = source_file.name
+        mock_client.torrents.info.return_value = [torrent]
+        mock_client.torrents_files.return_value = [file_info]
+
+        with (
+            patch(
+                "qbitunregistered.operations.unregistered_checks.move_files_to_recycle_bin",
+                return_value=(0, [(source_file, "permission denied")]),
+            ),
+            pytest.raises(SafetyCheckError, match="Could not safely recycle all files"),
+        ):
+            delete_torrents_and_files(
+                client=mock_client,
+                config=config,
+                use_delete_tags=True,
+                delete_tags=["unregistered"],
+                delete_files={"unregistered": True},
+                dry_run=False,
+                torrents=[torrent],
+                recycle_bin=str(tmp_path / "recycle"),
+            )
+
+        assert source_file.read_text(encoding="utf-8") == "content"
+        mock_client.torrents_delete.assert_not_called()
 
     def test_final_qbittorrent_state_change_aborts_before_mutation(self, mock_client, config, tmp_path):
         """A new owner after preview invalidates permanent deletion."""

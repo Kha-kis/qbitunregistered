@@ -270,6 +270,28 @@ def test_analyzer_failure_aborts_before_mutation(tmp_path) -> None:
     client.auth_log_out.assert_called_once_with()
 
 
+def test_yes_mode_reports_unregistered_recycle_failure(tmp_path) -> None:
+    """Scheduled-style execution reports a preserved torrent as a failure."""
+    from qbitunregistered.file_operations import SafetyCheckError
+
+    config_path = _write_config(tmp_path)
+    client = _empty_client(tmp_path)
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch(
+            "qbitunregistered.cli.unregistered_checks",
+            side_effect=SafetyCheckError("Could not safely recycle all files; torrent preserved"),
+        ),
+        patch("qbitunregistered.cli.NotificationManager") as notifications,
+    ):
+        result = main(["--config", str(config_path), "--unregistered", "--yes"])
+
+    assert result == EXIT_GENERAL_ERROR
+    notifications.return_value.send_summary.assert_called_once_with({"succeeded": [], "failed": ["Unregistered checks"]})
+    client.auth_log_out.assert_called_once_with()
+
+
 def test_combined_preview_targets_are_reused_for_execution(tmp_path, capsys) -> None:
     from qbitunregistered.operations.orphaned import check_files_on_disk
 

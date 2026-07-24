@@ -561,6 +561,36 @@ class TestAnalyzeTagByTracker:
 
 
 class TestAnalyzeCrossSeeding:
+    def test_preview_includes_contradictory_tag_removals(self):
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
+        client = Mock()
+        client.torrents_files.side_effect = lambda torrent_hash: {
+            "shared1": [{"name": "movie.mkv"}],
+            "shared2": [{"name": "movie.mkv"}],
+            "unique": [{"name": "other.mkv"}],
+        }[torrent_hash]
+        shared_with_opposite = Mock(hash="shared1", tags="not-cross-seeding, keep")
+        shared_without_opposite = Mock(hash="shared2", tags="keep")
+        unique_with_opposite = Mock(hash="unique", tags="cross-seed")
+        summary = ImpactSummary()
+
+        _analyze_tag_cross_seeding(
+            client,
+            [shared_with_opposite, shared_without_opposite, unique_with_opposite],
+            {},
+            summary,
+        )
+
+        assert summary.torrents_to_tag["cross-seed"] == ["shared1", "shared2"]
+        assert summary.torrents_to_tag["not-cross-seeding"] == ["unique"]
+        assert summary.operation_targets["remove tag 'not-cross-seeding'"] == ["shared1"]
+        assert summary.operation_targets["remove tag 'cross-seed'"] == ["unique"]
+        formatted = summary.format_summary(show_details=True)
+        assert "remove tag 'not-cross-seeding': 1" in formatted
+        assert "remove tag 'cross-seed': 1" in formatted
+
     def test_object_file_metadata_is_skipped_like_execution(self):
         from qbitunregistered.cache import clear_cache
 

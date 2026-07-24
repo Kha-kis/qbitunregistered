@@ -488,7 +488,11 @@ def _analyze_tag_cross_seeding(
         structure_map[file_structure].append(torrent)
     for grouped_torrents in structure_map.values():
         tag = "cross-seed" if len(grouped_torrents) > 1 else "not-cross-seeding"
+        opposite_tag = "not-cross-seeding" if tag == "cross-seed" else "cross-seed"
         for torrent in grouped_torrents:
+            current_tags = {current_tag.strip() for current_tag in torrent.tags.split(",") if current_tag.strip()}
+            if opposite_tag in current_tags:
+                summary.add_operation_target(f"remove tag '{opposite_tag}'", torrent.hash)
             summary.add_tagging(tag, torrent.hash)
 
 

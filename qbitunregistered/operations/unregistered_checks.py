@@ -508,13 +508,12 @@ def delete_torrents_and_files(
                 move_records=move_records,
             )
             if failed or success_count != len(identities):
-                logging.error(
-                    "Preserving torrent '%s' because not all files were moved safely (%d/%d moved).",
-                    deletion.torrent_name,
-                    success_count,
-                    len(identities),
+                failure_details = "; ".join(f"{path}: {reason}" for path, reason in failed) or "incomplete move"
+                raise SafetyCheckError(
+                    f"Could not safely recycle all files for torrent '{deletion.torrent_name}' "
+                    f"({success_count}/{len(identities)} moved; {failure_details}). "
+                    "The torrent was preserved."
                 )
-                continue
             try:
                 current_torrents = _refresh_torrents_for_deletion(client)
                 _revalidate_delete_tags(current_torrents, (deletion,), delete_tags)

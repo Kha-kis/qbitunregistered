@@ -449,7 +449,7 @@ def delete_orphaned_files(  # noqa: C901
                 skipped_files.append((file_path, str(error)))
 
     # Determine which directories would be empty
-    empty_dirs_to_delete = set()
+    empty_dirs_to_delete: set[Path] = set()
 
     for dir_path in sorted(potential_empty_dirs, key=lambda p: len(str(p)), reverse=True):
         while dir_path not in active_save_paths and dir_path not in empty_dirs_to_delete:
@@ -462,7 +462,9 @@ def delete_orphaned_files(  # noqa: C901
                 logging.exception(f"Unexpected error accessing directory {dir_path}")
                 break
 
-            remaining_files = existing_files - processed_files  # What's left after confirmed deletion
+            # Simulate child-directory removals already queued by the deepest-first
+            # walk so empty parents are included in the same plan.
+            remaining_files = existing_files - processed_files - empty_dirs_to_delete
 
             if not remaining_files:  # If directory would be empty
                 empty_dirs_to_delete.add(dir_path)
