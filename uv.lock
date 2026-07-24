@@ -727,7 +727,7 @@ wheels = [
 
 [[package]]
 name = "qbitunregistered"
-version = "2.1.0rc1"
+version = "2.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "apprise" },
