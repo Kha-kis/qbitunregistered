@@ -64,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses missing, modified, substituted, non-regular, or symlinked targets.
   Immediately before mutation, it also refreshes qBittorrent ownership without
   cache and aborts the entire confirmed plan if a target is now owned or
-  ownership cannot be established
+  ownership cannot be established. Canonical default, category, and current
+  torrent save roots are preserved during empty-directory pruning
 - Unregistered preview and execution now share one ownership/deletion plan,
   report the exact file action, build one per-run ownership index, and refresh
   qBittorrent ownership state before file mutation
@@ -74,7 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-seed ownership scan as recycle-bin deletion
 - Recycle-bin moves refuse destination overwrites, reject non-regular sources,
   and roll back earlier files when an unregistered torrent cannot be moved
-  completely; files are also restored if the subsequent torrent deletion fails
+  completely; files are also restored if the subsequent torrent deletion fails.
+  A source-directory durability error after unlink is logged without losing the
+  completed move's rollback record
 - Hard-link planning rejects symlinked files that resolve outside the torrent
   content directory
 - Tracker caches are isolated by client, and an explicitly blank CLI API key

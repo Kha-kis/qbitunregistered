@@ -401,6 +401,9 @@ Main Script
   prior files back before the torrent is preserved
 - A qBittorrent deletion failure after a successful recycle move restores the
   moved files, refusing to overwrite a path created concurrently
+- A source-directory fsync error after unlink is reported as durability
+  uncertainty, while the completed recycle move remains recorded and available
+  for rollback
 - Final ownership revalidation closes the preview-to-execution interval, but
   qBittorrent provides no transaction spanning its final response and the
   subsequent deletion request; that short external race remains unavoidable

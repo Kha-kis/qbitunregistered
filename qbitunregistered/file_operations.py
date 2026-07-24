@@ -328,14 +328,14 @@ def _move_without_overwrite(
     if (current_source_stat.st_dev, current_source_stat.st_ino) != expected_inode:
         raise OSError("source changed during recycle-bin move; preserved destination")
 
-    _fsync_directory(destination.parent)
     try:
+        _fsync_directory(destination.parent)
         source.unlink()
     except BaseException:
         if _path_has_identity(source, source_stat):
             _unlink_if_identity(destination, destination_stat)
         raise
-    _fsync_directory(source.parent)
+    _fsync_source_parent_after_unlink(source)
 
 
 def _copy_then_unlink_without_overwrite(source: Path, destination: Path, expected_source_stat: os.stat_result) -> None:
@@ -396,7 +396,7 @@ def _copy_then_unlink_without_overwrite(source: Path, destination: Path, expecte
         os.close(source_descriptor)
         source_descriptor = None
         source.unlink()
-        _fsync_directory(source.parent)
+        _fsync_source_parent_after_unlink(source)
     except BaseException:
         if destination_stat is None and destination_descriptor is not None:
             destination_stat = os.fstat(destination_descriptor)
@@ -444,6 +444,18 @@ def _fsync_directory(directory: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _fsync_source_parent_after_unlink(source: Path) -> None:
+    """Log durability uncertainty after a move has already completed."""
+    try:
+        _fsync_directory(source.parent)
+    except OSError as error:
+        logging.warning(
+            "Moved file %s, but could not confirm source-directory durability: %s",
+            source,
+            error,
+        )
 
 
 def get_torrent_file_paths(client: QBittorrentClient, torrent_hash: str) -> list[Path]:

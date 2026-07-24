@@ -5,7 +5,7 @@ from fnmatch import fnmatch
 from unittest.mock import MagicMock
 import pytest
 from qbitunregistered.file_operations import SafetyCheckError
-from qbitunregistered.operations.orphaned import build_orphan_file_plan, delete_orphaned_files
+from qbitunregistered.operations.orphaned import build_orphan_file_plan, check_files_on_disk, delete_orphaned_files
 
 
 class TestFileExclusionPatterns:
@@ -276,6 +276,93 @@ class TestRecycleBin:
         assert first.read_text(encoding="utf-8") == "first"
         assert second.read_text(encoding="utf-8") == "second"
         assert not (tmp_path / "recycle").exists()
+
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+    def test_symlinked_default_save_root_is_never_pruned(self, mock_client, tmp_path, caplog, dry_run):
+        """Canonical default roots protect their real directories."""
+        real_save_root = tmp_path / "real-default"
+        real_save_root.mkdir()
+        configured_save_root = tmp_path / "configured-default"
+        configured_save_root.symlink_to(real_save_root, target_is_directory=True)
+        orphan = real_save_root / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        mock_client.application.default_save_path = str(configured_save_root)
+
+        delete_orphaned_files(
+            [str(orphan)],
+            dry_run=dry_run,
+            client=mock_client,
+        )
+
+        assert real_save_root.is_dir()
+        assert configured_save_root.resolve(strict=True) == real_save_root
+        assert f"remove empty directory: {real_save_root}" not in caplog.text
+        assert orphan.exists() is dry_run
+
+    def test_final_current_torrent_save_root_is_never_pruned(self, mock_client, tmp_path):
+        """The uncached current torrent snapshot protects canonical save roots."""
+        default_save_root = tmp_path / "default"
+        default_save_root.mkdir()
+        real_torrent_root = tmp_path / "real-current"
+        real_torrent_root.mkdir()
+        configured_torrent_root = tmp_path / "configured-current"
+        configured_torrent_root.symlink_to(real_torrent_root, target_is_directory=True)
+        orphan = real_torrent_root / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        mock_client.application.default_save_path = str(default_save_root)
+        current_torrent = MagicMock(hash="current", save_path=str(configured_torrent_root))
+        mock_client.torrents.info.return_value = [current_torrent]
+        mock_client.torrents_files.return_value = []
+
+        delete_orphaned_files(
+            [str(orphan)],
+            dry_run=False,
+            client=mock_client,
+            torrents=[],
+        )
+
+        assert not orphan.exists()
+        assert real_torrent_root.is_dir()
+        assert configured_torrent_root.resolve(strict=True) == real_torrent_root
+        mock_client.torrents.info.assert_called_once_with()
+
+    @pytest.mark.parametrize("root_source", ["default", "category"])
+    def test_execute_refreshes_configured_save_roots_without_cache(self, mock_client, tmp_path, root_source):
+        """Final pruning uses current default and category roots, not preview cache."""
+        old_root = tmp_path / "old-root"
+        old_root.mkdir()
+        default_root = tmp_path / "default"
+        default_root.mkdir()
+        real_current_root = tmp_path / "real-current"
+        real_current_root.mkdir()
+        configured_current_root = tmp_path / "configured-current"
+        configured_current_root.symlink_to(real_current_root, target_is_directory=True)
+
+        if root_source == "default":
+            mock_client.application.default_save_path = str(old_root)
+            mock_client.torrent_categories.categories = {}
+        else:
+            mock_client.application.default_save_path = str(default_root)
+            mock_client.torrent_categories.categories = {"movies": {"savePath": str(old_root)}}
+        assert check_files_on_disk(mock_client, []) == []
+
+        if root_source == "default":
+            mock_client.application.default_save_path = str(configured_current_root)
+        else:
+            mock_client.torrent_categories.categories = {"movies": {"savePath": str(configured_current_root)}}
+        orphan = real_current_root / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+
+        delete_orphaned_files(
+            [str(orphan)],
+            dry_run=False,
+            client=mock_client,
+            torrents=[],
+        )
+
+        assert not orphan.exists()
+        assert real_current_root.is_dir()
+        assert configured_current_root.resolve(strict=True) == real_current_root
 
     def test_dry_run_consumes_confirmed_plan_without_mutation(self, mock_client, tmp_path):
         """Dry-run validates and reports the same immutable plan."""

@@ -80,6 +80,11 @@ class QBittorrentClient(Protocol):
         """Application API endpoint."""
         ...
 
+    @property
+    def torrent_categories(self) -> Any:
+        """Torrent categories API endpoint."""
+        ...
+
     def torrents_info(self, **kwargs: Any) -> list[Any]:
         """Get torrent information."""
         ...

@@ -3,6 +3,7 @@
 import errno
 import os
 import pytest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from qbitunregistered.file_operations import (
@@ -11,6 +12,7 @@ from qbitunregistered.file_operations import (
     move_files_to_recycle_bin,
     get_torrent_file_paths,
     fetch_torrent_files,
+    rollback_recycle_bin_moves,
 )
 from qbitunregistered.cache import get_cache
 
@@ -355,6 +357,76 @@ class TestMoveFilesToRecycleBin:
 
         assert not source.exists()
         assert destination.read_text() == "original"
+
+    @pytest.mark.parametrize("cross_filesystem", [False, True], ids=["same-fs", "cross-fs"])
+    def test_post_unlink_fsync_failure_records_move_for_rollback(self, tmp_path, caplog, cross_filesystem):
+        """A completed move remains rollback-capable after durability uncertainty."""
+        recycle_bin = tmp_path / "recycle"
+        source = tmp_path / "source.txt"
+        source.write_text("original", encoding="utf-8")
+        move_records = []
+
+        def fail_source_parent_fsync(directory):
+            if directory == source.parent and not source.exists():
+                raise OSError("simulated post-unlink fsync failure")
+
+        with ExitStack() as stack:
+            if cross_filesystem:
+                stack.enter_context(
+                    patch(
+                        "qbitunregistered.file_operations.os.link",
+                        side_effect=OSError(errno.EXDEV, "cross-device link"),
+                    )
+                )
+            stack.enter_context(
+                patch(
+                    "qbitunregistered.file_operations._fsync_directory",
+                    side_effect=fail_source_parent_fsync,
+                )
+            )
+            success_count, failed = move_files_to_recycle_bin(
+                [source],
+                recycle_bin,
+                "unregistered",
+                all_or_nothing=True,
+                move_records=move_records,
+            )
+
+        assert success_count == 1
+        assert failed == []
+        assert len(move_records) == 1
+        assert not source.exists()
+        assert move_records[0].recycled_path.read_text(encoding="utf-8") == "original"
+        assert "could not confirm source-directory durability" in caplog.text
+
+        assert rollback_recycle_bin_moves(move_records) == []
+        assert source.read_text(encoding="utf-8") == "original"
+        assert not move_records[0].recycled_path.exists()
+
+    def test_pre_unlink_fsync_failure_is_not_hidden(self, tmp_path):
+        """Durability failure before source unlink remains a failed move."""
+        recycle_bin = tmp_path / "recycle"
+        source = tmp_path / "source.txt"
+        source.write_text("original", encoding="utf-8")
+        move_records = []
+
+        with patch(
+            "qbitunregistered.file_operations._fsync_directory",
+            side_effect=OSError("simulated pre-unlink fsync failure"),
+        ):
+            success_count, failed = move_files_to_recycle_bin(
+                [source],
+                recycle_bin,
+                "unregistered",
+                all_or_nothing=True,
+                move_records=move_records,
+            )
+
+        assert success_count == 0
+        assert len(failed) == 1
+        assert source.read_text(encoding="utf-8") == "original"
+        assert move_records == []
+        assert not list(recycle_bin.rglob("*.txt"))
 
 
 class TestGetTorrentFilePaths:

@@ -1,6 +1,6 @@
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -234,8 +234,54 @@ def build_orphan_file_plan(orphaned_files: list[str]) -> OrphanFilePlan:
     return OrphanFilePlan(files=identities)
 
 
-def _revalidate_orphan_ownership(client: QBittorrentClient, plan: OrphanFilePlan) -> None:
-    """Fail closed if any confirmed orphan path is now owned by a torrent."""
+def _resolve_active_save_root(value: object, *, description: str) -> Path:
+    """Return one canonical absolute qBittorrent save root."""
+    if not isinstance(value, str) or not value:
+        raise SafetyCheckError(f"{description} is missing or malformed")
+    try:
+        configured_root = Path(value)
+        if not configured_root.is_absolute():
+            raise SafetyCheckError(f"{description} is not an absolute path")
+        return configured_root.resolve()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SafetyCheckError(f"{description} could not be resolved safely") from error
+
+
+def _get_active_configured_save_roots(client: QBittorrentClient, *, use_cache: bool) -> set[Path]:
+    """Return canonical default and category roots from one validated read."""
+    try:
+        if use_cache:
+            default_save_path_value = _get_default_save_path(client, cache_scope=id(client))
+            categories = _get_categories(client, cache_scope=id(client))
+        else:
+            default_save_path_value = client.application.default_save_path
+            categories = client.torrent_categories.categories
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as error:
+        raise SafetyCheckError("Could not refresh qBittorrent save-path metadata") from error
+
+    default_save_path = _resolve_active_save_root(
+        default_save_path_value,
+        description="Default save path",
+    )
+    active_save_paths = {default_save_path}
+    if not isinstance(categories, Mapping):
+        raise SafetyCheckError("qBittorrent returned malformed category save-path metadata")
+    for category_name, category in categories.items():
+        if not isinstance(category_name, str) or not isinstance(category, Mapping):
+            raise SafetyCheckError("qBittorrent returned malformed category save-path metadata")
+        configured_category_path = category.get("savePath")
+        category_save_path = _resolve_active_save_root(
+            str(default_save_path / category_name) if configured_category_path in (None, "") else configured_category_path,
+            description=f"Category {category_name!r} save path",
+        )
+        active_save_paths.add(category_save_path)
+    return active_save_paths
+
+
+def _revalidate_orphan_ownership(client: QBittorrentClient, plan: OrphanFilePlan) -> set[Path]:
+    """Fail closed on new owners and return current canonical save roots."""
     try:
         current_torrents = client.torrents.info()
     except (KeyboardInterrupt, SystemExit):
@@ -248,6 +294,7 @@ def _revalidate_orphan_ownership(client: QBittorrentClient, plan: OrphanFilePlan
         raise SafetyCheckError("qBittorrent returned a malformed torrent list during final orphan validation")
 
     owned_paths: set[Path] = set()
+    active_save_paths: set[Path] = set()
     seen_hashes: set[str] = set()
     for torrent in current_torrents:
         torrent_hash = getattr(torrent, "hash", None)
@@ -257,13 +304,11 @@ def _revalidate_orphan_ownership(client: QBittorrentClient, plan: OrphanFilePlan
         if not isinstance(save_path_value, str) or not save_path_value:
             raise SafetyCheckError(f"Torrent {torrent_hash} has no valid save path")
         seen_hashes.add(torrent_hash)
-        try:
-            configured_save_path = Path(save_path_value)
-            if not configured_save_path.is_absolute():
-                raise SafetyCheckError(f"Torrent {torrent_hash} has a non-absolute save path")
-            save_path = configured_save_path.resolve()
-        except (OSError, RuntimeError) as error:
-            raise SafetyCheckError(f"Torrent {torrent_hash} has an unsafe save path") from error
+        save_path = _resolve_active_save_root(
+            save_path_value,
+            description=f"Torrent {torrent_hash} save path",
+        )
+        active_save_paths.add(save_path)
 
         try:
             raw_files = client.torrents_files(torrent_hash)
@@ -292,6 +337,7 @@ def _revalidate_orphan_ownership(client: QBittorrentClient, plan: OrphanFilePlan
     if claimed_paths:
         formatted_paths = ", ".join(str(path) for path in claimed_paths)
         raise SafetyCheckError(f"Confirmed orphan path is now owned by qBittorrent: {formatted_paths}")
+    return active_save_paths
 
 
 def delete_orphaned_files(  # noqa: C901
@@ -328,28 +374,7 @@ def delete_orphaned_files(  # noqa: C901
         logging.info("No orphaned files found. Nothing to delete.")
         return
 
-    # Get active save paths to prevent accidental deletion (cached to reduce API calls)
-    # Use id(client) to scope cache per client instance, preventing contamination
-    default_save_path = Path(_get_default_save_path(client, cache_scope=id(client)))
-    active_save_paths = {default_save_path}
-
-    # Get save paths from all torrents (reuse provided list to avoid redundant API call)
-    if torrents is None:
-        fetched_torrents = client.torrents.info()
-        if fetched_torrents is None:
-            raise RuntimeError("qBittorrent returned no torrent list; refusing orphan cleanup")
-        resolved_torrents = fetched_torrents
-    else:
-        resolved_torrents = torrents
-    active_save_paths.update(Path(torrent.save_path) for torrent in resolved_torrents)
-
-    # Get save paths from categories (cached to reduce API calls)
-    categories = _get_categories(client, cache_scope=id(client))
-    for category_name, category in categories.items():
-        category_save_path = (
-            Path(category.get("savePath", "")).resolve() if category.get("savePath") else default_save_path / category_name
-        )
-        active_save_paths.add(category_save_path)
+    active_save_paths = _get_active_configured_save_roots(client, use_cache=dry_run)
 
     # Track directories that will become empty
     potential_empty_dirs = set()
@@ -361,8 +386,27 @@ def delete_orphaned_files(  # noqa: C901
             potential_empty_dirs.add(parent_dir)
             parent_dir = parent_dir.parent
 
-    if not dry_run:
-        _revalidate_orphan_ownership(client, resolved_plan)
+    if dry_run:
+        if torrents is None:
+            try:
+                resolved_torrents = client.torrents.info()
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as error:
+                raise SafetyCheckError("Could not read qBittorrent save paths for orphan dry-run") from error
+            if resolved_torrents is None:
+                raise SafetyCheckError("qBittorrent returned no torrent list for orphan dry-run")
+        else:
+            resolved_torrents = torrents
+        for torrent in resolved_torrents:
+            active_save_paths.add(
+                _resolve_active_save_root(
+                    getattr(torrent, "save_path", None),
+                    description="Torrent save path",
+                )
+            )
+    else:
+        active_save_paths.update(_revalidate_orphan_ownership(client, resolved_plan))
 
     # Handle recycle bin or deletion
     if recycle_bin:
