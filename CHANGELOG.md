@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   jobs without an absolute target directory
 - Installable `qbitunregistered` and `qbitunregistered-scheduler` console commands
 - Package-build smoke testing in CI
+- Release artifact upload/download round-trip testing in pull-request CI
 - Disposable qBittorrent 5.2.3 acceptance coverage that verifies live
   authentication and non-mutating pause behavior in dry-run mode
 - Codex-compatible `AGENTS.md` guidance for Python implementation and review

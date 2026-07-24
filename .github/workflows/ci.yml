@@ -18,8 +18,8 @@ jobs:
     name: Lint and type check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -45,8 +45,8 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -56,7 +56,7 @@ jobs:
         run: pytest --cov=qbitunregistered --cov-report=xml --cov-report=term-missing --cov-fail-under=60
       - name: Upload coverage
         if: matrix.python-version == '3.11'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml
           flags: unittests
@@ -70,8 +70,8 @@ jobs:
       matrix:
         python-version: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -100,8 +100,8 @@ jobs:
     name: Build and smoke-test package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -116,13 +116,27 @@ jobs:
           qbitunregistered --help
           qbitunregistered-scheduler --help
           python -c "from qbitunregistered.config import validate_config; print('package import works')"
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-smoke-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+      - name: Download package artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: package-smoke-distributions
+          path: ${{ runner.temp }}/package-smoke-distributions
+      - name: Verify artifact round-trip
+        run: diff --recursive dist/ "${RUNNER_TEMP}/package-smoke-distributions/"
 
   security:
     name: Security scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
