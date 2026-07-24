@@ -329,6 +329,9 @@ class TestRecycleBin:
     @pytest.mark.parametrize("root_source", ["default", "category"])
     def test_execute_refreshes_configured_save_roots_without_cache(self, mock_client, tmp_path, root_source):
         """Final pruning uses current default and category roots, not preview cache."""
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
         old_root = tmp_path / "old-root"
         old_root.mkdir()
         default_root = tmp_path / "default"

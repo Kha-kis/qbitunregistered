@@ -80,8 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   completed move's rollback record
 - Hard-link planning rejects symlinked files that resolve outside the torrent
   content directory
-- Tracker caches are isolated by client, and an explicitly blank CLI API key
-  correctly selects username/password authentication
+- API caches are cleared at the start of each CLI execution and isolated by
+  client within that execution; an explicitly blank CLI API key correctly
+  selects username/password authentication
 - Scheduler runs now forward the selected configuration path to the application
 - The root scheduler compatibility wrapper again defaults to its adjacent
   `config.json`, preserving existing cron and systemd setups

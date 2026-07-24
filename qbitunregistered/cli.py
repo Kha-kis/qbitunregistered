@@ -26,7 +26,7 @@ from qbitunregistered.config import (
     resolve_dry_run,
     ConfigValidationError,
 )
-from qbitunregistered.cache import log_cache_stats
+from qbitunregistered.cache import clear_cache, log_cache_stats
 from qbitunregistered.notifications import NotificationManager
 from qbitunregistered.client import create_client
 from qbitunregistered.types import QBittorrentClient, TorrentInfo
@@ -116,6 +116,8 @@ def _selected_operations(args: argparse.Namespace) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     """Run qbitunregistered and return a process exit code."""
+    clear_cache()
+
     # Parse command-line arguments
     pre_args, _unknown = parser.parse_known_args(argv)
 
@@ -219,8 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     # Log script start
     logging.info("Starting qbitunregistered script...")
 
-    # Note: Cache is in-memory and automatically cleared between script runs.
-    # No manual clearing needed on startup.
+    # Cached API data is shared only by operations in this execution.
 
     # Track operation results for summary
     operation_results: dict[str, list[str]] = {"succeeded": [], "failed": []}

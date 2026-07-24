@@ -87,6 +87,7 @@ the installed console commands or `python -m qbitunregistered`.
 **Design**:
 - Simple TTL-based cache (default 300 seconds)
 - Global singleton instance accessible to all modules
+- Cleared when each CLI execution begins, then shared only within that execution
 - Decorator pattern for easy application to functions
 - Sentinel object to distinguish cache misses from cached None values
 - Automatic periodic cleanup triggered after threshold accesses or time

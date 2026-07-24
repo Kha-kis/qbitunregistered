@@ -59,6 +59,42 @@ def test_main_runs_with_minimal_config(tmp_path) -> None:
     notifications.return_value.send_summary.assert_called_once_with({"succeeded": [], "failed": []})
 
 
+def test_main_clears_stale_cache_from_previous_execution(tmp_path, capsys) -> None:
+    from qbitunregistered.operations.orphaned import _get_default_save_path
+
+    stale_root = tmp_path / "stale"
+    stale_root.mkdir()
+    stale_file = stale_root / "stale.mkv"
+    stale_file.write_text("stale", encoding="utf-8")
+    current_root = tmp_path / "current"
+    current_root.mkdir()
+    current_file = current_root / "current.mkv"
+    current_file.write_text("current", encoding="utf-8")
+    config_path = _write_config(tmp_path)
+    client = _empty_client(stale_root)
+
+    assert _get_default_save_path(client, cache_scope=id(client)) == str(stale_root)
+    client.application.default_save_path = str(current_root)
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--orphaned",
+                "--dry-run",
+            ]
+        )
+
+    output = capsys.readouterr().out
+    assert result == EXIT_SUCCESS
+    assert str(current_file) in output
+    assert str(stale_file) not in output
+
+
 def test_main_reports_missing_config(tmp_path) -> None:
     with pytest.raises(SystemExit) as error:
         main(["--config", str(tmp_path / "missing.json"), "--yes"])
