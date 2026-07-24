@@ -152,9 +152,9 @@ class TestRecycleBin:
     """Test recycle bin functionality."""
 
     @pytest.fixture
-    def mock_client(self):
+    def mock_client(self, tmp_path):
         client = MagicMock()
-        client.application.default_save_path = "/default/save/path"
+        client.application.default_save_path = str(tmp_path)
         client.torrent_categories.categories = {}
         client.torrents.info.return_value = []
         return client

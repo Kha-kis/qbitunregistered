@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `qbitunregistered` and `qbitunregistered-scheduler` commands.
 
 ### Fixed
+- Windows execution no longer assumes descriptor-based permission changes are
+  available during cross-filesystem recycle moves, and the example
+  configuration no longer embeds a Unix-only recycle-bin path
 - Combined hard-link and unregistered file-cleanup runs now create the confirmed
   hard links before deleting or recycling source files. Failed or stale-source
   hard-link plans, uncovered completed sources, and unrelated files occupying

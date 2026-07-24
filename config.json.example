@@ -105,8 +105,7 @@
   "//": "Operations forwarded by the built-in scheduler. Required when scheduled_times is non-empty. Allowed values: orphaned, unregistered, tag_by_tracker, seeding_management, auto_tmm, pause_torrents, resume_torrents, auto_remove, create_hard_links, tag_by_age, tag_by_cross_seed.",
   "scheduled_operations": ["unregistered", "orphaned"],
 
-  "//": "Path to the recycle bin directory. If set, orphaned files will be moved here instead of being deleted.",
-  "recycle_bin": "/path/to/recycle/bin",
+  "// recycle_bin": "Optional. Add a recycle_bin key with an absolute path valid for this host to move files instead of permanently deleting them.",
 
   "//": "Apprise URL for notifications (e.g., discord://webhook_id/webhook_token).",
   "apprise_url": "",

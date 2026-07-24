@@ -536,6 +536,26 @@ class TestMoveFilesToRecycleBin:
         assert not source.exists()
         assert destination.read_text() == "original"
 
+    def test_cross_filesystem_move_without_descriptor_chmod(self, tmp_path):
+        """Platforms without fchmod still preserve content safely."""
+        from qbitunregistered.file_operations import _move_without_overwrite
+
+        source = tmp_path / "source.txt"
+        destination = tmp_path / "destination.txt"
+        source.write_text("original", encoding="utf-8")
+
+        with (
+            patch(
+                "qbitunregistered.file_operations.os.link",
+                side_effect=OSError(errno.EXDEV, "cross-device link"),
+            ),
+            patch("qbitunregistered.file_operations.os.fchmod", None, create=True),
+        ):
+            _move_without_overwrite(source, destination)
+
+        assert not source.exists()
+        assert destination.read_text(encoding="utf-8") == "original"
+
     @pytest.mark.parametrize("cross_filesystem", [False, True], ids=["same-fs", "cross-fs"])
     def test_post_unlink_fsync_failure_records_move_for_rollback(self, tmp_path, caplog, cross_filesystem):
         """A completed move remains rollback-capable after durability uncertainty."""

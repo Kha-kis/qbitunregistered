@@ -362,7 +362,9 @@ def _copy_then_unlink_without_overwrite(source: Path, destination: Path, expecte
                 if written == 0:
                     raise OSError("cross-filesystem copy made no progress")
                 view = view[written:]
-        os.fchmod(destination_descriptor, stat.S_IMODE(opened_source_stat.st_mode))
+        descriptor_chmod = getattr(os, "fchmod", None)
+        if descriptor_chmod is not None:
+            descriptor_chmod(destination_descriptor, stat.S_IMODE(opened_source_stat.st_mode))
         if os.utime in os.supports_fd:
             os.utime(
                 destination_descriptor,
