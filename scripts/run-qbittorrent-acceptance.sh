@@ -55,7 +55,16 @@ PY
 fi
 
 echo "Pulling pinned qBittorrent acceptance image..."
-docker pull "$QBITTORRENT_IMAGE"
+for pull_attempt in {1..3}; do
+    if docker pull "$QBITTORRENT_IMAGE"; then
+        break
+    fi
+    if ((pull_attempt == 3)); then
+        fail "could not pull the pinned qBittorrent image after 3 attempts"
+    fi
+    echo "Image pull failed; retrying in 5 seconds..." >&2
+    sleep 5
+done
 
 expected_repo_digest="${QBITTORRENT_REPOSITORY}@${QBITTORRENT_IMAGE_DIGEST}"
 repo_digests="$(docker image inspect "$QBITTORRENT_IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}')"
@@ -95,7 +104,7 @@ uv run --frozen python - <<'PY'
 import os
 import time
 
-from qbittorrentapi import Client
+from qbittorrentapi import Client, exceptions
 
 info_hash = "0123456789abcdef0123456789abcdef01234567"
 client = Client(
@@ -103,7 +112,14 @@ client = Client(
     username="admin",
     password=os.environ["QBITTORRENT_ACCEPTANCE_PASSWORD"],
 )
-client.auth_log_in()
+for attempt in range(30):
+    try:
+        client.auth_log_in()
+        break
+    except exceptions.APIConnectionError as error:
+        if attempt == 29:
+            raise SystemExit("qBittorrent Web API did not become ready within 30 seconds") from error
+        time.sleep(1)
 client.torrents_add(
     urls=f"magnet:?xt=urn:btih:{info_hash}&dn=qbitunregistered-acceptance"
 )
