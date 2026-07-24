@@ -44,13 +44,19 @@ in 3.0. New integrations should use the installed console commands or
 5. Fetch all torrents once (reused by all modules)
 6. Build a complete impact preview for every selected operation unless `--yes` explicitly bypasses it
 7. Require confirmation for non-dry-run execution and reuse confirmed filesystem plans
-8. Execute enabled operations (orphaned check, unregistered check, tagging, etc.)
+8. Execute enabled operations. Orphan scanning precedes hard-link creation;
+   when hard links and unregistered file cleanup are both planned, hard links
+   must then succeed before the dependent deletion or recycle step can run.
+   Every destructive completed-torrent source is verified against its distinct
+   destination inode, including destinations that already existed.
 9. Log cache statistics, report the summary, and clean up
 ```
 
 **Key Features**:
 - Exit codes for CI/CD integration (0=success, 1=general error, 2=config error, 3=connection error)
 - Graceful exception handling per operation (failure in one doesn't block others)
+- A hard-link failure blocks only dependent unregistered file cleanup; unrelated
+  selected operations continue and both failures appear in the final summary
 - Torrents fetched once and passed to all modules (avoid redundant API calls)
 - Operation results tracked for summary reporting
 

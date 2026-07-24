@@ -380,6 +380,13 @@ When those controls authorize file removal:
 3. qBittorrent permanently deletes both torrent and files
 
 **Important Notes:**
+- When `--create-hard-links` and file-removing `--unregistered` cleanup are
+  selected together, hard links are created before unregistered files are
+  deleted or recycled. Every affected completed-torrent source must then have a
+  distinct destination with the same file identity; an unrelated file already
+  occupying the destination is not accepted. If creation or verification
+  fails, the unregistered cleanup is blocked and the command reports a
+  non-zero exit status.
 - Cross-seeded files are preserved while any current owner is not authorized
   for file deletion. If every owner is selected and file deletion is enabled
   for each, shared content is deleted or recycled once before all owners are

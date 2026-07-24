@@ -7,6 +7,7 @@ from typing import Sequence
 from pathlib import Path
 from tqdm import tqdm
 
+from qbitunregistered.file_operations import FileIdentity
 from qbitunregistered.types import TorrentInfo
 
 
@@ -110,6 +111,73 @@ def _strict_path_exists(path: Path) -> bool:
     return True
 
 
+def _build_hard_link_requirements(
+    target_dir: str,
+    torrents: Sequence[TorrentInfo],
+) -> tuple[Path, list[PlannedHardLink]]:
+    """Return every completed source and its expected hard-link destination."""
+    if not target_dir:
+        raise HardLinkPlanningError("No target directory specified for hard link creation")
+
+    target_path = Path(target_dir).resolve()
+    if not target_path.is_dir():
+        raise HardLinkPlanningError(f"Target directory does not exist or is not a directory: {target_path}")
+    target_path.stat()
+
+    requirements: list[PlannedHardLink] = []
+    for torrent in torrents:
+        if not torrent.state_enum.is_complete:
+            continue
+
+        save_path = Path(torrent.save_path).resolve()
+        content_path = (save_path / torrent.name).resolve()
+        if not content_path.is_relative_to(save_path):
+            raise HardLinkPlanningError(f"Unsafe source path for torrent '{torrent.name}'")
+
+        category_dir = _sanitize_category_name(torrent.category or "")
+        sources: list[tuple[Path, Path]] = []
+        if content_path.is_dir():
+
+            def raise_walk_error(error: OSError) -> None:
+                raise error
+
+            for root, _directories, files in os.walk(content_path, onerror=raise_walk_error):
+                for filename in files:
+                    source_path = (Path(root) / filename).resolve()
+                    if not source_path.is_relative_to(content_path):
+                        raise HardLinkPlanningError(
+                            f"Source path escapes torrent content for torrent '{torrent.name}': {source_path}"
+                        )
+                    source_stat = source_path.lstat()
+                    if not stat.S_ISREG(source_stat.st_mode):
+                        raise HardLinkPlanningError(f"Source is not a regular file: {source_path}")
+                    sources.append((source_path, source_path.relative_to(content_path)))
+        elif content_path.is_file():
+            source_stat = content_path.lstat()
+            if not stat.S_ISREG(source_stat.st_mode):
+                raise HardLinkPlanningError(f"Source is not a regular file: {content_path}")
+            sources.append((content_path, Path(content_path.name)))
+        else:
+            raise HardLinkPlanningError(f"Content path does not exist: {content_path}")
+
+        for source_path, relative_path in sources:
+            target_file_path = (target_path / category_dir / relative_path).resolve()
+            if not _is_safe_path(target_path, target_file_path):
+                raise HardLinkPlanningError(f"Unsafe destination path for torrent '{torrent.name}': {target_file_path}")
+            source_stat = source_path.lstat()
+            requirements.append(
+                PlannedHardLink(
+                    source_path,
+                    target_file_path,
+                    source_stat.st_dev,
+                    source_stat.st_ino,
+                    source_stat.st_size,
+                    source_stat.st_mtime_ns,
+                )
+            )
+    return target_path, requirements
+
+
 def plan_hard_links(target_dir: str, torrents: Sequence[TorrentInfo]) -> list[PlannedHardLink]:
     """Build the exact hard-link plan without mutating the filesystem.
 
@@ -126,82 +194,96 @@ def plan_hard_links(target_dir: str, torrents: Sequence[TorrentInfo]) -> list[Pl
     Raises:
         HardLinkPlanningError: If paths cannot be inspected safely.
     """
-    if not target_dir:
-        raise HardLinkPlanningError("No target directory specified for hard link creation")
-
     try:
-        target_path = Path(target_dir).resolve()
-        if not target_path.is_dir():
-            raise HardLinkPlanningError(f"Target directory does not exist or is not a directory: {target_path}")
-        target_path.stat()
-
+        _target_path, requirements = _build_hard_link_requirements(target_dir, torrents)
         planned_links: list[PlannedHardLink] = []
         planned_sources_by_target: dict[Path, Path] = {}
-        for torrent in torrents:
-            if not torrent.state_enum.is_complete:
+        for requirement in requirements:
+            if _strict_path_exists(requirement.target):
                 continue
-
-            save_path = Path(torrent.save_path).resolve()
-            content_path = (save_path / torrent.name).resolve()
-            if not content_path.is_relative_to(save_path):
-                raise HardLinkPlanningError(f"Unsafe source path for torrent '{torrent.name}'")
-
-            category_dir = _sanitize_category_name(torrent.category or "")
-            sources: list[tuple[Path, Path]] = []
-            if content_path.is_dir():
-
-                def raise_walk_error(error: OSError) -> None:
-                    raise error
-
-                for root, _directories, files in os.walk(content_path, onerror=raise_walk_error):
-                    for filename in files:
-                        source_path = (Path(root) / filename).resolve()
-                        if not source_path.is_relative_to(content_path):
-                            raise HardLinkPlanningError(
-                                f"Source path escapes torrent content for torrent '{torrent.name}': {source_path}"
-                            )
-                        source_stat = source_path.lstat()
-                        if not stat.S_ISREG(source_stat.st_mode):
-                            raise HardLinkPlanningError(f"Source is not a regular file: {source_path}")
-                        sources.append((source_path, source_path.relative_to(content_path)))
-            elif content_path.is_file():
-                source_stat = content_path.lstat()
-                if not stat.S_ISREG(source_stat.st_mode):
-                    raise HardLinkPlanningError(f"Source is not a regular file: {content_path}")
-                sources.append((content_path, Path(content_path.name)))
-            else:
-                raise HardLinkPlanningError(f"Content path does not exist: {content_path}")
-
-            for source_path, relative_path in sources:
-                target_file_path = (target_path / category_dir / relative_path).resolve()
-                if not _is_safe_path(target_path, target_file_path):
-                    raise HardLinkPlanningError(f"Unsafe destination path for torrent '{torrent.name}': {target_file_path}")
-                if not _strict_path_exists(target_file_path):
-                    previous_source = planned_sources_by_target.get(target_file_path)
-                    if previous_source is not None:
-                        if previous_source != source_path:
-                            raise HardLinkPlanningError(
-                                "Multiple sources map to the same hard-link destination: " f"{target_file_path}"
-                            )
-                        continue
-                    planned_sources_by_target[target_file_path] = source_path
-                    source_stat = source_path.lstat()
-                    planned_links.append(
-                        PlannedHardLink(
-                            source_path,
-                            target_file_path,
-                            source_stat.st_dev,
-                            source_stat.st_ino,
-                            source_stat.st_size,
-                            source_stat.st_mtime_ns,
-                        )
+            previous_source = planned_sources_by_target.get(requirement.target)
+            if previous_source is not None:
+                if previous_source != requirement.source:
+                    raise HardLinkPlanningError(
+                        "Multiple sources map to the same hard-link destination: " f"{requirement.target}"
                     )
+                continue
+            planned_sources_by_target[requirement.target] = requirement.source
+            planned_links.append(requirement)
 
         return planned_links
     except (KeyboardInterrupt, SystemExit, HardLinkPlanningError):
         raise
     except (OSError, RuntimeError, ValueError) as error:
         raise HardLinkPlanningError("Could not build a complete hard-link plan") from error
+
+
+def verify_hard_link_preservation(
+    target_dir: str,
+    torrents: Sequence[TorrentInfo],
+    required_files: Sequence[FileIdentity],
+    *,
+    dry_run: bool,
+    planned_links: Sequence[PlannedHardLink],
+) -> None:
+    """Verify destructive sources have valid or planned independent hard links.
+
+    Only completed torrent sources fall within hard-link creation semantics.
+    In dry-run mode, a missing target is accepted only when the confirmed plan
+    would create it. Existing targets must already be the same inode.
+
+    Raises:
+        HardLinkPlanningError: If a relevant source is not safely preserved.
+    """
+    try:
+        _target_path, requirements = _build_hard_link_requirements(target_dir, torrents)
+        required_by_path = {identity.path: identity for identity in required_files}
+        planned_by_pair = {(link.source, link.target): link for link in planned_links}
+        covered_sources: set[Path] = set()
+
+        for requirement in requirements:
+            required_identity = required_by_path.get(requirement.source)
+            if required_identity is None:
+                continue
+            covered_sources.add(requirement.source)
+            if (
+                requirement.source_device != required_identity.device
+                or requirement.source_inode != required_identity.inode
+                or requirement.source_size != required_identity.size
+                or requirement.source_mtime_ns != required_identity.mtime_ns
+            ):
+                raise HardLinkPlanningError(f"Destructive source changed before hard-link preservation: {requirement.source}")
+            if requirement.target == requirement.source:
+                raise HardLinkPlanningError(
+                    f"Hard-link destination is not independent from destructive source: {requirement.source}"
+                )
+
+            try:
+                target_stat = requirement.target.lstat()
+            except FileNotFoundError:
+                if dry_run and (requirement.source, requirement.target) in planned_by_pair:
+                    continue
+                raise HardLinkPlanningError(f"Required hard-link destination is missing: {requirement.target}") from None
+
+            if (
+                not stat.S_ISREG(target_stat.st_mode)
+                or target_stat.st_dev != required_identity.device
+                or target_stat.st_ino != required_identity.inode
+            ):
+                raise HardLinkPlanningError(
+                    f"Existing hard-link destination does not preserve its source: {requirement.target}"
+                )
+
+        uncovered_sources = required_by_path.keys() - covered_sources
+        if uncovered_sources:
+            raise HardLinkPlanningError(
+                "Destructive sources are not covered by completed-torrent hard-link targets: "
+                + ", ".join(str(path) for path in sorted(uncovered_sources))
+            )
+    except (KeyboardInterrupt, SystemExit, HardLinkPlanningError):
+        raise
+    except (OSError, RuntimeError, ValueError) as error:
+        raise HardLinkPlanningError("Could not verify destructive sources are preserved by hard links") from error
 
 
 def create_hard_links(

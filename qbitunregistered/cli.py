@@ -3,21 +3,33 @@ import argparse
 import os
 import sys
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 from qbittorrentapi import exceptions
+from qbitunregistered.file_operations import FileIdentity
 from qbitunregistered.operations.orphaned import (
     build_orphan_file_plan,
     check_files_on_disk,
     delete_orphaned_files,
 )
-from qbitunregistered.operations.unregistered_checks import unregistered_checks
+from qbitunregistered.operations.unregistered_checks import (
+    build_unregistered_deletion_plan,
+    DeletionAction,
+    UnregisteredDeletionPlan,
+    unregistered_checks,
+)
 from qbitunregistered.operations.tag_by_tracker import tag_by_tracker
 from qbitunregistered.operations.seeding_management import apply_seed_limits
 from qbitunregistered.operations.torrent_management import pause_torrents, resume_torrents
 from qbitunregistered.operations.auto_remove import auto_remove
 from qbitunregistered.operations.auto_tmm import apply_auto_tmm_per_torrent
-from qbitunregistered.operations.create_hardlinks import create_hard_links
+from qbitunregistered.operations.create_hardlinks import (
+    PlannedHardLink,
+    create_hard_links,
+    plan_hard_links,
+    verify_hard_link_preservation,
+)
 from qbitunregistered.operations.tag_cross_seeding import tag_cross_seeds
 from qbitunregistered.operations.tag_by_age import tag_by_age
 from qbitunregistered.config import (
@@ -133,6 +145,185 @@ def _format_orphaned_operation_result(file_count: int, dry_run: bool, recycle_bi
     else:
         action = "would be permanently deleted" if dry_run else "permanently deleted"
     return f"Orphaned files check: {file_count} {noun} {action}"
+
+
+def _hard_links_must_precede_unregistered(
+    *,
+    create_hard_links_selected: bool,
+    unregistered_selected: bool,
+    config: dict[str, object],
+    deletion_plan: UnregisteredDeletionPlan | None,
+) -> bool:
+    """Return whether hard links protect a selected unregistered file cleanup."""
+    if not create_hard_links_selected or not unregistered_selected:
+        return False
+
+    if deletion_plan is not None:
+        file_actions = {
+            DeletionAction.RECYCLE_FILES,
+            DeletionAction.PERMANENT_DELETE,
+        }
+        return any(deletion.action in file_actions for deletion in deletion_plan.deletions)
+
+    if config.get("use_delete_tags") is not True or config.get("use_delete_files") is not True:
+        return False
+    delete_tags = config.get("delete_tags", [])
+    delete_files = config.get("delete_files", {})
+    if not isinstance(delete_tags, list) or not isinstance(delete_files, dict):
+        return False
+    return any(isinstance(tag, str) and delete_files.get(tag) is True for tag in delete_tags)
+
+
+def _run_hard_link_operation(
+    target_dir: str,
+    torrents: Sequence[TorrentInfo],
+    dry_run: bool,
+    planned_links: Sequence[PlannedHardLink] | None,
+    operation_results: dict[str, list[str]],
+    *,
+    required_files: Sequence[FileIdentity] = (),
+) -> bool:
+    """Run hard-link creation and record its operation result."""
+    try:
+        resolved_links = planned_links
+        if required_files and resolved_links is None:
+            resolved_links = plan_hard_links(target_dir, torrents)
+        create_hard_links(
+            target_dir,
+            torrents,
+            dry_run=dry_run,
+            planned_links=resolved_links,
+        )
+        if required_files:
+            assert resolved_links is not None
+            verify_hard_link_preservation(
+                target_dir,
+                torrents,
+                required_files,
+                dry_run=dry_run,
+                planned_links=resolved_links,
+            )
+        operation_results["succeeded"].append("Create hard links")
+        return True
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        logging.exception("Error creating hard links")
+        operation_results["failed"].append("Create hard links")
+        return False
+
+
+def _resolve_combined_unregistered_plan(
+    client: QBittorrentClient,
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, object],
+    *,
+    create_hard_links_selected: bool,
+    unregistered_selected: bool,
+    confirmed_plan: UnregisteredDeletionPlan | None,
+    operation_results: dict[str, list[str]],
+) -> tuple[UnregisteredDeletionPlan | None, bool]:
+    """Build the exact scheduled deletion plan needed for operation ordering."""
+    destructive_unregistered_configured = _hard_links_must_precede_unregistered(
+        create_hard_links_selected=create_hard_links_selected,
+        unregistered_selected=unregistered_selected,
+        config=config,
+        deletion_plan=confirmed_plan,
+    )
+    if confirmed_plan is not None or not destructive_unregistered_configured:
+        return confirmed_plan, False
+
+    try:
+        return (
+            build_unregistered_deletion_plan(
+                client,
+                torrents,
+                config,
+                use_delete_tags=cast(bool, config.get("use_delete_tags", False)),
+                delete_tags=cast(list[str], config.get("delete_tags", [])),
+                delete_files=cast(dict[str, bool], config.get("delete_files", {})),
+                recycle_bin=cast(str | None, config.get("recycle_bin")),
+            ),
+            False,
+        )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        logging.exception("Error planning unregistered checks")
+        operation_results["failed"].append("Unregistered checks")
+        return None, True
+
+
+def _destructive_file_identities(
+    deletion_plan: UnregisteredDeletionPlan | None,
+    torrents: Sequence[TorrentInfo],
+) -> tuple[FileIdentity, ...]:
+    """Return destructive files owned by at least one completed torrent."""
+    if deletion_plan is None:
+        return ()
+    file_actions = {
+        DeletionAction.RECYCLE_FILES,
+        DeletionAction.PERMANENT_DELETE,
+    }
+    destructive_identities = {
+        identity.path: identity
+        for deletion in deletion_plan.deletions
+        if deletion.action in file_actions
+        for identity in deletion.files
+    }
+    if deletion_plan.ownership_snapshot is None:
+        return tuple(destructive_identities.values())
+
+    completed_hashes = {torrent.hash for torrent in torrents if torrent.state_enum.is_complete}
+    completed_source_paths = {
+        file_path
+        for ownership in deletion_plan.ownership_snapshot.torrents
+        if ownership.torrent_hash in completed_hashes
+        for file_path in ownership.file_paths
+    }
+    return tuple(identity for path, identity in destructive_identities.items() if path in completed_source_paths)
+
+
+def _run_unregistered_operation(
+    client: QBittorrentClient,
+    torrents: Sequence[TorrentInfo],
+    config: dict[str, object],
+    dry_run: bool,
+    deletion_plan: UnregisteredDeletionPlan | None,
+    *,
+    planning_failed: bool,
+    hard_links_required: bool,
+    hard_links_succeeded: bool,
+    operation_results: dict[str, list[str]],
+) -> None:
+    """Run unregistered checks unless their safety prerequisites failed."""
+    if planning_failed:
+        return
+    if hard_links_required and not hard_links_succeeded:
+        logging.error("Unregistered checks blocked because required hard-link creation failed")
+        operation_results["failed"].append("Unregistered checks (blocked: hard-link creation failed)")
+        return
+
+    try:
+        _file_paths, unregistered_counts = unregistered_checks(
+            client,
+            torrents,
+            config,
+            use_delete_tags=cast(bool, config.get("use_delete_tags", False)),
+            delete_tags=cast(list[str], config.get("delete_tags", [])),
+            delete_files=cast(dict[str, bool], config.get("delete_files", {})),
+            dry_run=dry_run,
+            recycle_bin=cast(str | None, config.get("recycle_bin")),
+            deletion_plan=deletion_plan,
+        )
+        total_unregistered_count = sum(unregistered_counts.values())
+        logging.info("Total unregistered count: %d", total_unregistered_count)
+        operation_results["succeeded"].append("Unregistered checks")
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        logging.exception("Error during unregistered checks")
+        operation_results["failed"].append("Unregistered checks")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -301,6 +492,26 @@ def main(argv: list[str] | None = None) -> int:
     # ============================================================
     # RUN OPERATIONS
     # ============================================================
+    confirmed_unregistered_plan = impact_summary.unregistered_deletion_plan if impact_summary is not None else None
+    confirmed_unregistered_plan, unregistered_planning_failed = _resolve_combined_unregistered_plan(
+        client,
+        torrents,
+        config,
+        create_hard_links_selected=args.create_hard_links,
+        unregistered_selected=args.unregistered,
+        confirmed_plan=confirmed_unregistered_plan,
+        operation_results=operation_results,
+    )
+
+    hard_links_before_unregistered = not unregistered_planning_failed and _hard_links_must_precede_unregistered(
+        create_hard_links_selected=args.create_hard_links,
+        unregistered_selected=args.unregistered,
+        config=config,
+        deletion_plan=confirmed_unregistered_plan,
+    )
+    hard_links_attempted = False
+    hard_links_succeeded = False
+    destructive_file_identities = _destructive_file_identities(confirmed_unregistered_plan, torrents)
 
     # Run orphaned check if --orphaned argument is passed
     if args.orphaned:
@@ -348,28 +559,33 @@ def main(argv: list[str] | None = None) -> int:
             logging.exception("Error checking orphaned files")
             operation_results["failed"].append(f"Orphaned files check: {e}")
 
+    # Preserve completed data before any selected unregistered file cleanup.
+    # This intentionally follows orphan scanning so newly created links cannot
+    # be classified as orphaned during the same execution.
+    if hard_links_before_unregistered:
+        hard_links_attempted = True
+        hard_links_succeeded = _run_hard_link_operation(
+            cast(str, target_dir),
+            torrents,
+            dry_run,
+            impact_summary.hard_link_plan if impact_summary is not None else None,
+            operation_results,
+            required_files=destructive_file_identities,
+        )
+
     # Run unregistered checks if --unregistered argument is passed
     if args.unregistered:
-        try:
-            file_paths, unregistered_counts = unregistered_checks(
-                client,
-                torrents,
-                config,
-                use_delete_tags=cast(bool, config.get("use_delete_tags", False)),
-                delete_tags=cast(list[str], config.get("delete_tags", [])),
-                delete_files=cast(dict[str, bool], config.get("delete_files", {})),
-                dry_run=dry_run,
-                recycle_bin=config.get("recycle_bin"),
-                deletion_plan=(impact_summary.unregistered_deletion_plan if impact_summary is not None else None),
-            )
-            total_unregistered_count = sum(unregistered_counts.values())
-            logging.info("Total unregistered count: %d", total_unregistered_count)
-            operation_results["succeeded"].append("Unregistered checks")
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception:
-            logging.exception("Error during unregistered checks")
-            operation_results["failed"].append("Unregistered checks")
+        _run_unregistered_operation(
+            client,
+            torrents,
+            config,
+            dry_run,
+            confirmed_unregistered_plan,
+            planning_failed=unregistered_planning_failed,
+            hard_links_required=hard_links_before_unregistered,
+            hard_links_succeeded=hard_links_succeeded,
+            operation_results=operation_results,
+        )
 
     # Run the tag_by_tracker function if desired
     if args.tag_by_tracker:
@@ -460,20 +676,14 @@ def main(argv: list[str] | None = None) -> int:
             operation_results["failed"].append("Auto remove")
 
     # Run the create_hard_links function if --create-hard-links argument is passed
-    if args.create_hard_links:
-        try:
-            create_hard_links(
-                cast(str, target_dir),
-                torrents,
-                dry_run=dry_run,
-                planned_links=impact_summary.hard_link_plan if impact_summary is not None else None,
-            )
-            operation_results["succeeded"].append("Create hard links")
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception:
-            logging.exception("Error creating hard links")
-            operation_results["failed"].append("Create hard links")
+    if args.create_hard_links and not hard_links_attempted:
+        _run_hard_link_operation(
+            cast(str, target_dir),
+            torrents,
+            dry_run,
+            impact_summary.hard_link_plan if impact_summary is not None else None,
+            operation_results,
+        )
 
     # Log cache statistics
     log_cache_stats()

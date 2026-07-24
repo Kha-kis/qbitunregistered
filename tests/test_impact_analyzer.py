@@ -938,6 +938,39 @@ class TestAnalyzeCreateHardLinks:
 
         assert not (target_root / "movies" / "movie.mkv").exists()
 
+    def test_completed_destructive_source_must_be_covered_by_hard_link_targets(self, tmp_path):
+        from qbitunregistered.file_operations import capture_file_identity
+        from qbitunregistered.operations.create_hardlinks import (
+            HardLinkPlanningError,
+            plan_hard_links,
+            verify_hard_link_preservation,
+        )
+
+        source_root = tmp_path / "source"
+        source_root.mkdir()
+        (source_root / "movie.mkv").write_text("torrent content")
+        uncovered_source = source_root / "uncovered.mkv"
+        uncovered_source.write_text("destructive content")
+        target_root = tmp_path / "target"
+        target_root.mkdir()
+        torrent = Mock(
+            hash="hash1",
+            save_path=str(source_root),
+            category="movies",
+        )
+        torrent.name = "movie.mkv"
+        torrent.state_enum.is_complete = True
+        planned_links = plan_hard_links(str(target_root), [torrent])
+
+        with pytest.raises(HardLinkPlanningError, match="not covered"):
+            verify_hard_link_preservation(
+                str(target_root),
+                [torrent],
+                [capture_file_identity(uncovered_source)],
+                dry_run=True,
+                planned_links=planned_links,
+            )
+
 
 class TestAnalyzePauseResume:
     """Tests for _analyze_pause and _analyze_resume functions."""

@@ -55,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `qbitunregistered` and `qbitunregistered-scheduler` commands.
 
 ### Fixed
+- Combined hard-link and unregistered file-cleanup runs now create the confirmed
+  hard links before deleting or recycling source files. Failed or stale-source
+  hard-link plans, uncovered completed sources, and unrelated files occupying
+  required destinations block the dependent cleanup and produce a truthful
+  failed summary, notification, and exit status.
 - Invalid non-boolean `dry_run` configuration now fails before connecting or
   mutating, while explicit `--dry-run` and `--no-dry-run` still take precedence
 - Impact analysis now covers every mutating flag, shows concrete orphaned,

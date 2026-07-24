@@ -6,6 +6,11 @@ from unittest.mock import Mock, patch
 import pytest
 
 from qbitunregistered.cli import EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, EXIT_SUCCESS, main
+from qbitunregistered.operations.unregistered_checks import (
+    DeletionAction,
+    PlannedTorrentDeletion,
+    UnregisteredDeletionPlan,
+)
 
 
 def _write_config(tmp_path, **overrides):
@@ -30,6 +35,32 @@ def _empty_client(tmp_path):
     client.application.default_save_path = str(tmp_path)
     client.torrent_categories.categories = {}
     return client
+
+
+def _unregistered_file_deletion_plan(action: DeletionAction) -> UnregisteredDeletionPlan:
+    return UnregisteredDeletionPlan(
+        deletions=(
+            PlannedTorrentDeletion(
+                torrent_hash="hash",
+                torrent_name="content.mkv",
+                matching_tag="unregistered",
+                category="movies",
+                action=action,
+            ),
+        ),
+        ownership_snapshot=None,
+    )
+
+
+def _destructive_unregistered_config(tmp_path, **overrides):
+    return _write_config(
+        tmp_path,
+        use_delete_tags=True,
+        use_delete_files=True,
+        delete_tags=["unregistered"],
+        delete_files={"unregistered": True},
+        **overrides,
+    )
 
 
 def test_main_runs_with_minimal_config(tmp_path) -> None:
@@ -351,6 +382,388 @@ def test_yes_mode_reports_unregistered_recycle_failure(tmp_path) -> None:
     assert result == EXIT_GENERAL_ERROR
     notifications.return_value.send_summary.assert_called_once_with({"succeeded": [], "failed": ["Unregistered checks"]})
     client.auth_log_out.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "action",
+    [DeletionAction.PERMANENT_DELETE, DeletionAction.RECYCLE_FILES],
+    ids=["permanent", "recycle"],
+)
+def test_combined_hard_link_failure_blocks_destructive_unregistered_cleanup(tmp_path, action) -> None:
+    config_path = _destructive_unregistered_config(tmp_path)
+    client = _empty_client(tmp_path)
+    plan = _unregistered_file_deletion_plan(action)
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.build_unregistered_deletion_plan", return_value=plan),
+        patch("qbitunregistered.cli.create_hard_links", side_effect=OSError("link failed")),
+        patch("qbitunregistered.cli.unregistered_checks") as unregistered_checks,
+        patch("qbitunregistered.cli.auto_remove") as auto_remove,
+        patch("qbitunregistered.cli.NotificationManager") as notifications,
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--create-hard-links",
+                "--unregistered",
+                "--auto-remove",
+                "--yes",
+            ]
+        )
+
+    assert result == EXIT_GENERAL_ERROR
+    unregistered_checks.assert_not_called()
+    client.torrents_delete.assert_not_called()
+    client.torrents_add_tags.assert_not_called()
+    auto_remove.assert_called_once_with(client, [], False)
+    notifications.return_value.send_summary.assert_called_once_with(
+        {
+            "succeeded": ["Auto remove"],
+            "failed": [
+                "Create hard links",
+                "Unregistered checks (blocked: hard-link creation failed)",
+            ],
+        }
+    )
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+def test_combined_destructive_cleanup_runs_hard_links_first(tmp_path, dry_run) -> None:
+    config_path = _destructive_unregistered_config(tmp_path)
+    client = _empty_client(tmp_path)
+    plan = _unregistered_file_deletion_plan(DeletionAction.PERMANENT_DELETE)
+    calls = []
+
+    def record_hard_links(*_args, **_kwargs):
+        calls.append("hard-links")
+
+    def record_unregistered(*_args, **_kwargs):
+        calls.append("unregistered")
+        return {}, {}
+
+    argv = [
+        "--config",
+        str(config_path),
+        "--orphaned",
+        "--create-hard-links",
+        "--unregistered",
+        "--yes",
+    ]
+    if dry_run:
+        argv.append("--dry-run")
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.build_unregistered_deletion_plan", return_value=plan),
+        patch(
+            "qbitunregistered.cli.delete_orphaned_files",
+            side_effect=lambda *_args, **_kwargs: calls.append("orphaned"),
+        ),
+        patch("qbitunregistered.cli.create_hard_links", side_effect=record_hard_links) as create_hard_links,
+        patch("qbitunregistered.cli.unregistered_checks", side_effect=record_unregistered) as unregistered_checks,
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(argv)
+
+    assert result == EXIT_SUCCESS
+    assert calls == ["orphaned", "hard-links", "unregistered"]
+    assert create_hard_links.call_args.kwargs["dry_run"] is dry_run
+    assert unregistered_checks.call_args.kwargs["dry_run"] is dry_run
+    assert unregistered_checks.call_args.kwargs["deletion_plan"] is plan
+
+
+def test_combined_torrent_only_cleanup_keeps_existing_operation_order(tmp_path) -> None:
+    config_path = _destructive_unregistered_config(tmp_path)
+    client = _empty_client(tmp_path)
+    plan = UnregisteredDeletionPlan(deletions=(), ownership_snapshot=None)
+    calls = []
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.build_unregistered_deletion_plan", return_value=plan),
+        patch("qbitunregistered.cli.create_hard_links", side_effect=lambda *_args, **_kwargs: calls.append("hard-links")),
+        patch(
+            "qbitunregistered.cli.unregistered_checks",
+            side_effect=lambda *_args, **_kwargs: (calls.append("unregistered") or ({}, {})),
+        ),
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--create-hard-links",
+                "--unregistered",
+                "--yes",
+            ]
+        )
+
+    assert result == EXIT_SUCCESS
+    assert calls == ["unregistered", "hard-links"]
+
+
+def test_confirmed_hard_link_source_substitution_blocks_unregistered_deletion(tmp_path) -> None:
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    target_dir = tmp_path / "hard-links"
+    target_dir.mkdir()
+    source = downloads / "content.mkv"
+    source.write_text("confirmed", encoding="utf-8")
+    config_path = _destructive_unregistered_config(tmp_path, target_dir=str(target_dir))
+    client = _empty_client(downloads)
+    torrent = Mock(hash="hash", save_path=str(downloads), category="movies", tags="unregistered")
+    torrent.name = source.name
+    torrent.state_enum.is_complete = True
+    torrent.trackers = []
+    client.torrents.info.return_value = [torrent]
+    client.torrents_files.return_value = [{"name": source.name}]
+
+    def substitute_source(_prompt):
+        source.unlink()
+        source.write_text("replacement", encoding="utf-8")
+        return "y"
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("builtins.input", side_effect=substitute_source),
+        patch("qbitunregistered.cli.NotificationManager") as notifications,
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--create-hard-links",
+                "--unregistered",
+            ]
+        )
+
+    assert result == EXIT_GENERAL_ERROR
+    assert source.read_text(encoding="utf-8") == "replacement"
+    assert not (target_dir / "movies" / source.name).exists()
+    client.torrents_delete.assert_not_called()
+    client.torrents_add_tags.assert_not_called()
+    notifications.return_value.send_summary.assert_called_once_with(
+        {
+            "succeeded": [],
+            "failed": [
+                "Create hard links",
+                "Unregistered checks (blocked: hard-link creation failed)",
+            ],
+        }
+    )
+
+
+@pytest.mark.parametrize("use_recycle_bin", [False, True], ids=["permanent", "recycle"])
+def test_combined_cleanup_preserves_content_through_created_hard_link(tmp_path, use_recycle_bin) -> None:
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    target_dir = tmp_path / "hard-links"
+    target_dir.mkdir()
+    source = downloads / "content.mkv"
+    source.write_text("preserved", encoding="utf-8")
+    recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
+    config_path = _destructive_unregistered_config(
+        tmp_path,
+        target_dir=str(target_dir),
+        recycle_bin=str(recycle_bin) if recycle_bin else None,
+    )
+    client = _empty_client(downloads)
+    torrent = Mock(hash="hash", save_path=str(downloads), category="movies", tags="unregistered")
+    torrent.name = source.name
+    torrent.state_enum.is_complete = True
+    torrent.trackers = []
+    client.torrents.info.return_value = [torrent]
+    client.torrents_files.return_value = [{"name": source.name}]
+
+    if not use_recycle_bin:
+
+        def simulate_qbittorrent_file_deletion(*, torrent_hashes, delete_files):
+            assert torrent_hashes == ["hash"]
+            assert delete_files is True
+            source.unlink()
+
+        client.torrents_delete.side_effect = simulate_qbittorrent_file_deletion
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--create-hard-links",
+                "--unregistered",
+                "--yes",
+            ]
+        )
+
+    hard_link = target_dir / "movies" / source.name
+    assert result == EXIT_SUCCESS
+    assert hard_link.read_text(encoding="utf-8") == "preserved"
+    assert not source.exists()
+    client.torrents_delete.assert_called_once_with(
+        torrent_hashes=["hash"],
+        delete_files=not use_recycle_bin,
+    )
+
+
+@pytest.mark.parametrize("use_recycle_bin", [False, True], ids=["permanent", "recycle"])
+@pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+def test_existing_unrelated_hard_link_target_blocks_destructive_cleanup(
+    tmp_path,
+    use_recycle_bin,
+    dry_run,
+) -> None:
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    target_dir = tmp_path / "hard-links"
+    existing_target = target_dir / "movies" / "content.mkv"
+    existing_target.parent.mkdir(parents=True)
+    existing_target.write_text("unrelated", encoding="utf-8")
+    source = downloads / existing_target.name
+    source.write_text("sole source", encoding="utf-8")
+    recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
+    config_path = _destructive_unregistered_config(
+        tmp_path,
+        target_dir=str(target_dir),
+        recycle_bin=str(recycle_bin) if recycle_bin else None,
+    )
+    client = _empty_client(downloads)
+    torrent = Mock(hash="hash", save_path=str(downloads), category="movies", tags="unregistered")
+    torrent.name = source.name
+    torrent.state_enum.is_complete = True
+    torrent.trackers = []
+    client.torrents.info.return_value = [torrent]
+    client.torrents_files.return_value = [{"name": source.name}]
+    argv = [
+        "--config",
+        str(config_path),
+        "--create-hard-links",
+        "--unregistered",
+        "--yes",
+    ]
+    if dry_run:
+        argv.append("--dry-run")
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.NotificationManager") as notifications,
+    ):
+        result = main(argv)
+
+    assert result == EXIT_GENERAL_ERROR
+    assert source.read_text(encoding="utf-8") == "sole source"
+    assert existing_target.read_text(encoding="utf-8") == "unrelated"
+    assert source.stat().st_ino != existing_target.stat().st_ino
+    client.torrents_delete.assert_not_called()
+    client.torrents_add_tags.assert_not_called()
+    assert recycle_bin is None or not recycle_bin.exists()
+    notifications.return_value.send_summary.assert_called_once_with(
+        {
+            "succeeded": [],
+            "failed": [
+                "Create hard links",
+                "Unregistered checks (blocked: hard-link creation failed)",
+            ],
+        }
+    )
+
+
+@pytest.mark.parametrize("use_recycle_bin", [False, True], ids=["permanent", "recycle"])
+def test_existing_correct_hard_link_allows_destructive_cleanup(tmp_path, use_recycle_bin) -> None:
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    target_dir = tmp_path / "hard-links"
+    hard_link = target_dir / "movies" / "content.mkv"
+    hard_link.parent.mkdir(parents=True)
+    source = downloads / hard_link.name
+    source.write_text("preserved", encoding="utf-8")
+    hard_link.hardlink_to(source)
+    recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
+    config_path = _destructive_unregistered_config(
+        tmp_path,
+        target_dir=str(target_dir),
+        recycle_bin=str(recycle_bin) if recycle_bin else None,
+    )
+    client = _empty_client(downloads)
+    torrent = Mock(hash="hash", save_path=str(downloads), category="movies", tags="unregistered")
+    torrent.name = source.name
+    torrent.state_enum.is_complete = True
+    torrent.trackers = []
+    client.torrents.info.return_value = [torrent]
+    client.torrents_files.return_value = [{"name": source.name}]
+
+    if not use_recycle_bin:
+        client.torrents_delete.side_effect = lambda **_kwargs: source.unlink()
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--create-hard-links",
+                "--unregistered",
+                "--yes",
+            ]
+        )
+
+    assert result == EXIT_SUCCESS
+    assert not source.exists()
+    assert hard_link.read_text(encoding="utf-8") == "preserved"
+    client.torrents_delete.assert_called_once_with(
+        torrent_hashes=["hash"],
+        delete_files=not use_recycle_bin,
+    )
+
+
+def test_combined_destructive_dry_run_preserves_source_and_creates_no_link(tmp_path) -> None:
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    target_dir = tmp_path / "hard-links"
+    target_dir.mkdir()
+    source = downloads / "content.mkv"
+    source.write_text("untouched", encoding="utf-8")
+    config_path = _destructive_unregistered_config(tmp_path, target_dir=str(target_dir))
+    client = _empty_client(downloads)
+    torrent = Mock(hash="hash", save_path=str(downloads), category="movies", tags="unregistered")
+    torrent.name = source.name
+    torrent.state_enum.is_complete = True
+    torrent.trackers = []
+    client.torrents.info.return_value = [torrent]
+    client.torrents_files.return_value = [{"name": source.name}]
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.NotificationManager") as notifications,
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--create-hard-links",
+                "--unregistered",
+                "--dry-run",
+                "--yes",
+            ]
+        )
+
+    assert result == EXIT_SUCCESS
+    assert source.read_text(encoding="utf-8") == "untouched"
+    assert not (target_dir / "movies" / source.name).exists()
+    client.torrents_delete.assert_not_called()
+    client.torrents_add_tags.assert_not_called()
+    notifications.return_value.send_summary.assert_called_once_with(
+        {
+            "succeeded": ["Create hard links", "Unregistered checks"],
+            "failed": [],
+        }
+    )
 
 
 def test_yes_mode_reports_incomplete_orphan_cleanup_as_failure(tmp_path) -> None:
