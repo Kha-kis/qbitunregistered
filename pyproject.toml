@@ -1,6 +1,6 @@
 [project]
 name = "qbitunregistered"
-version = "2.1.0rc1"
+version = "2.1.0"
 description = "Automated qBittorrent management tool for handling orphaned files, unregistered torrents, and more"
 readme = "README.md"
 license = "MIT"
@@ -11,7 +11,7 @@ authors = [
 requires-python = ">=3.11"
 keywords = ["qbittorrent", "torrent", "automation", "maintenance"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Operating System :: OS Independent",
