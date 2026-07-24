@@ -62,6 +62,40 @@ jobs:
           flags: unittests
           fail_ci_if_error: false
 
+  windows:
+    name: Test and smoke-test Windows
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip "setuptools>=83" build
+      - run: python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: pytest
+      - name: Build wheel
+        run: python -m build
+      - name: Install wheel
+        shell: pwsh
+        run: |
+          python -m pip uninstall --yes qbitunregistered
+          $wheel = (Get-ChildItem dist/*.whl).FullName
+          python -m pip install $wheel
+      - name: Test installed commands outside the checkout
+        shell: pwsh
+        run: |
+          Set-Location $env:RUNNER_TEMP
+          qbitunregistered --version
+          qbitunregistered --help
+          qbitunregistered-scheduler --help
+          python -c "from qbitunregistered.config import validate_config; print('package import works')"
+
   package:
     name: Build and smoke-test package
     runs-on: ubuntu-latest
@@ -78,6 +112,7 @@ jobs:
       - name: Test installed commands outside the checkout
         working-directory: ${{ runner.temp }}
         run: |
+          qbitunregistered --version
           qbitunregistered --help
           qbitunregistered-scheduler --help
           python -c "from qbitunregistered.config import validate_config; print('package import works')"

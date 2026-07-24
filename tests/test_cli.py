@@ -5,12 +5,20 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from qbitunregistered import __version__
 from qbitunregistered.cli import EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, EXIT_SUCCESS, main
 from qbitunregistered.operations.unregistered_checks import (
     DeletionAction,
     PlannedTorrentDeletion,
     UnregisteredDeletionPlan,
 )
+
+
+def test_version_flag_reports_package_version(capsys) -> None:
+    with pytest.raises(SystemExit, match="0"):
+        main(["--version"])
+
+    assert capsys.readouterr().out.rstrip().endswith(__version__)
 
 
 def _write_config(tmp_path, **overrides):

@@ -42,6 +42,7 @@ from qbitunregistered.cache import clear_cache, log_cache_stats
 from qbitunregistered.notifications import NotificationManager
 from qbitunregistered.client import create_client
 from qbitunregistered.types import QBittorrentClient, TorrentInfo
+from qbitunregistered import __version__
 
 # Exit codes for different failure types
 EXIT_SUCCESS = 0
@@ -59,6 +60,7 @@ def _nonblank_recycle_bin_path(value: str) -> str:
 
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
+parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 parser.add_argument("--config", type=str, default="config.json", help="Path to the config.json file.")
 parser.add_argument(
     "--orphaned",
