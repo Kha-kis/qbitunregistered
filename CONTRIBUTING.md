@@ -298,7 +298,7 @@ Releases are managed by maintainers:
 2. Move the release notes from `Unreleased` into a dated section in
    `CHANGELOG.md`.
 3. Run the full test, type, security, and package-build checks from
-   `AGENTS.md`.
+   [AGENTS.md](AGENTS.md).
 4. Merge the release preparation PR into `main`.
 5. Create and push an annotated tag that exactly matches the package version,
    for example:
