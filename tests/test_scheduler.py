@@ -1,5 +1,6 @@
 """Tests for the scheduler command."""
 
+import os
 import runpy
 import subprocess
 import sys
@@ -31,6 +32,32 @@ def test_run_script_forwards_config_path() -> None:
         check=True,
         capture_output=True,
         text=True,
+        cwd=None,
+    )
+
+
+def test_run_script_uses_explicit_execution_cwd() -> None:
+    config_path = Path("/tmp/custom-qbitunregistered.json")
+    checkout_path = Path("/tmp/qbitunregistered-checkout")
+
+    with patch("qbitunregistered.scheduler.subprocess.run") as run:
+        run.return_value.stdout = ""
+        run_script(config_path, execution_cwd=checkout_path)
+
+    run.assert_called_once_with(
+        [
+            sys.executable,
+            "-m",
+            "qbitunregistered",
+            "--config",
+            str(config_path),
+            "--yes",
+        ],
+        timeout=3600,
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=checkout_path,
     )
 
 
@@ -113,6 +140,29 @@ def test_scheduler_rejects_scheduled_hard_links_without_target_dir(tmp_path: Pat
     every.assert_not_called()
 
 
+def test_scheduler_propagates_legacy_execution_cwd(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    checkout_path = tmp_path / "checkout"
+    config_path.write_text(
+        '{"host":"localhost:8080","username":"admin","password":"password",'
+        '"scheduled_times":["09:00"],"scheduled_operations":["orphaned"]}',
+        encoding="utf-8",
+    )
+
+    with (
+        patch("qbitunregistered.scheduler.schedule.every") as every,
+        patch("qbitunregistered.scheduler.schedule.run_pending", side_effect=KeyboardInterrupt),
+    ):
+        assert main(["--config", str(config_path)], execution_cwd=checkout_path) == 0
+
+    every.return_value.day.at.return_value.do.assert_called_once_with(
+        run_script,
+        config_path,
+        ["orphaned"],
+        execution_cwd=checkout_path,
+    )
+
+
 def test_compatibility_wrapper_uses_adjacent_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wrapper_path = Path(__file__).resolve().parents[1] / "scheduler.py"
     monkeypatch.chdir(tmp_path)
@@ -124,4 +174,38 @@ def test_compatibility_wrapper_uses_adjacent_config(tmp_path: Path, monkeypatch:
     assert exit_info.value.code == 0
     scheduler_main.assert_called_once_with(
         default_config_path=wrapper_path.with_name("config.json"),
+        execution_cwd=wrapper_path.parent,
     )
+
+
+def test_compatibility_wrapper_starts_without_install_from_outside_checkout(tmp_path: Path) -> None:
+    """The root wrapper imports its checkout package when invoked by absolute path."""
+    wrapper_path = Path(__file__).resolve().parents[1] / "scheduler.py"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        '{"host":"localhost:8080","username":"admin","password":"password","scheduled_times":[]}',
+        encoding="utf-8",
+    )
+    dependency_stubs = tmp_path / "dependency-stubs"
+    dependency_stubs.mkdir()
+    (dependency_stubs / "schedule.py").write_text("", encoding="utf-8")
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(dependency_stubs)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            str(wrapper_path),
+            "--config",
+            str(config_path),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "No scheduled_times found" in result.stdout

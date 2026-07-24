@@ -99,7 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selects username/password authentication
 - Scheduler runs now forward the selected configuration path to the application
 - The root scheduler compatibility wrapper again defaults to its adjacent
-  `config.json`, preserving existing cron and systemd setups
+  `config.json` and runs scheduled children from the source checkout, preserving
+  absolute-path cron and systemd setups without requiring package installation
 - Tracker-tag impact preview now uses the same URL matcher and required-tag gate
   as the real operation
 - Unregistered impact preview now requires the same tracker error statuses as the real operation

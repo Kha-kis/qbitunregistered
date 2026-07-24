@@ -9,9 +9,10 @@ The installable package has a centralized CLI coordinator that orchestrates spec
 The root `qbitunregistered.py` and `scheduler.py` files are deprecated
 compatibility boundaries, not application modules. They preserve commands
 documented for source checkouts before packaging, including the scheduler's
-adjacent-`config.json` lookup. They contain no business logic, remain supported
-throughout 2.x, and are planned for removal in 3.0. New integrations should use
-the installed console commands or `python -m qbitunregistered`.
+adjacent-`config.json` lookup and checkout-based child execution. They contain
+no business logic, remain supported throughout 2.x, and are planned for removal
+in 3.0. New integrations should use the installed console commands or
+`python -m qbitunregistered`.
 
 ## Architecture Principles
 
@@ -280,6 +281,8 @@ inspection is uncertain or multiple sources map to one destination.
 - Maps each configured operation to its CLI flag and executes
   `python -m qbitunregistered --config <path> <operation flags> --yes` with a
   1-hour timeout
+- Accepts an optional child working directory used only by the deprecated root
+  wrapper; the installed scheduler continues to inherit its process directory
 - Captures and logs output
 - Runs continuously until interrupted
 

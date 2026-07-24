@@ -32,8 +32,13 @@ from qbitunregistered.config import (
 )
 
 
-def run_script(config_path: str | Path, operations: Sequence[str] = ()) -> None:
-    """Execute the configured maintenance operations."""
+def run_script(
+    config_path: str | Path,
+    operations: Sequence[str] = (),
+    *,
+    execution_cwd: str | Path | None = None,
+) -> None:
+    """Execute configured maintenance operations from an optional directory."""
     try:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting scheduled run of qbitunregistered")
         operation_flags = [SCHEDULED_OPERATION_FLAGS[operation] for operation in operations]
@@ -51,6 +56,7 @@ def run_script(config_path: str | Path, operations: Sequence[str] = ()) -> None:
             check=True,
             capture_output=True,
             text=True,
+            cwd=execution_cwd,
         )
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Completed scheduled run successfully")
 
@@ -72,8 +78,9 @@ def main(
     argv: list[str] | None = None,
     *,
     default_config_path: str | Path | None = None,
+    execution_cwd: str | Path | None = None,
 ) -> int:
-    """Run the scheduler with an optional caller-specific default config path."""
+    """Run the scheduler with optional caller-specific compatibility paths."""
     if default_config_path is None:
         default_config_path = Path.cwd() / "config.json"
 
@@ -118,7 +125,12 @@ def main(
     scheduled_operations = config["scheduled_operations"]
     for scheduled_time in scheduled_times:
         try:
-            schedule.every().day.at(scheduled_time).do(run_script, config_path, scheduled_operations)
+            schedule.every().day.at(scheduled_time).do(
+                run_script,
+                config_path,
+                scheduled_operations,
+                execution_cwd=execution_cwd,
+            )
         except schedule.ScheduleValueError as e:
             print(f"Error: Invalid time format '{scheduled_time}' in scheduled_times. {e}")
             return 1

@@ -200,7 +200,9 @@ source-checkout workflows do not break. Both root scripts are deprecated and
 planned for removal in 3.0. Migrate new and existing automation to
 `qbitunregistered` and `qbitunregistered-scheduler`. The legacy `scheduler.py`
 wrapper continues to find `config.json` beside the script rather than in the
-current working directory.
+current working directory, and its scheduled child runs from that source
+checkout so existing absolute-path cron invocations do not require installing
+`qbitunregistered` as a package.
 
 ### Command-Line Arguments
 
