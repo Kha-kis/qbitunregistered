@@ -394,6 +394,7 @@ class TestUnregisteredRecycleBin:
         torrent = MagicMock(hash="hash", tags=" first, unregistered ,third ")
         torrent.name = "torrent"
         gated_config = {**config, "use_delete_files": False}
+        mock_client.torrents.info.return_value = [torrent]
 
         delete_torrents_and_files(
             mock_client,
@@ -521,6 +522,7 @@ class TestUnregisteredRecycleBin:
         mock_torrent.name = "Test Movie"
         mock_torrent.hash = "abc123"
         mock_torrent.tags = "unregistered"
+        mock_client.torrents.info.return_value = [mock_torrent]
 
         delete_torrents_and_files(
             client=mock_client,
@@ -703,6 +705,126 @@ class TestUnregisteredRecycleBin:
         assert source_file.read_text() == "content"
         mock_client.torrents_delete.assert_not_called()
 
+    @pytest.mark.parametrize("delete_files", [False, True], ids=["torrent-only", "permanent-files"])
+    def test_removed_delete_tag_blocks_execution_without_preview(self, mock_client, config, tmp_path, delete_files):
+        """The current tag gate applies when execution builds its own plan."""
+        from qbitunregistered.file_operations import SafetyCheckError
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+
+        planned = MagicMock(
+            hash="source",
+            tags="unregistered",
+            save_path=str(tmp_path),
+            category="movies",
+        )
+        planned.name = "source"
+        current = MagicMock(
+            hash="source",
+            tags="",
+            save_path=str(tmp_path),
+            category="movies",
+        )
+        current.name = "source"
+        if delete_files:
+            (tmp_path / "movie.mkv").write_text("content")
+            file_info = MagicMock()
+            file_info.name = "movie.mkv"
+            mock_client.torrents_files.return_value = [file_info]
+        mock_client.torrents.info.return_value = [current]
+
+        with pytest.raises(SafetyCheckError, match="Delete tag changed"):
+            delete_torrents_and_files(
+                mock_client,
+                config,
+                True,
+                ["unregistered"],
+                {"unregistered": delete_files},
+                False,
+                [planned],
+            )
+
+        mock_client.torrents_delete.assert_not_called()
+        if delete_files:
+            assert (tmp_path / "movie.mkv").read_text() == "content"
+
+    def test_delete_tag_refresh_failure_blocks_deletion(self, mock_client, config):
+        """API uncertainty while refreshing tags preserves the planned torrent."""
+        from qbitunregistered.file_operations import SafetyCheckError
+        from qbitunregistered.operations.unregistered_checks import delete_torrents_and_files
+
+        torrent = MagicMock(hash="source", tags="unregistered")
+        torrent.name = "source"
+        mock_client.torrents.info.side_effect = ConnectionError("offline")
+
+        with pytest.raises(SafetyCheckError, match="Could not refresh"):
+            delete_torrents_and_files(
+                mock_client,
+                config,
+                True,
+                ["unregistered"],
+                {"unregistered": False},
+                False,
+                [torrent],
+            )
+
+        mock_client.torrents_delete.assert_not_called()
+
+    def test_recycle_tag_removal_before_delete_restores_files(self, mock_client, config, tmp_path):
+        """A tag removed during a recycle move aborts deletion and rolls back."""
+        from qbitunregistered.file_operations import SafetyCheckError
+        from qbitunregistered.operations.unregistered_checks import (
+            build_unregistered_deletion_plan,
+            delete_torrents_and_files,
+        )
+
+        source_file = tmp_path / "movie.mkv"
+        source_file.write_text("content")
+        recycle_bin = tmp_path / "recycle"
+        planned = MagicMock(
+            hash="source",
+            tags="unregistered",
+            save_path=str(tmp_path),
+            category="movies",
+        )
+        planned.name = "source"
+        current = MagicMock(
+            hash="source",
+            tags="",
+            save_path=str(tmp_path),
+            category="movies",
+        )
+        current.name = "source"
+        file_info = MagicMock()
+        file_info.name = "movie.mkv"
+        mock_client.torrents_files.return_value = [file_info]
+        plan = build_unregistered_deletion_plan(
+            mock_client,
+            [planned],
+            config,
+            True,
+            ["unregistered"],
+            {"unregistered": True},
+            str(recycle_bin),
+        )
+        mock_client.torrents.info.side_effect = [[planned], [planned], [current]]
+
+        with pytest.raises(SafetyCheckError, match="Delete tag changed"):
+            delete_torrents_and_files(
+                mock_client,
+                config,
+                True,
+                ["unregistered"],
+                {"unregistered": True},
+                False,
+                [planned],
+                str(recycle_bin),
+                plan=plan,
+            )
+
+        assert source_file.read_text() == "content"
+        assert list(recycle_bin.rglob("movie.mkv")) == []
+        mock_client.torrents_delete.assert_not_called()
+
     def test_ownership_index_reads_each_torrent_once_per_snapshot(self, mock_client, config, tmp_path):
         """Deletion candidates share one O(torrents) ownership scan."""
         from qbitunregistered.operations.unregistered_checks import (
@@ -754,7 +876,7 @@ class TestUnregisteredRecycleBin:
             plan=plan,
         )
 
-        assert mock_client.torrents.info.call_count == 1
+        assert mock_client.torrents.info.call_count == 2
         assert mock_client.torrents_files.call_count == len(torrents) * 2
         mock_client.torrents_delete.assert_called_once_with(
             torrent_hashes=["hash-0", "hash-1"],

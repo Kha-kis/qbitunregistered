@@ -244,8 +244,8 @@ def build_unregistered_deletion_plan(
     return UnregisteredDeletionPlan(deletions=tuple(planned), ownership_snapshot=snapshot)
 
 
-def _revalidate_ownership_snapshot(client: QBittorrentClient, expected: OwnershipSnapshot) -> None:
-    """Fail closed unless the final uncached qBittorrent ownership state matches."""
+def _refresh_torrents_for_deletion(client: QBittorrentClient) -> Sequence[TorrentInfo]:
+    """Return one validated, uncached torrent snapshot before deletion."""
     try:
         current_torrents = client.torrents.info()
     except (KeyboardInterrupt, SystemExit):
@@ -254,9 +254,45 @@ def _revalidate_ownership_snapshot(client: QBittorrentClient, expected: Ownershi
         raise SafetyCheckError("Could not refresh qBittorrent state before deletion") from error
     if current_torrents is None:
         raise SafetyCheckError("qBittorrent returned no torrent list during final deletion validation")
+    if not isinstance(current_torrents, Sequence) or isinstance(current_torrents, (str, bytes)):
+        raise SafetyCheckError("qBittorrent returned a malformed torrent list during final deletion validation")
+    return current_torrents
+
+
+def _revalidate_ownership_snapshot(
+    client: QBittorrentClient,
+    current_torrents: Sequence[TorrentInfo],
+    expected: OwnershipSnapshot,
+) -> None:
+    """Fail closed unless the final uncached qBittorrent ownership state matches."""
     current = _build_ownership_snapshot(client, current_torrents, use_cache=False)
     if current != expected:
         raise SafetyCheckError("qBittorrent ownership state changed after deletion preview")
+
+
+def _revalidate_delete_tags(
+    current_torrents: Sequence[TorrentInfo],
+    deletions: Sequence[PlannedTorrentDeletion],
+    delete_tags: Sequence[str],
+) -> None:
+    """Fail closed unless every planned torrent still has its planned delete tag."""
+    current_by_hash: dict[str, TorrentInfo] = {}
+    for torrent in current_torrents:
+        torrent_hash = getattr(torrent, "hash", None)
+        if not isinstance(torrent_hash, str) or not torrent_hash or torrent_hash in current_by_hash:
+            raise SafetyCheckError("qBittorrent returned a missing or duplicate torrent hash")
+        current_by_hash[torrent_hash] = torrent
+
+    planned_hashes: set[str] = set()
+    for deletion in deletions:
+        if deletion.torrent_hash in planned_hashes:
+            raise SafetyCheckError("Deletion plan contains a duplicate torrent hash")
+        planned_hashes.add(deletion.torrent_hash)
+        current_torrent = current_by_hash.get(deletion.torrent_hash)
+        if current_torrent is None:
+            raise SafetyCheckError(f"Planned torrent {deletion.torrent_hash} is no longer available")
+        if _matching_delete_tag(current_torrent, delete_tags) != deletion.matching_tag:
+            raise SafetyCheckError(f"Delete tag changed for planned torrent {deletion.torrent_hash}; refusing deletion")
 
 
 def compile_patterns(unregistered: list[str]) -> tuple[set[str], set[str]]:
@@ -442,7 +478,10 @@ def delete_torrents_and_files(
         return
 
     if plan.ownership_snapshot is not None:
-        _revalidate_ownership_snapshot(client, plan.ownership_snapshot)
+        current_torrents = _refresh_torrents_for_deletion(client)
+        _revalidate_ownership_snapshot(client, current_torrents, plan.ownership_snapshot)
+    current_torrents = _refresh_torrents_for_deletion(client)
+    _revalidate_delete_tags(current_torrents, plan.deletions, delete_tags)
 
     permanent_deletions = [deletion for deletion in plan.deletions if deletion.action is DeletionAction.PERMANENT_DELETE]
     if permanent_deletions:
@@ -451,7 +490,7 @@ def delete_torrents_and_files(
         for deletion in permanent_deletions:
             logging.info("Permanently deleted torrent '%s' and its files.", deletion.torrent_name)
 
-    keep_file_hashes: list[str] = []
+    keep_file_deletions: list[PlannedTorrentDeletion] = []
     for deletion in plan.deletions:
         if deletion.action is DeletionAction.PERMANENT_DELETE:
             continue
@@ -477,6 +516,8 @@ def delete_torrents_and_files(
                 )
                 continue
             try:
+                current_torrents = _refresh_torrents_for_deletion(client)
+                _revalidate_delete_tags(current_torrents, (deletion,), delete_tags)
                 client.torrents_delete(torrent_hashes=[deletion.torrent_hash], delete_files=False)
             except BaseException:
                 rollback_failures = rollback_recycle_bin_moves(move_records)
@@ -496,10 +537,15 @@ def delete_torrents_and_files(
                 deletion.torrent_hash,
                 ", ".join(deletion.shared_with),
             )
-        keep_file_hashes.append(deletion.torrent_hash)
+        keep_file_deletions.append(deletion)
 
-    if keep_file_hashes:
-        client.torrents_delete(torrent_hashes=keep_file_hashes, delete_files=False)
+    if keep_file_deletions:
+        current_torrents = _refresh_torrents_for_deletion(client)
+        _revalidate_delete_tags(current_torrents, keep_file_deletions, delete_tags)
+        client.torrents_delete(
+            torrent_hashes=[deletion.torrent_hash for deletion in keep_file_deletions],
+            delete_files=False,
+        )
 
 
 def unregistered_checks(  # noqa: C901

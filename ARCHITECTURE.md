@@ -150,7 +150,9 @@ snapshot and one file-list read per torrent build a path-to-owner index, so
 cross-seed checks do not rescan every torrent for every deletion candidate.
 The plan records torrent-only, shared-file preservation, recycle, or permanent
 deletion explicitly. File-mutating execution validates planned file identities
-and refreshes the full ownership snapshot without cache before mutation.
+and refreshes the full ownership snapshot without cache before mutation. Every
+planned torrent's current matching delete tag is also revalidated before its
+deletion request; recycle moves are rolled back if that final check fails.
 
 #### `qbitunregistered/operations/orphaned.py` - Detect & Delete Orphaned Files
 
@@ -191,7 +193,9 @@ and refreshes the full ownership snapshot without cache before mutation.
 3. Group torrents by tag for batch tagging
 4. Group torrents by limits for batch limit application
 
-**Share Limits Integration**: Applies seed_time_limit and seed_ratio_limit from tracker config.
+**Share Limits Integration**: Applies seed_time_limit and seed_ratio_limit from
+tracker configs that also define a tag. Limit-only configs are handled by the
+separate seeding-management operation.
 
 #### `qbitunregistered/operations/seeding_management.py` - Apply Seed Limits
 

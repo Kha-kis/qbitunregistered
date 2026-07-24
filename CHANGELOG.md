@@ -68,7 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   torrent save roots are preserved during empty-directory pruning
 - Unregistered preview and execution now share one ownership/deletion plan,
   report the exact file action, build one per-run ownership index, and refresh
-  qBittorrent ownership state before file mutation
+  qBittorrent ownership state before file mutation. Current delete tags are
+  revalidated before deletion, and uncertainty or tag removal preserves the
+  torrent and rolls back any pending recycle move
 - Unregistered deletion now matches comma-separated tags exactly, validates
   every `delete_files` value, and honors the global `use_delete_files` gate
 - Permanent deletion now performs the same fail-closed file discovery and
@@ -86,7 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scheduler runs now forward the selected configuration path to the application
 - The root scheduler compatibility wrapper again defaults to its adjacent
   `config.json`, preserving existing cron and systemd setups
-- Tracker-tag impact preview now uses the same URL matcher as the real operation
+- Tracker-tag impact preview now uses the same URL matcher and required-tag gate
+  as the real operation
 - Unregistered impact preview now requires the same tracker error statuses as the real operation
 - Empty or omitted API keys now fall back to username/password authentication
 - Configuration-based `dry_run` is no longer overridden by the CLI argument's default value

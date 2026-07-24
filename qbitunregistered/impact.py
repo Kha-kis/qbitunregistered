@@ -429,6 +429,8 @@ def _analyze_tag_by_tracker(
         if tracker_config is None:
             continue
         tag = tracker_config.get("tag")
+        if tag is None:
+            continue
         if isinstance(tag, str) and tag:
             summary.add_tagging(tag, torrent.hash)
         if "seed_time_limit" in tracker_config or "seed_ratio_limit" in tracker_config:

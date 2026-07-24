@@ -503,11 +503,37 @@ class TestAnalyzeTagByTracker:
         _analyze_tag_by_tracker(
             mock_client,
             [torrent],
-            {"tracker_tags": {"tracker.example.com": {"tag": "example"}}},
+            {
+                "tracker_tags": {
+                    "tracker.example.com": {
+                        "tag": "example",
+                        "seed_time_limit": 60,
+                    }
+                }
+            },
             summary,
         )
 
         assert summary.torrents_to_tag["example"] == ["hash1"]
+        assert summary.operation_targets["share limits"] == ["hash1"]
+
+    def test_limit_only_config_is_skipped_like_execution(self):
+        from qbitunregistered.cache import clear_cache
+        from qbitunregistered.operations.tag_by_tracker import tag_by_tracker
+
+        clear_cache()
+        mock_client = Mock()
+        mock_client.torrents_trackers.return_value = [{"url": "https://tracker.example.com/announce"}]
+        torrent = Mock(hash="hash1", name="torrent")
+        config = {"tracker_tags": {"tracker.example.com": {"seed_time_limit": 60}}}
+        summary = ImpactSummary()
+
+        _analyze_tag_by_tracker(mock_client, [torrent], config, summary)
+        tag_by_tracker(mock_client, [torrent], config)
+
+        assert summary.is_empty()
+        mock_client.torrents_add_tags.assert_not_called()
+        mock_client.torrents_set_share_limits.assert_not_called()
 
     def test_object_tracker_metadata_is_skipped_like_execution(self):
         from qbitunregistered.cache import clear_cache
