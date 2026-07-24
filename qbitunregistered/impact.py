@@ -6,6 +6,7 @@ before they are executed, giving users confidence and preventing accidental data
 
 import logging
 import datetime
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from collections import defaultdict
@@ -25,6 +26,13 @@ class ImpactAnalysisError(RuntimeError):
     """Raised when a complete, reliable impact preview cannot be produced."""
 
 
+class OrphanFileAction(Enum):
+    """Filesystem action planned for every orphan in an impact summary."""
+
+    PERMANENT_DELETE = "permanent_delete"
+    RECYCLE = "recycle"
+
+
 class ImpactSummary:
     """Stores and formats impact analysis results.
 
@@ -36,8 +44,10 @@ class ImpactSummary:
         torrents_to_tag: Mapping of tags to lists of torrent hashes to tag
         torrents_to_pause: List of torrent hashes to pause
         torrents_to_resume: List of torrent hashes to resume
-        orphaned_files: List of orphaned file paths to delete
-        disk_to_free_bytes: Total bytes that will be freed
+        orphaned_files: List of orphaned file paths to delete or recycle
+        orphan_file_action: Planned action for orphaned files
+        orphaned_file_bytes: Total bytes represented by orphaned files
+        disk_to_free_bytes: Total bytes that permanent deletions will free
         operation_details: Additional details per operation
     """
 
@@ -48,6 +58,8 @@ class ImpactSummary:
         self.torrents_to_pause: list[str] = []
         self.torrents_to_resume: list[str] = []
         self.orphaned_files: list[str] = []
+        self.orphan_file_action: OrphanFileAction | None = None
+        self.orphaned_file_bytes: int = 0
         self.disk_to_free_bytes: int = 0
         self.operation_details: dict[str, Any] = {}
         self.operation_targets: dict[str, list[str]] = defaultdict(list)
@@ -79,15 +91,29 @@ class ImpactSummary:
         """
         self.torrents_to_tag[tag].append(torrent_hash)
 
-    def add_orphaned_file(self, file_path: str, size_bytes: int = 0) -> None:
+    def add_orphaned_file(
+        self,
+        file_path: str,
+        size_bytes: int = 0,
+        action: OrphanFileAction = OrphanFileAction.PERMANENT_DELETE,
+    ) -> None:
         """Add an orphaned file to the impact summary.
 
         Args:
             file_path: Path to the orphaned file
             size_bytes: Size of the file in bytes
+            action: Whether the file will be permanently deleted or recycled
+
+        Raises:
+            ValueError: If orphaned files with different actions are combined
         """
+        if self.orphan_file_action is not None and self.orphan_file_action is not action:
+            raise ValueError("An impact summary cannot combine different orphan file actions")
+        self.orphan_file_action = action
         self.orphaned_files.append(file_path)
-        self.disk_to_free_bytes += size_bytes
+        self.orphaned_file_bytes += size_bytes
+        if action is OrphanFileAction.PERMANENT_DELETE:
+            self.disk_to_free_bytes += size_bytes
 
     def add_pause(self, torrent_hash: str) -> None:
         """Add a torrent pause operation.
@@ -159,9 +185,15 @@ class ImpactSummary:
 
         # Warn about large number of orphaned files
         if len(self.orphaned_files) > 50:
-            warnings.append(
-                f"WARNING: {len(self.orphaned_files)} orphaned files will be deleted. " "Verify these are not needed!"
-            )
+            if self.orphan_file_action is OrphanFileAction.RECYCLE:
+                warnings.append(
+                    f"WARNING: {len(self.orphaned_files)} orphaned files will be moved to the recycle bin. "
+                    "Verify these are not needed!"
+                )
+            else:
+                warnings.append(
+                    f"WARNING: {len(self.orphaned_files)} orphaned files will be deleted. " "Verify these are not needed!"
+                )
 
         return warnings
 
@@ -215,13 +247,25 @@ class ImpactSummary:
         # Orphaned files
         if self.orphaned_files:
             has_changes = True
-            lines.append(f"\n🗑️  Orphaned files to DELETE: {len(self.orphaned_files)}")
+            if self.orphan_file_action is OrphanFileAction.RECYCLE:
+                lines.append(f"\n♻️  Orphaned files to MOVE TO RECYCLE BIN: {len(self.orphaned_files)}")
+            else:
+                lines.append(f"\n🗑️  Orphaned files to DELETE: {len(self.orphaned_files)}")
             if show_details:
                 preview = self.orphaned_files[:5]
                 for file_path in preview:
                     lines.append(f"   - {file_path}")
                 if len(self.orphaned_files) > 5:
                     lines.append(f"   ... and {len(self.orphaned_files) - 5} more")
+
+        # Recycle-bin data
+        if self.orphan_file_action is OrphanFileAction.RECYCLE and self.orphaned_file_bytes > 0:
+            gb = self.orphaned_file_bytes / (1024**3)
+            mb = self.orphaned_file_bytes / (1024**2)
+            if gb >= 1:
+                lines.append(f"\n📦 Data to move to recycle bin: {gb:.2f} GB")
+            else:
+                lines.append(f"\n📦 Data to move to recycle bin: {mb:.2f} MB")
 
         # Disk space
         if self.disk_to_free_bytes > 0:
@@ -411,8 +455,9 @@ def _analyze_orphaned(
         exclude_dirs=exclude_dirs,
     )
     summary.orphan_file_plan = build_orphan_file_plan(orphaned_files)
+    action = OrphanFileAction.RECYCLE if recycle_bin else OrphanFileAction.PERMANENT_DELETE
     for identity in summary.orphan_file_plan.files:
-        summary.add_orphaned_file(str(identity.path), identity.size)
+        summary.add_orphaned_file(str(identity.path), identity.size, action)
 
 
 def _analyze_tag_by_tracker(

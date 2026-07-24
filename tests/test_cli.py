@@ -393,6 +393,80 @@ def test_combined_preview_targets_are_reused_for_execution(tmp_path, capsys) -> 
     client.torrents_delete.assert_called_once_with(torrent_hashes=["completed"], delete_files=False)
 
 
+def test_orphan_recycle_confirmation_preview_describes_move(tmp_path, capsys) -> None:
+    """Confirmation describes recycling without deletion or freed-space claims."""
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    orphan = downloads / "orphan.mkv"
+    orphan.write_bytes(b"x" * (2 * 1024**2))
+    recycle_bin = tmp_path / "recycle"
+    config_path = _write_config(tmp_path, recycle_bin=str(recycle_bin))
+    client = _empty_client(downloads)
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("builtins.input", return_value="n"),
+        patch("qbitunregistered.cli.NotificationManager") as notifications,
+    ):
+        result = main(["--config", str(config_path), "--orphaned"])
+
+    output = capsys.readouterr().out
+    assert result == EXIT_SUCCESS
+    assert "Orphaned files to MOVE TO RECYCLE BIN: 1" in output
+    assert "Data to move to recycle bin: 2.00 MB" in output
+    assert "Orphaned files to DELETE" not in output
+    assert "Disk space to free" not in output
+    assert orphan.read_bytes() == b"x" * (2 * 1024**2)
+    assert not recycle_bin.exists()
+    notifications.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("use_recycle_bin", "dry_run", "expected_result"),
+    [
+        (False, False, "Orphaned files check: 1 file permanently deleted"),
+        (False, True, "Orphaned files check: 1 file would be permanently deleted"),
+        (True, False, "Orphaned files check: 1 file moved to recycle bin"),
+        (True, True, "Orphaned files check: 1 file would be moved to recycle bin"),
+    ],
+    ids=["permanent-execute", "permanent-dry-run", "recycle-execute", "recycle-dry-run"],
+)
+def test_orphan_notification_summary_matches_execution_mode(
+    tmp_path,
+    use_recycle_bin,
+    dry_run,
+    expected_result,
+) -> None:
+    """Operation notifications describe the action that did or would occur."""
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    orphan = downloads / "orphan.mkv"
+    orphan.write_text("orphan", encoding="utf-8")
+    recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
+    config_path = _write_config(tmp_path, recycle_bin=str(recycle_bin) if recycle_bin else None)
+    client = _empty_client(downloads)
+    argv = ["--config", str(config_path), "--orphaned", "--yes"]
+    if dry_run:
+        argv.append("--dry-run")
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.NotificationManager") as notifications,
+    ):
+        result = main(argv)
+
+    assert result == EXIT_SUCCESS
+    notifications.return_value.send_summary.assert_called_once_with({"succeeded": [expected_result], "failed": []})
+    if dry_run:
+        assert orphan.read_text(encoding="utf-8") == "orphan"
+        assert recycle_bin is None or not recycle_bin.exists()
+    elif recycle_bin is not None:
+        assert not orphan.exists()
+        assert len(list(recycle_bin.rglob(orphan.name))) == 1
+    else:
+        assert not orphan.exists()
+
+
 @pytest.mark.parametrize("use_recycle_bin", [False, True], ids=["permanent", "recycle"])
 def test_orphan_owner_added_during_confirmation_blocks_all_mutation(tmp_path, use_recycle_bin) -> None:
     downloads = tmp_path / "downloads"

@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Impact analysis now covers every mutating flag, shows concrete orphaned,
   auto-remove, and hard-link targets, reuses confirmed filesystem plans, and
   aborts on analyzer failure or conflicting hard-link destinations
+- Orphan impact previews now distinguish permanent deletion from recycle-bin
+  moves. Recycled bytes are reported as data to move rather than disk space to
+  free, and operation notifications use the same action-specific wording.
 - Cross-seed impact previews now show contradictory tag removals before
   confirmation
 - Orphan cleanup now binds previewed paths to immutable file identities and

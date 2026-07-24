@@ -122,6 +122,19 @@ def _selected_operations(args: argparse.Namespace) -> list[str]:
     return [operation for attribute, operation in operation_flags if getattr(args, attribute)]
 
 
+def _format_orphaned_operation_result(file_count: int, dry_run: bool, recycle_bin: str | None) -> str:
+    """Return a truthful operation and notification summary for orphan cleanup."""
+    if file_count == 0:
+        return "Orphaned files check: 0 files found"
+
+    noun = "file" if file_count == 1 else "files"
+    if recycle_bin:
+        action = "would be moved to recycle bin" if dry_run else "moved to recycle bin"
+    else:
+        action = "would be permanently deleted" if dry_run else "permanently deleted"
+    return f"Orphaned files check: {file_count} {noun} {action}"
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run qbitunregistered and return a process exit code."""
     clear_cache()
@@ -328,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
                 recycle_bin=recycle_bin,
                 plan=orphan_plan,
             )
-            operation_results["succeeded"].append(f"Orphaned files check: {len(orphaned_files)} files processed")
+            operation_results["succeeded"].append(_format_orphaned_operation_result(len(orphaned_files), dry_run, recycle_bin))
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as e:

@@ -239,11 +239,13 @@ before mutation. Orphaned-file targets and hard-link destinations shown in the
 preview are reused for execution so the confirmed list is the list processed.
 Orphan plans also bind each path to its device, inode, type, size, and
 modification time; missing, modified, substituted, or symlinked targets are
-preserved. Unregistered previews distinguish torrent-only deletion,
-cross-seeded-file preservation, recycling, and permanent deletion. Cross-seed
-tagging previews also list contradictory tags that will be removed. Before file
-mutation, execution refreshes qBittorrent's ownership state without the preview
-cache and aborts if it changed.
+preserved. Orphan previews distinguish permanent deletion from recycle-bin
+moves: only permanent deletion contributes to "Disk space to free," while
+recycling reports the amount of data to move. Unregistered previews distinguish
+torrent-only deletion, cross-seeded-file preservation, recycling, and permanent
+deletion. Cross-seed tagging previews also list contradictory tags that will be
+removed. Before file mutation, execution refreshes qBittorrent's ownership
+state without the preview cache and aborts if it changed.
 
 ## Recycle Bin Feature
 
@@ -495,12 +497,15 @@ Example notification:
 qbitunregistered Summary
 
 ✅ Succeeded: 3
-  - Orphaned files check: 5 files processed
+  - Orphaned files check: 5 files moved to recycle bin
   - Unregistered checks
   - Tag by tracker
 
 ❌ Failed: 0
 ```
+
+Orphan notification entries report whether files were permanently deleted,
+moved to the recycle bin, or would receive either action during a dry run.
 
 ## Troubleshooting
 

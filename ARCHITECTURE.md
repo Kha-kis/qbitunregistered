@@ -182,6 +182,11 @@ so CLI summaries, notifications, and scheduled exit codes remain truthful.
 6. Capture device, inode, type, size, and modification time for each target
 7. Delete or report from that same immutable plan
 
+The impact summary carries the configured orphan action with the plan.
+Permanent deletion contributes target bytes to estimated freed space; recycle
+mode reports the same bytes as data to move and uses matching confirmation,
+dry-run, execution-summary, and notification wording.
+
 Empty-directory pruning simulates already queued child-directory removals while
 walking upward, which removes nested empty parents but stops at canonical active
 save roots in both dry-run and mutating modes.

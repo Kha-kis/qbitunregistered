@@ -5,8 +5,10 @@ from unittest.mock import Mock, patch
 from qbitunregistered.impact import (
     ImpactAnalysisError,
     ImpactSummary,
+    OrphanFileAction,
     analyze_impact,
     _analyze_create_hard_links,
+    _analyze_orphaned,
     _analyze_seeding_management,
     _analyze_tag_cross_seeding,
     _analyze_tag_by_tracker,
@@ -54,7 +56,27 @@ class TestImpactSummary:
 
         assert not summary.is_empty()
         assert len(summary.orphaned_files) == 2
+        assert summary.orphan_file_action is OrphanFileAction.PERMANENT_DELETE
+        assert summary.orphaned_file_bytes == 3072
         assert summary.disk_to_free_bytes == 3072
+
+    def test_add_recycled_orphaned_file_does_not_claim_freed_space(self):
+        """Recycled orphan bytes are moved, not freed."""
+        summary = ImpactSummary()
+
+        summary.add_orphaned_file("/path/to/file.txt", 3072, OrphanFileAction.RECYCLE)
+
+        assert summary.orphan_file_action is OrphanFileAction.RECYCLE
+        assert summary.orphaned_file_bytes == 3072
+        assert summary.disk_to_free_bytes == 0
+
+    def test_orphaned_file_actions_cannot_be_mixed(self):
+        """A summary rejects ambiguous orphan cleanup actions."""
+        summary = ImpactSummary()
+        summary.add_orphaned_file("/path/to/delete.txt")
+
+        with pytest.raises(ValueError, match="different orphan file actions"):
+            summary.add_orphaned_file("/path/to/recycle.txt", action=OrphanFileAction.RECYCLE)
 
     def test_add_pause_resume(self):
         """Test adding pause and resume impacts."""
@@ -109,6 +131,17 @@ class TestImpactSummary:
         assert len(warnings) > 0
         assert any("orphaned files will be deleted" in w for w in warnings)
 
+    def test_warning_many_recycled_orphaned_files(self):
+        """Recycle warnings do not claim files will be deleted."""
+        summary = ImpactSummary()
+        for i in range(60):
+            summary.add_orphaned_file(f"/path/file{i}", action=OrphanFileAction.RECYCLE)
+
+        warnings = summary.get_warning_messages()
+
+        assert any("orphaned files will be moved to the recycle bin" in warning for warning in warnings)
+        assert not any("orphaned files will be deleted" in warning for warning in warnings)
+
     def test_format_summary_empty(self):
         """Test formatting empty summary."""
         summary = ImpactSummary()
@@ -150,6 +183,34 @@ class TestImpactSummary:
 
         assert "Orphaned files to DELETE: 3" in formatted
         assert "/path/file0.txt" in formatted  # First file should be shown
+
+    def test_format_summary_with_recycled_orphaned_files(self):
+        """Recycle previews describe moved data without deletion claims."""
+        summary = ImpactSummary()
+        summary.add_orphaned_file("/path/file.txt", 2 * 1024**2, OrphanFileAction.RECYCLE)
+
+        formatted = summary.format_summary(show_details=True)
+
+        assert "Orphaned files to MOVE TO RECYCLE BIN: 1" in formatted
+        assert "Data to move to recycle bin: 2.00 MB" in formatted
+        assert "/path/file.txt" in formatted
+        assert "Orphaned files to DELETE" not in formatted
+        assert "Disk space to free" not in formatted
+
+    def test_format_summary_keeps_recycle_and_other_impacts_distinct(self):
+        """Mixed previews attribute moved and freed bytes to the right actions."""
+        summary = ImpactSummary()
+        summary.add_orphaned_file("/path/file.txt", 2 * 1024**2, OrphanFileAction.RECYCLE)
+        summary.add_deletion("completed", "hash1", 3 * 1024**2)
+        summary.add_tagging("reviewed", "hash2")
+
+        formatted = summary.format_summary()
+
+        assert "Orphaned files to MOVE TO RECYCLE BIN: 1" in formatted
+        assert "Data to move to recycle bin: 2.00 MB" in formatted
+        assert "Torrents to DELETE: 1" in formatted
+        assert "Disk space to free: 3.00 MB" in formatted
+        assert "Torrents to TAG: 1" in formatted
 
     def test_format_summary_with_details(self):
         """Test formatting summary with details enabled."""
@@ -218,6 +279,59 @@ class TestAnalyzeImpact:
         analyze_impact(mock_client, torrents, config, ["resume"])
 
         mock_analyze.assert_called_once()
+
+
+class TestAnalyzeOrphaned:
+    """Tests for action-aware orphan impact analysis."""
+
+    @pytest.mark.parametrize("use_recycle_bin", [False, True], ids=["permanent", "recycle"])
+    def test_analyze_orphaned_carries_configured_action(self, tmp_path, use_recycle_bin):
+        """The analyzer carries the action used by execution into formatting."""
+        orphan = tmp_path / "orphan.mkv"
+        orphan.write_bytes(b"x" * (2 * 1024**2))
+        recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
+        config = {"recycle_bin": str(recycle_bin)} if recycle_bin else {}
+        summary = ImpactSummary()
+
+        with patch(
+            "qbitunregistered.operations.orphaned.check_files_on_disk",
+            return_value=[str(orphan)],
+        ):
+            _analyze_orphaned(Mock(), [], config, summary)
+
+        formatted = summary.format_summary()
+        expected_action = OrphanFileAction.RECYCLE if use_recycle_bin else OrphanFileAction.PERMANENT_DELETE
+        assert summary.orphan_file_action is expected_action
+        assert summary.orphaned_file_bytes == 2 * 1024**2
+        if use_recycle_bin:
+            assert summary.disk_to_free_bytes == 0
+            assert "Orphaned files to MOVE TO RECYCLE BIN: 1" in formatted
+            assert "Data to move to recycle bin: 2.00 MB" in formatted
+            assert "Orphaned files to DELETE" not in formatted
+            assert "Disk space to free" not in formatted
+        else:
+            assert summary.disk_to_free_bytes == 2 * 1024**2
+            assert "Orphaned files to DELETE: 1" in formatted
+            assert "Disk space to free: 2.00 MB" in formatted
+            assert "MOVE TO RECYCLE BIN" not in formatted
+
+    def test_empty_recycle_analysis_remains_an_empty_summary(self, tmp_path):
+        """A configured recycle bin without orphan targets reports no changes."""
+        summary = ImpactSummary()
+
+        with patch(
+            "qbitunregistered.operations.orphaned.check_files_on_disk",
+            return_value=[],
+        ):
+            _analyze_orphaned(Mock(), [], {"recycle_bin": str(tmp_path / "recycle")}, summary)
+
+        formatted = summary.format_summary()
+        assert summary.is_empty()
+        assert summary.orphan_file_action is None
+        assert summary.orphaned_file_bytes == 0
+        assert "No changes will be made" in formatted
+        assert "MOVE TO RECYCLE BIN" not in formatted
+        assert "Disk space to free" not in formatted
 
 
 class TestAnalyzeUnregistered:
