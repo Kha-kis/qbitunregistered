@@ -85,7 +85,7 @@ exclude = [
 ]
 
 [tool.basedpyright]
-include = ["qbitunregistered"]
+include = ["qbitunregistered", "tests"]
 exclude = [
     "build",
     "dist",

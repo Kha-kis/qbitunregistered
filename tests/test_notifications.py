@@ -1,5 +1,7 @@
 """Tests for notification manager."""
 
+from email.message import Message
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -43,8 +45,8 @@ class TestNotificationManager:
 
         manager.send_summary(operation_results)
 
-        manager.apprise_obj.notify.assert_called_once()
-        call_args = manager.apprise_obj.notify.call_args[1]
+        mock_apprise.notify.assert_called_once()
+        call_args = mock_apprise.notify.call_args[1]
         assert "qbitunregistered Summary" in call_args["title"]
         assert "✅ Succeeded: 2" in call_args["body"]
         assert "Op 1" in call_args["body"]
@@ -101,7 +103,7 @@ class TestNotificationManager:
         manager.send_summary(operation_results)
 
         # Should not notify
-        manager.apprise_obj.notify.assert_not_called()
+        mock_apprise.notify.assert_not_called()
 
     def test_apprise_notification_failure_with_retry(self, mock_apprise):
         """Test Apprise notification failure triggers retry logic."""
@@ -207,7 +209,7 @@ class TestNotificationManager:
         manager = NotificationManager(config)
 
         # Simulate HTTP 401 error
-        mock_error = urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
+        mock_error = urllib.error.HTTPError("url", 401, "Unauthorized", Message(), None)
         mock_error.read = MagicMock(return_value=b'{"error": "Invalid API key"}')
         mock_urlopen.side_effect = mock_error
 
@@ -228,7 +230,7 @@ class TestNotificationManager:
         manager = NotificationManager(config)
 
         # Simulate HTTP error with API key in response
-        mock_error = urllib.error.HTTPError("url", 403, "Forbidden", {}, None)
+        mock_error = urllib.error.HTTPError("url", 403, "Forbidden", Message(), None)
         error_body = b'{"error": "Invalid key: secret_key_12345"}'
         mock_error.read = MagicMock(return_value=error_body)
         mock_urlopen.side_effect = mock_error

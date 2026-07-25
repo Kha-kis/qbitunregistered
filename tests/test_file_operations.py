@@ -6,6 +6,7 @@ import pytest
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 from qbitunregistered.file_operations import (
     SafetyCheckError,
@@ -710,7 +711,7 @@ class TestFetchTorrentFiles:
         mock_client = MagicMock()
 
         with pytest.raises(AssertionError) as exc_info:
-            fetch_torrent_files(mock_client, "test_hash", cache_scope=None)
+            fetch_torrent_files(mock_client, "test_hash", cache_scope=cast(int, None))
 
         assert "cache_scope must be provided" in str(exc_info.value)
 
