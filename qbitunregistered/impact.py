@@ -396,6 +396,7 @@ def _analyze_unregistered(
         compile_patterns,
         process_torrent,
     )
+    from qbitunregistered.operations.seeding_management import fetch_torrent_trackers
 
     exact_patterns, starts_with_patterns = compile_patterns(config.get("unregistered", []))
     default_tag = config.get("default_unregistered_tag", "unregistered")
@@ -406,7 +407,8 @@ def _analyze_unregistered(
     all_hashes_by_path: dict[str, list[str]] = defaultdict(list)
     for torrent in torrents:
         all_hashes_by_path[torrent.save_path].append(torrent.hash)
-        if process_torrent(torrent, exact_patterns, starts_with_patterns):
+        trackers = fetch_torrent_trackers(client, torrent.hash, cache_scope=id(client))
+        if process_torrent(torrent, exact_patterns, starts_with_patterns, trackers):
             hashes_by_path[torrent.save_path].append(torrent.hash)
 
     for save_path, hashes in hashes_by_path.items():

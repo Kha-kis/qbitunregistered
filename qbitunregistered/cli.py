@@ -3,6 +3,7 @@ import argparse
 import os
 import sys
 import logging
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
@@ -330,6 +331,7 @@ def _run_unregistered_operation(
 
 def main(argv: list[str] | None = None) -> int:
     """Run qbitunregistered and return a process exit code."""
+    total_started_at = time.monotonic()
     clear_cache()
 
     # Parse command-line arguments
@@ -455,7 +457,9 @@ def main(argv: list[str] | None = None) -> int:
             from qbitunregistered.impact import analyze_impact
 
             logging.info("Analyzing potential impact of operations...")
+            impact_started_at = time.monotonic()
             impact_summary = analyze_impact(client, torrents, config, operations_to_run)
+            logging.info("Impact analysis completed in %.2f seconds.", time.monotonic() - impact_started_at)
 
             # Show preview
             print(impact_summary.format_summary(show_details=True))
@@ -494,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
     # ============================================================
     # RUN OPERATIONS
     # ============================================================
+    operations_started_at = time.monotonic()
     confirmed_unregistered_plan = impact_summary.unregistered_deletion_plan if impact_summary is not None else None
     confirmed_unregistered_plan, unregistered_planning_failed = _resolve_combined_unregistered_plan(
         client,
@@ -687,6 +692,8 @@ def main(argv: list[str] | None = None) -> int:
             operation_results,
         )
 
+    logging.info("Selected operation execution completed in %.2f seconds.", time.monotonic() - operations_started_at)
+
     # Log cache statistics
     log_cache_stats()
 
@@ -725,7 +732,7 @@ def main(argv: list[str] | None = None) -> int:
         logging.debug("Failed to logout from qBittorrent (non-critical)")
 
     # Log script end
-    logging.info("qbitunregistered script completed.")
+    logging.info("qbitunregistered script completed in %.2f seconds total.", time.monotonic() - total_started_at)
 
     # Exit with non-zero code if any operations failed (for cron/CI detection)
     if operation_results["failed"]:

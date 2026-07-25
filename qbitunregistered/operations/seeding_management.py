@@ -1,15 +1,17 @@
 import logging
-from typing import Any, cast
 from collections import defaultdict
+from collections.abc import Sequence
+from typing import Any, cast
+
 from qbitunregistered.tracker_matcher import match_tracker_url
 from qbitunregistered.cache import cached
 from qbitunregistered.types import QBittorrentClient
 
 
-@cached(ttl=300, key_prefix="tracker_config")
-def _fetch_trackers(client: QBittorrentClient, torrent_hash: str, *, cache_scope: int) -> list[dict[str, Any]]:
+@cached(ttl=None, key_prefix="torrent_trackers")
+def fetch_torrent_trackers(client: QBittorrentClient, torrent_hash: str, *, cache_scope: int | None) -> list[Any]:
     """
-    Fetch trackers for a torrent with caching.
+    Fetch tracker metadata once per client and torrent during one execution.
 
     Args:
         client: qBittorrent client instance
@@ -17,11 +19,18 @@ def _fetch_trackers(client: QBittorrentClient, torrent_hash: str, *, cache_scope
         cache_scope: Client-specific cache identity; pass ``id(client)``.
 
     Returns:
-        List of tracker dictionaries
+        Tracker metadata returned by qBittorrent.
     """
     if cache_scope is None:
         raise ValueError("cache_scope must be provided (use id(client))")
-    return cast(list[dict[str, Any]], client.torrents_trackers(torrent_hash=torrent_hash))
+    trackers = cast(object, client.torrents_trackers(torrent_hash=torrent_hash))
+    if trackers is None or not isinstance(trackers, Sequence) or isinstance(trackers, (str, bytes)):
+        raise RuntimeError(f"qBittorrent returned malformed tracker metadata for torrent {torrent_hash}")
+    return list(cast(Sequence[Any], trackers))
+
+
+# Kept as a private alias for callers that imported the previous helper.
+_fetch_trackers = fetch_torrent_trackers
 
 
 def find_tracker_config(
@@ -47,8 +56,7 @@ def find_tracker_config(
         Returns None on API errors unless ``raise_on_error`` is true.
     """
     try:
-        # Use cached tracker fetch
-        trackers = _fetch_trackers(client, torrent.hash, cache_scope=id(client))
+        trackers = fetch_torrent_trackers(client, torrent.hash, cache_scope=id(client))
     except Exception:
         if raise_on_error:
             raise
@@ -90,9 +98,9 @@ def apply_seed_limits(
     Performance: For 1,000 torrents with 5 unique limit configurations, this makes
     5 API calls instead of 1,000 (200x reduction).
 
-    Note: Tracker fetching uses per-torrent API calls with 5-minute caching.
+    Note: Tracker fetching uses per-torrent API calls with execution-scoped caching.
     qBittorrent API doesn't support batch tracker fetching, so we rely on
-    the @cached decorator to minimize redundant calls across script runs.
+    the shared cached fetch path to minimize repeated calls within one run.
 
     Args:
         client: qBittorrent client instance

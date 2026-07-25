@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-07-25
+
+### Added
+
+- Completion timing for impact analysis, selected operations, and the complete
+  CLI execution
+- Per-execution tracker and torrent-file cache statistics, including API fetch
+  attempts
+- Regression coverage for long-lived metadata reuse and torrents added,
+  removed, or re-added during orphan scans
+
+### Changed
+
+- Torrent tracker and file metadata now remain cached for one complete CLI
+  execution, even when a filesystem scan takes longer than the general
+  five-minute cache lifetime
+- Unregistered impact analysis, unregistered execution, tracker-based tagging,
+  and seeding management now share one canonical tracker metadata fetch
+- Orphan discovery now uses the shared torrent-file metadata fetch and
+  reconciles torrents added during the filesystem walk before returning its
+  plan
+
+### Fixed
+
+- Files claimed by a torrent added during a long orphan scan are no longer
+  reported or processed as orphaned
+- A torrent metadata failure is accepted as a concurrent removal only after a
+  validated fresh qBittorrent snapshot proves that its hash is absent. Active,
+  malformed, or uncertain ownership continues to fail closed.
+
 ## [2.1.0] - 2026-07-24
 
 ### Added
@@ -303,7 +333,8 @@ This release represents a comprehensive overhaul focused on performance, securit
 
 *Note: This is the first release with a formal changelog. Previous versions are not documented here.*
 
-[Unreleased]: https://github.com/Kha-kis/qbitunregistered/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/Kha-kis/qbitunregistered/compare/v2.1.1...HEAD
+[2.1.1]: https://github.com/Kha-kis/qbitunregistered/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/Kha-kis/qbitunregistered/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Kha-kis/qbitunregistered/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/Kha-kis/qbitunregistered/releases/tag/v1.0.0

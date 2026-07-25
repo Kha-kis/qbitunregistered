@@ -106,20 +106,19 @@ def verify_file_identity(identity: FileIdentity) -> os.stat_result:
     return current_stat
 
 
-@cached(ttl=300, key_prefix="torrent_files")
+@cached(ttl=None, key_prefix="torrent_files")
 def fetch_torrent_files(client: QBittorrentClient, torrent_hash: str, *, cache_scope: int) -> list[Any]:
     """
-    Fetch file list for a torrent with TTL-based caching.
+    Fetch file metadata once per client and torrent during one execution.
 
     Shared utility used by:
     - tag_cross_seeding.py (organizational tagging)
     - check_cross_seeding() (safety-critical file deletion checks)
     - get_torrent_file_paths() (file path retrieval before deletion)
 
-    Cache is scoped to single execution (TTL=300s) and is safe because:
-    1. All operations happen within same script run (typically < 60s)
-    2. Cache is invalidated between runs
-    3. Significantly reduces API load (4000+ calls → ~20 calls)
+    Cache entries are retained until the CLI starts its next execution. This
+    keeps impact preview and execution consistent even when filesystem scans
+    take longer than the general cache TTL.
 
     Args:
         client: qBittorrent client instance

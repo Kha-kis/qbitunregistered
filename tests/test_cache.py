@@ -1,6 +1,8 @@
 """Tests for caching functionality."""
 
 import time
+from unittest.mock import patch
+
 from qbitunregistered.cache import SimpleCache, cached, get_cache, clear_cache
 
 
@@ -64,19 +66,24 @@ class TestSimpleCache:
         assert cache.get("key_to_invalidate") is None
 
     def test_cache_clear(self):
-        """Test clearing all cache entries."""
+        """Clearing starts a new execution with empty entries and statistics."""
         cache = SimpleCache()
         cache.set("key1", "value1")
         cache.set("key2", "value2")
         cache.set("key3", "value3")
+        assert cache.get("key1") == "value1"
+        assert cache.get("missing") is None
 
         # Clear all
         cache.clear()
 
-        # All should be None
-        assert cache.get("key1") is None
-        assert cache.get("key2") is None
-        assert cache.get("key3") is None
+        assert cache.stats() == {"hits": 0, "misses": 0, "size": 0, "hit_rate": 0}
+        assert cache.namespace_stats("torrent_files") == {
+            "hits": 0,
+            "misses": 0,
+            "api_fetches": 0,
+            "hit_rate": 0,
+        }
 
     def test_cache_stats(self):
         """Test cache statistics tracking."""
@@ -159,6 +166,29 @@ class TestCachedDecorator:
         # Should execute function again after expiry
         expiring_function("client", "value")
         assert call_count == 2
+
+    def test_execution_scoped_value_does_not_expire_during_long_scan(self):
+        """Execution metadata remains reusable beyond the general five-minute TTL."""
+        call_count = 0
+
+        @cached(ttl=None, key_prefix="torrent_files")
+        def fetch_metadata(client, torrent_hash):
+            nonlocal call_count
+            call_count += 1
+            return [torrent_hash]
+
+        clear_cache()
+        with patch("qbitunregistered.cache.time.time", side_effect=[100.0, 100.0, 1_301.0]):
+            assert fetch_metadata("client", "hash") == ["hash"]
+            assert fetch_metadata("client", "hash") == ["hash"]
+
+        assert call_count == 1
+        assert get_cache().namespace_stats("torrent_files") == {
+            "hits": 1,
+            "misses": 1,
+            "api_fetches": 1,
+            "hit_rate": 50.0,
+        }
 
     def test_global_cache_operations(self):
         """Test global cache get and clear functions."""
