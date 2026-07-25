@@ -26,13 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unregistered impact analysis, unregistered execution, tracker-based tagging,
   and seeding management now share one canonical tracker metadata fetch
 - Orphan discovery now uses the shared torrent-file metadata fetch and
-  reconciles torrents added during the filesystem walk before returning its
-  plan
+  rebuilds ownership from a refreshed torrent snapshot and current file
+  mappings after the filesystem walk. The refreshed mappings replace earlier
+  execution-cache entries for later consumers.
 
 ### Fixed
 
 - Files claimed by a torrent added during a long orphan scan are no longer
   reported or processed as orphaned
+- Same-hash torrent re-adds, qBittorrent file renames, and save-path changes
+  during a scan no longer leave currently owned files in the orphan plan
 - A torrent metadata failure is accepted as a concurrent removal only after a
   validated fresh qBittorrent snapshot proves that its hash is absent. Active,
   malformed, or uncertain ownership continues to fail closed.

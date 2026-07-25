@@ -105,7 +105,7 @@ def _torrent_owned_paths(  # noqa: C901
     resolved_save_paths: dict[str, Path],
     *,
     context: str,
-    confirmed_gone_hashes: set[str] | None = None,
+    refresh_file_metadata: bool = False,
 ) -> set[Path]:
     """Return canonical owned paths or confirm that a failed torrent is gone."""
     torrent_hash = getattr(torrent, "hash", None)
@@ -116,7 +116,12 @@ def _torrent_owned_paths(  # noqa: C901
         raise SafetyCheckError(f"Torrent {torrent_hash} has no valid save path {context}")
 
     try:
-        raw_files = fetch_torrent_files(client, torrent_hash, cache_scope=id(client))
+        raw_files = fetch_torrent_files(
+            client,
+            torrent_hash,
+            cache_scope=id(client),
+            refresh=refresh_file_metadata,
+        )
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as error:
@@ -125,8 +130,6 @@ def _torrent_owned_paths(  # noqa: C901
             context=f"after file metadata failed for torrent {torrent_hash}",
         )
         if torrent_hash not in refreshed:
-            if confirmed_gone_hashes is not None:
-                confirmed_gone_hashes.add(torrent_hash)
             logging.info("Torrent %s disappeared during orphan scanning; ignoring its unavailable metadata.", torrent_hash)
             return set()
         raise SafetyCheckError(f"Could not read file metadata for active torrent {torrent_hash} {context}") from error
@@ -205,28 +208,10 @@ def check_files_on_disk(  # noqa: C901
 
     logging.info(f"Scanning {len(valid_save_paths)} save paths for orphaned files...")
 
-    # Track files used by torrents - use resolved paths for accurate comparison
-    # Cache resolved save paths to avoid redundant syscalls (1M+ syscalls → ~1K for 1K torrents)
+    # Validate the caller's start-of-scan snapshot, but defer file metadata
+    # reads until after the filesystem walk so rename and re-add mappings are
+    # current without fetching every torrent twice.
     initial_torrents = _index_torrent_snapshot(torrents, context="at orphan scan start")
-    resolved_save_paths: dict[str, Path] = {}
-    torrent_files: set[Path] = set()
-    confirmed_gone_hashes: set[str] = set()
-
-    for torrent in initial_torrents.values():
-        torrent_files.update(
-            _torrent_owned_paths(
-                client,
-                torrent,
-                resolved_save_paths,
-                context="while building the initial orphan ownership snapshot",
-                confirmed_gone_hashes=confirmed_gone_hashes,
-            )
-        )
-
-    logging.debug(
-        f"Tracking {len(torrent_files)} files from {len(initial_torrents)} torrents "
-        f"(using {len(resolved_save_paths)} unique save paths)"
-    )
 
     # Separate literal paths from patterns for efficient handling
     # Patterns (with wildcards) are compiled to regex, literals are resolved for exact matching
@@ -260,7 +245,7 @@ def check_files_on_disk(  # noqa: C901
         except re.error as e:
             logging.warning(f"Invalid directory pattern '{pattern}': {e}")
 
-    orphaned_files = []
+    candidate_files: list[tuple[Path, str]] = []
     files_checked = 0
     files_excluded_by_pattern = 0
     files_excluded_by_dir = 0
@@ -308,43 +293,48 @@ def check_files_on_disk(  # noqa: C901
                         files_excluded_by_pattern += 1
                         continue
 
-                # Use resolved path for comparison (already computed above)
-                if entry_resolved in torrent_files:
-                    continue  # Skip files that are tracked by torrents
-
-                orphaned_files.append(str(entry))
+                candidate_files.append((entry_resolved, str(entry)))
 
     logging.info(
         f"Scanned {files_checked} files, excluded {files_excluded_by_pattern} by pattern, "
         f"excluded {files_excluded_by_dir} by directory"
     )
 
-    # A long filesystem walk can overlap torrent additions. Reconcile only
-    # additions: retaining ownership from removed torrents is a safe false
-    # negative, while omitting a new owner could authorize destructive cleanup.
+    # A long filesystem walk can overlap additions, re-additions, file renames,
+    # and save-path changes. Refresh ownership only after the walk, replacing
+    # any metadata cached by an earlier operation in this execution.
     current_torrents = _refresh_torrent_snapshot(client, context="after the orphan filesystem scan")
-    initial_owner_hashes = initial_torrents.keys() - confirmed_gone_hashes
-    added_hashes = current_torrents.keys() - initial_owner_hashes
-    newly_owned_paths: set[Path] = set()
-    for torrent_hash in sorted(added_hashes):
-        newly_owned_paths.update(
+    resolved_save_paths: dict[str, Path] = {}
+    current_owned_paths: set[Path] = set()
+    for torrent_hash in sorted(current_torrents):
+        current_owned_paths.update(
             _torrent_owned_paths(
                 client,
                 current_torrents[torrent_hash],
                 resolved_save_paths,
-                context="while reconciling torrents added during the orphan scan",
+                context="while reconciling current ownership after the orphan scan",
+                refresh_file_metadata=True,
             )
         )
-    if newly_owned_paths:
-        before_reconciliation = len(orphaned_files)
-        orphaned_files = [path for path in orphaned_files if Path(path).resolve() not in newly_owned_paths]
-        removed_count = before_reconciliation - len(orphaned_files)
-        if removed_count:
-            logging.info(
-                "Removed %d orphan candidates now owned by %d torrents added during the scan.",
-                removed_count,
-                len(added_hashes),
-            )
+    logging.debug(
+        "Tracking %d files from %d current torrents after scanning from an initial snapshot of %d torrents "
+        "(using %d unique save paths)",
+        len(current_owned_paths),
+        len(current_torrents),
+        len(initial_torrents),
+        len(resolved_save_paths),
+    )
+
+    orphaned_files = [
+        display_path for resolved_path, display_path in candidate_files if resolved_path not in current_owned_paths
+    ]
+    removed_count = len(candidate_files) - len(orphaned_files)
+    if removed_count:
+        logging.info(
+            "Removed %d orphan candidates owned by the refreshed snapshot of %d torrents.",
+            removed_count,
+            len(current_torrents),
+        )
 
     return orphaned_files
 

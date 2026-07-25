@@ -742,6 +742,36 @@ class TestFetchTorrentFiles:
         assert mock_client1.torrents_files.call_count == 1
         assert mock_client2.torrents_files.call_count == 1
 
+    def test_refresh_replaces_the_normal_execution_cache_entry(self):
+        """Refreshed metadata is reused by later consumers."""
+        mock_client = MagicMock()
+        original_file = MagicMock(name="original_file")
+        original_file.name = "original.mkv"
+        renamed_file = MagicMock(name="renamed_file")
+        renamed_file.name = "renamed.mkv"
+        mock_client.torrents_files.side_effect = [[original_file], [renamed_file]]
+        get_cache().clear()
+
+        original = fetch_torrent_files(mock_client, "test_hash", cache_scope=id(mock_client))
+        refreshed = fetch_torrent_files(
+            mock_client,
+            "test_hash",
+            cache_scope=id(mock_client),
+            refresh=True,
+        )
+        reused = fetch_torrent_files(mock_client, "test_hash", cache_scope=id(mock_client))
+
+        assert original[0].name == "original.mkv"
+        assert refreshed[0].name == "renamed.mkv"
+        assert reused is refreshed
+        assert mock_client.torrents_files.call_count == 2
+        assert get_cache().namespace_stats("torrent_files") == {
+            "hits": 1,
+            "misses": 2,
+            "api_fetches": 2,
+            "hit_rate": 33.33,
+        }
+
     def test_get_torrent_file_paths_uses_cache(self):
         """Test that get_torrent_file_paths uses cached fetch_torrent_files."""
         mock_client = MagicMock()

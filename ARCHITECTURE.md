@@ -187,18 +187,19 @@ so CLI summaries, notifications, and scheduled exit codes remain truthful.
 **Scanning**:
 1. Get default save path and category save paths (cached)
 2. Remove redundant subdirectories (keep only top-level paths)
-3. Build set of all files referenced by torrents
-4. Scan disk directories
-5. Identify orphaned files using glob pattern exclusions
-6. Refresh the torrent snapshot and remove paths claimed by torrents added
-   during the filesystem walk
-7. Capture device, inode, type, size, and modification time for each target
-8. Delete or report from that same immutable plan
+3. Scan disk directories and collect eligible file candidates using the
+   configured exclusions
+4. Refresh the torrent snapshot and rebuild ownership from current file
+   mappings, replacing any earlier execution-cache entry for each torrent
+5. Remove currently owned paths from the candidate set
+6. Capture device, inode, type, size, and modification time for each target
+7. Delete or report from that same immutable plan
 
-Ownership from torrents removed during the scan is retained as a safe false
-negative until the next run. If a per-torrent metadata request fails, the
-torrent is considered gone only when a validated fresh snapshot proves its hash
-is absent. Active or uncertain ownership raises `SafetyCheckError`.
+This post-walk rebuild covers added or re-added hashes, local file renames, and
+save-path changes. Torrents absent from the refreshed snapshot no longer claim
+ownership. If a per-torrent metadata request fails, the torrent is considered
+gone only when a validated fresh snapshot proves its hash is absent. Active or
+uncertain ownership raises `SafetyCheckError`.
 
 The impact summary carries the configured orphan action with the plan.
 Permanent deletion contributes target bytes to estimated freed space; recycle
@@ -430,7 +431,8 @@ until the execution cache is cleared
 1. Tracker fetching: `fetch_torrent_trackers(client, torrent_hash)` → one API
    fetch per client/torrent/execution
 2. Torrent-file fetching: `fetch_torrent_files(client, torrent_hash)` → one API
-   fetch per client/torrent/execution
+   fetch per client/torrent/execution, except an explicit post-orphan-scan
+   refresh that replaces a possibly older entry
 3. Default save path: `_get_default_save_path(client)` → O(N) to O(1)
 4. Categories: `_get_categories(client)` → O(N) to O(1)
 

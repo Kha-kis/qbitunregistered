@@ -277,12 +277,13 @@ removed. Before file mutation, execution refreshes qBittorrent's ownership
 state without the preview cache and aborts if it changed.
 
 Long orphan scans reconcile qBittorrent again after walking the filesystem.
-Files claimed by torrents added during the scan are removed from the orphan
-plan. Files belonging to torrents removed during the scan remain protected
-until the next run, and incomplete or malformed ownership data aborts cleanup
-instead of authorizing deletion. Tracker and file metadata are reused for the
-entire command execution so a long scan does not repeat the same per-torrent API
-requests.
+Ownership is rebuilt from the refreshed torrent list and current file mappings,
+so files claimed by added or re-added torrents, renamed files, and changed save
+paths are removed from the orphan plan. Torrents no longer present after the
+walk do not claim files. Incomplete or malformed ownership data aborts cleanup
+instead of authorizing deletion, and real execution performs another uncached
+ownership check immediately before mutation. Refreshed metadata replaces the
+execution-cache entry so later operations reuse the current mapping.
 
 Orphan cleanup also revalidates every confirmed file identity before a real
 mutation. If any planned file cannot be deleted or recycled, the operation is

@@ -11,10 +11,11 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, cast
 
-from qbitunregistered.cache import cached
+from qbitunregistered.cache import get_cache
 from qbitunregistered.types import QBittorrentClient
 
 RECYCLE_STAGING_DIRECTORY_PREFIX = ".qbitunregistered-recycle-"
+_TORRENT_FILES_CACHE_MISS = object()
 
 
 class SafetyCheckError(RuntimeError):
@@ -106,8 +107,13 @@ def verify_file_identity(identity: FileIdentity) -> os.stat_result:
     return current_stat
 
 
-@cached(ttl=None, key_prefix="torrent_files")
-def fetch_torrent_files(client: QBittorrentClient, torrent_hash: str, *, cache_scope: int) -> list[Any]:
+def fetch_torrent_files(
+    client: QBittorrentClient,
+    torrent_hash: str,
+    *,
+    cache_scope: int,
+    refresh: bool = False,
+) -> list[Any]:
     """
     Fetch file metadata once per client and torrent during one execution.
 
@@ -124,8 +130,10 @@ def fetch_torrent_files(client: QBittorrentClient, torrent_hash: str, *, cache_s
         client: qBittorrent client instance
         torrent_hash: Hash of torrent to fetch files for
         cache_scope: REQUIRED - Unique identifier to scope cache per client.
-                     Always pass id(client) to prevent cache contamination
-                     across different client instances.
+            Always pass id(client) to prevent cache contamination across
+            different client instances.
+        refresh: Fetch current metadata even if this execution already cached
+            the torrent, replacing the normal cache entry with the result.
 
     Returns:
         List of file info dicts/objects from qBittorrent API
@@ -140,9 +148,23 @@ def fetch_torrent_files(client: QBittorrentClient, torrent_hash: str, *, cache_s
         Reduces redundant API calls within a single execution. For a typical
         run with 1000 torrents, this reduces API calls by 95%+.
     """
-    # Runtime assertion to prevent cache contamination
     assert cache_scope is not None, "cache_scope must be provided (use id(client))"
-    return cast(list[Any], client.torrents_files(torrent_hash))
+    cache = get_cache()
+    cache_key = f"torrent_files:{cache_scope}:{torrent_hash}"
+    if refresh:
+        cache.invalidate(cache_key)
+
+    cached_files = cache.get(
+        cache_key,
+        default=_TORRENT_FILES_CACHE_MISS,
+        namespace="torrent_files",
+    )
+    if cached_files is not _TORRENT_FILES_CACHE_MISS:
+        return cast(list[Any], cached_files)
+
+    files = cast(list[Any], client.torrents_files(torrent_hash))
+    cache.set_for_execution(cache_key, files)
+    return files
 
 
 def move_files_to_recycle_bin(
