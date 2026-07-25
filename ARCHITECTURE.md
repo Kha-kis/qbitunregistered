@@ -185,7 +185,8 @@ so CLI summaries, notifications, and scheduled exit codes remain truthful.
 - Filter save paths to only needed directories
 
 **Scanning**:
-1. Get default save path and category save paths (cached)
+1. Get default save path and category save paths (cached), then add validated
+   operator-supplied `orphan_scan_roots`
 2. Remove redundant subdirectories (keep only top-level paths)
 3. Scan disk directories and collect eligible file candidates using the
    configured exclusions
@@ -201,21 +202,31 @@ ownership. If a per-torrent metadata request fails, the torrent is considered
 gone only when a validated fresh snapshot proves its hash is absent. Active or
 uncertain ownership raises `SafetyCheckError`.
 
+Traversal authority and ownership are deliberately separate. Only the default,
+category, and explicit roots are walked. A per-torrent save path outside those
+roots does not expand traversal, but its exact current file paths still
+participate in ownership reconciliation. Ownership compares canonical
+pathnames, not inode identity, so an unregistered hardlink alias inside a
+managed root remains an orphan candidate.
+
 The impact summary carries the configured orphan action with the plan.
 Permanent deletion contributes target bytes to estimated freed space; recycle
 mode reports the same bytes as data to move and uses matching confirmation,
 dry-run, execution-summary, and notification wording.
 
 Before a real orphan cleanup, every planned identity is preflighted without
-mutation. Recycle execution is all-or-nothing and rolls prior moves back if a
-later path fails. A permanent unlink failure cannot restore already deleted
-files, so it aborts remaining cleanup with explicit completed/planned counts.
-Neither path emits a success summary when a planned file action is incomplete;
-the exception flows through CLI results, notifications, and exit status.
+mutation. The current default and category roots are refreshed separately from
+per-torrent ownership, and every planned path must remain beneath one of those
+roots or an unchanged explicit root. Recycle execution is all-or-nothing and
+rolls prior moves back if a later path fails. A permanent unlink failure cannot
+restore already deleted files, so it aborts remaining cleanup with explicit
+completed/planned counts. Neither path emits a success summary when a planned
+file action is incomplete; the exception flows through CLI results,
+notifications, and exit status.
 
 Empty-directory pruning simulates already queued child-directory removals while
 walking upward, which removes nested empty parents but stops at canonical active
-save roots in both dry-run and mutating modes.
+save roots and explicit orphan scan roots in both dry-run and mutating modes.
 
 **Exclude Patterns**:
 - File patterns: glob syntax (e.g., `*.tmp`, `*.part`, `*.!qB`)
@@ -349,6 +360,7 @@ inspection is uncertain or multiple sources map to one destination.
 
   "exclude_files": ["*.tmp", "*.part"],    // Orphaned check exclusions
   "exclude_dirs": ["/path/exclude/*"],     // Directory exclusions
+  "orphan_scan_roots": ["/path/extra"],    // Additional absolute managed roots
 
   "unregistered": [                        // Patterns for unregistered detection
     "This torrent does not exist",
@@ -382,6 +394,7 @@ inspection is uncertain or multiple sources map to one destination.
   - Target directory
   - Log level and log file
   - Exclude patterns
+  - Additional orphan scan roots
   - All operation flags
 
 ### Configuration Precedence

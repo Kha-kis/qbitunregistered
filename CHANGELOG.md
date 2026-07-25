@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional validated `orphan_scan_roots` configuration and
+  `--orphan-scan-roots` override for adding nonstandard managed trees to orphan
+  traversal without changing the default qBittorrent save-path behavior
+
+### Changed
+
+- Orphan traversal authority is now documented and enforced as qBittorrent's
+  default and category roots plus explicit additional roots. Individual torrent
+  save paths outside those roots protect exact registered files without
+  broadening the filesystem scan. Real execution refreshes the discovered roots
+  and rejects the complete plan before mutation if any target is no longer
+  authorized.
+
 ## [2.1.1] - 2026-07-25
 
 ### Added

@@ -43,6 +43,7 @@ def validate_config(config: dict[str, Any]) -> None:
     _validate_required_fields(config, errors)
     _validate_host(config, errors)
     _validate_basic_types(config, errors)
+    _validate_orphan_scan_roots(config, errors)
     _validate_tracker_tags(config, errors)
     _validate_target_dir(config)
     _validate_scheduled_times(config, errors)
@@ -186,6 +187,7 @@ def _validate_basic_types(config: dict[str, Any], errors: list[str]) -> None:
         "delete_tags",
         "exclude_files",
         "exclude_dirs",
+        "orphan_scan_roots",
         "unregistered",
         "scheduled_times",
         "scheduled_operations",
@@ -204,6 +206,21 @@ def _validate_basic_types(config: dict[str, Any], errors: list[str]) -> None:
                     errors.append("'delete_files' keys must be non-empty strings")
                 if not isinstance(delete_value, bool):
                     errors.append(f"'delete_files[{tag}]' must be a boolean, got: {type(delete_value).__name__}")
+
+
+def _validate_orphan_scan_roots(config: dict[str, Any], errors: list[str]) -> None:
+    """Validate optional orphan traversal roots without requiring existence."""
+    orphan_scan_roots = config.get("orphan_scan_roots")
+    if orphan_scan_roots is None or not isinstance(orphan_scan_roots, list):
+        return
+
+    for index, root in enumerate(orphan_scan_roots):
+        if not isinstance(root, str):
+            errors.append(f"'orphan_scan_roots[{index}]' must be a string, got: {type(root).__name__}")
+        elif not root.strip():
+            errors.append(f"'orphan_scan_roots[{index}]' must be a nonblank absolute path")
+        elif not Path(root).is_absolute():
+            errors.append(f"'orphan_scan_roots[{index}]' must be an absolute path: '{root}'")
 
 
 def _validate_tracker_tags(config: dict[str, Any], errors: list[str]) -> None:

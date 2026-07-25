@@ -172,6 +172,29 @@ def test_main_requires_target_for_hard_links(tmp_path) -> None:
     assert error.value.code == EXIT_CONFIG_ERROR
 
 
+def test_relative_cli_orphan_scan_root_aborts_before_connection(tmp_path) -> None:
+    """A malformed CLI traversal root fails configuration closed."""
+    config_path = _write_config(tmp_path)
+
+    with (
+        patch("qbitunregistered.cli.create_client") as create_client,
+        pytest.raises(SystemExit) as error,
+    ):
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--orphaned",
+                "--orphan-scan-roots",
+                "relative/path",
+                "--yes",
+            ]
+        )
+
+    assert error.value.code == EXIT_CONFIG_ERROR
+    create_client.assert_not_called()
+
+
 def test_cli_target_override_satisfies_scheduled_hard_link_validation(tmp_path) -> None:
     config_path = _write_config(
         tmp_path,
@@ -814,6 +837,73 @@ def test_yes_mode_reports_incomplete_orphan_cleanup_as_failure(tmp_path) -> None
     )
     assert orphan.read_text(encoding="utf-8") == "orphan"
     client.auth_log_out.assert_called_once_with()
+
+
+def test_cli_orphan_scan_roots_override_configured_explicit_roots(tmp_path) -> None:
+    """CLI roots replace configured explicit roots before scan and execution."""
+    default_root = tmp_path / "default"
+    configured_root = tmp_path / "configured"
+    cli_root = tmp_path / "cli"
+    default_root.mkdir()
+    configured_root.mkdir()
+    cli_root.mkdir()
+    config_path = _write_config(tmp_path, orphan_scan_roots=[str(configured_root)])
+    client = _empty_client(default_root)
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.check_files_on_disk", return_value=[]) as scan,
+        patch("qbitunregistered.cli.delete_orphaned_files") as delete,
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--orphaned",
+                "--orphan-scan-roots",
+                str(cli_root),
+                "--dry-run",
+                "--yes",
+            ]
+        )
+
+    assert result == EXIT_SUCCESS
+    assert scan.call_args.kwargs["orphan_scan_roots"] == [str(cli_root)]
+    assert delete.call_args.kwargs["orphan_scan_roots"] == [str(cli_root)]
+
+
+def test_preview_and_execution_share_explicit_orphan_scan_roots(tmp_path) -> None:
+    """Confirmed targets and pruning use the same additive explicit roots."""
+    from qbitunregistered.operations.orphaned import check_files_on_disk, delete_orphaned_files
+
+    default_root = tmp_path / "default"
+    explicit_root = tmp_path / "explicit"
+    default_root.mkdir()
+    explicit_root.mkdir()
+    orphan = explicit_root / "orphan.mkv"
+    orphan.write_text("orphan", encoding="utf-8")
+    config_path = _write_config(tmp_path, orphan_scan_roots=[str(explicit_root)])
+    client = _empty_client(default_root)
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("builtins.input", return_value="y"),
+        patch(
+            "qbitunregistered.operations.orphaned.check_files_on_disk",
+            wraps=check_files_on_disk,
+        ) as scan,
+        patch("qbitunregistered.cli.delete_orphaned_files", wraps=delete_orphaned_files) as delete,
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(["--config", str(config_path), "--orphaned"])
+
+    assert result == EXIT_SUCCESS
+    assert scan.call_count == 1
+    assert scan.call_args.kwargs["orphan_scan_roots"] == [str(explicit_root)]
+    assert delete.call_args.kwargs["orphan_scan_roots"] == [str(explicit_root)]
+    assert not orphan.exists()
+    assert explicit_root.is_dir()
 
 
 def test_combined_preview_targets_are_reused_for_execution(tmp_path, capsys) -> None:

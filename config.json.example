@@ -47,6 +47,9 @@
     "/path/to/exclude/*",
     "/data/torrents/temp/"
   ],
+
+  "//": "Optional additional absolute roots for orphan scanning. qBittorrent's default and category save paths are always scanned; use this only for nonstandard extra trees.",
+  "orphan_scan_roots": [],
   
   "//": "A list of messages or patterns to match for unregistered torrents. Each entry in this list can be a full message (e.g., 'This torrent does not exist') or a pattern to match messages that start with specific text (e.g., 'starts_with:Trump').",
   "unregistered": [
