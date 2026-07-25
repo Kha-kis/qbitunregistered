@@ -175,6 +175,61 @@ class TestProcessTorrent:
         count = process_torrent(torrent, exact, starts_with)
         assert count == 0
 
+    def test_mapping_tracker_metadata(self):
+        """Canonical API dictionaries use the same matching semantics."""
+        torrent = MockTorrent([])
+        trackers = [{"msg": "Unregistered torrent", "status": 4}]
+
+        assert process_torrent(torrent, {"unregistered torrent"}, set(), trackers) == 1
+
+
+def test_tracker_metadata_is_reused_across_preview_execution_and_seeding() -> None:
+    """All tracker consumers share one execution-scoped API fetch."""
+    from qbitunregistered.cache import clear_cache
+    from qbitunregistered.impact import ImpactSummary, _analyze_unregistered
+    from qbitunregistered.operations.seeding_management import find_tracker_config
+    from qbitunregistered.operations.unregistered_checks import unregistered_checks
+
+    clear_cache()
+    client = MagicMock()
+    client.torrents_trackers.return_value = [
+        {
+            "url": "https://tracker.example/announce",
+            "msg": "Unregistered torrent",
+            "status": 4,
+        }
+    ]
+    torrent = MagicMock(
+        hash="hash",
+        name="torrent",
+        save_path="/downloads",
+        category="",
+        tags="",
+        trackers=[],
+    )
+    config = {
+        "default_unregistered_tag": "unregistered",
+        "cross_seeding_tag": "unregistered:crossseeding",
+        "unregistered": ["unregistered torrent"],
+        "use_delete_files": False,
+        "tracker_tags": {"tracker.example": {"seed_time_limit": 60}},
+    }
+
+    _analyze_unregistered(client, [torrent], config, ImpactSummary())
+    unregistered_checks(
+        client,
+        [torrent],
+        config,
+        use_delete_tags=False,
+        delete_tags=[],
+        delete_files={},
+        dry_run=True,
+    )
+    assert find_tracker_config(client, torrent, config) == {"seed_time_limit": 60}
+
+    client.torrents_trackers.assert_called_once_with(torrent_hash="hash")
+    client.torrents_add_tags.assert_not_called()
+
 
 class TestPatternPerformance:
     """Test that pattern compilation improves performance."""

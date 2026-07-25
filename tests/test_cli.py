@@ -42,6 +42,14 @@ def _empty_client(tmp_path):
     client.torrents.info.return_value = []
     client.application.default_save_path = str(tmp_path)
     client.torrent_categories.categories = {}
+
+    def tracker_metadata(torrent_hash=None, **_kwargs):
+        for torrent in client.torrents.info.return_value:
+            if getattr(torrent, "hash", None) == torrent_hash:
+                return getattr(torrent, "trackers", [])
+        return []
+
+    client.torrents_trackers.side_effect = tracker_metadata
     return client
 
 
@@ -71,7 +79,7 @@ def _destructive_unregistered_config(tmp_path, **overrides):
     )
 
 
-def test_main_runs_with_minimal_config(tmp_path) -> None:
+def test_main_runs_with_minimal_config(tmp_path, capsys) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
@@ -96,6 +104,10 @@ def test_main_runs_with_minimal_config(tmp_path) -> None:
     assert result == EXIT_SUCCESS
     client.auth_log_out.assert_called_once_with()
     notifications.return_value.send_summary.assert_called_once_with({"succeeded": [], "failed": []})
+    logs = capsys.readouterr().err
+    assert "Selected operation execution completed in " in logs
+    assert "Metadata cache stats - trackers: 0 hits, 0 API fetches; files: 0 hits, 0 API fetches" in logs
+    assert "qbitunregistered script completed in " in logs
 
 
 def test_main_clears_stale_cache_from_previous_execution(tmp_path, capsys) -> None:
@@ -966,6 +978,7 @@ def test_orphan_execution_does_not_add_files_newly_orphaned_during_confirmation(
     tracked_file.name = newly_orphaned.name
     initial_owner = Mock(hash="initial-owner", save_path=str(downloads), files=[tracked_file])
     client.torrents.info.return_value = [initial_owner]
+    client.torrents_files.return_value = [tracked_file]
 
     def remove_owner_during_confirmation(_prompt):
         client.torrents.info.return_value = []

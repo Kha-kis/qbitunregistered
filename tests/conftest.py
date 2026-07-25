@@ -3,6 +3,16 @@
 import pytest
 import json
 
+from qbitunregistered.cache import clear_cache
+
+
+@pytest.fixture(autouse=True)
+def isolate_execution_cache():
+    """Prevent execution-scoped API metadata from leaking between tests."""
+    clear_cache()
+    yield
+    clear_cache()
+
 
 @pytest.fixture
 def valid_config():

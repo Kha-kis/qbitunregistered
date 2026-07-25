@@ -17,6 +17,7 @@ from qbitunregistered.file_operations import (
     rollback_recycle_bin_moves,
     verify_file_identity,
 )
+from qbitunregistered.operations.seeding_management import fetch_torrent_trackers
 from qbitunregistered.types import QBittorrentClient, TorrentInfo
 
 
@@ -355,7 +356,10 @@ def check_unregistered_message(tracker: Any, exact_matches: set[str], starts_wit
     Returns:
         True if message matches any pattern
     """
-    lower_msg = tracker.msg.lower()
+    message = tracker.get("msg") if isinstance(tracker, Mapping) else getattr(tracker, "msg", None)
+    if not isinstance(message, str):
+        return False
+    lower_msg = message.lower()
 
     # Check exact matches first (O(1) lookup)
     if lower_msg in exact_matches:
@@ -369,7 +373,12 @@ def check_unregistered_message(tracker: Any, exact_matches: set[str], starts_wit
     return False
 
 
-def process_torrent(torrent: Any, exact_matches: set[str], starts_with_patterns: set[str]) -> int:
+def process_torrent(
+    torrent: Any,
+    exact_matches: set[str],
+    starts_with_patterns: set[str],
+    trackers: Sequence[Any] | None = None,
+) -> int:
     """
     Count unregistered trackers for a torrent.
 
@@ -377,15 +386,19 @@ def process_torrent(torrent: Any, exact_matches: set[str], starts_with_patterns:
         torrent: Torrent object
         exact_matches: Pre-compiled exact match patterns
         starts_with_patterns: Pre-compiled starts_with patterns
+        trackers: Optional tracker metadata from the canonical API fetch. When
+            omitted, the torrent object's embedded tracker list is used for
+            backward compatibility.
 
     Returns:
         Count of unregistered trackers
     """
-    unregistered_count = sum(
-        1
-        for tracker in torrent.trackers
-        if check_unregistered_message(tracker, exact_matches, starts_with_patterns) and tracker.status in (4, 5)
-    )
+    resolved_trackers = torrent.trackers if trackers is None else trackers
+    unregistered_count = 0
+    for tracker in resolved_trackers:
+        status = tracker.get("status") if isinstance(tracker, Mapping) else getattr(tracker, "status", None)
+        if status in (4, 5) and check_unregistered_message(tracker, exact_matches, starts_with_patterns):
+            unregistered_count += 1
     return unregistered_count
 
 
@@ -639,8 +652,10 @@ def unregistered_checks(  # noqa: C901
     for torrent in tqdm(torrents, desc="Checking for unregistered torrents", unit="torrent"):
         update_torrent_file_paths(torrent_file_paths, torrent)
 
-        # Use pre-compiled patterns for faster matching
-        unregistered_count = process_torrent(torrent, exact_matches, starts_with_patterns)
+        # Use the same execution-scoped tracker metadata as impact analysis and
+        # seeding management.
+        trackers = fetch_torrent_trackers(client, torrent.hash, cache_scope=id(client))
+        unregistered_count = process_torrent(torrent, exact_matches, starts_with_patterns, trackers)
 
         unregistered_counts_per_path[torrent.save_path] = (
             unregistered_counts_per_path.get(torrent.save_path, 0) + unregistered_count

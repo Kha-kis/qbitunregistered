@@ -8,6 +8,7 @@ from qbitunregistered.file_operations import (
     RECYCLE_STAGING_DIRECTORY_PREFIX,
     SafetyCheckError,
     capture_file_identity,
+    fetch_torrent_files,
 )
 from qbitunregistered.operations.orphaned import (
     OrphanFilePlan,
@@ -124,6 +125,189 @@ class TestSetOperations:
 
         # Fast lookup using set
         assert excluded_parent in exclude_dirs
+
+
+class TestOrphanScanReconciliation:
+    """Regression tests for long-running scan ownership changes."""
+
+    @pytest.fixture(autouse=True)
+    def reset_metadata_cache(self):
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
+        yield
+        clear_cache()
+
+    @staticmethod
+    def _client(save_root: Path) -> MagicMock:
+        client = MagicMock()
+        client.application.default_save_path = str(save_root)
+        client.torrent_categories.categories = {}
+        return client
+
+    def test_scan_refreshes_canonical_file_metadata_instead_of_using_embedded_metadata(self, tmp_path):
+        """Each scan refreshes the shared metadata and ignores embedded files."""
+        tracked = tmp_path / "tracked.mkv"
+        tracked.write_text("tracked", encoding="utf-8")
+        client = self._client(tmp_path)
+        torrent = MagicMock(hash="existing", save_path=str(tmp_path), files=[])
+        client.torrents.info.return_value = [torrent]
+        client.torrents_files.return_value = [{"name": tracked.name}]
+
+        assert check_files_on_disk(client, [torrent]) == []
+        assert check_files_on_disk(client, [torrent]) == []
+
+        assert client.torrents_files.call_count == 2
+        client.torrents_files.assert_called_with("existing")
+
+    def test_torrent_added_during_scan_removes_its_files_from_candidates(self, tmp_path):
+        """A newly added owner is reconciled before an orphan plan is returned."""
+        claimed = tmp_path / "claimed.mkv"
+        unclaimed = tmp_path / "unclaimed.mkv"
+        claimed.write_text("claimed", encoding="utf-8")
+        unclaimed.write_text("unclaimed", encoding="utf-8")
+        client = self._client(tmp_path)
+        new_owner = MagicMock(hash="new-owner", save_path=str(tmp_path))
+        client.torrents.info.return_value = [new_owner]
+        client.torrents_files.return_value = [{"name": claimed.name}]
+
+        assert check_files_on_disk(client, []) == [str(unclaimed)]
+        client.torrents_files.assert_called_once_with("new-owner")
+
+    def test_removed_torrent_becomes_a_candidate_without_stale_metadata_fetch(self, tmp_path):
+        """A torrent absent after the walk no longer contributes ownership."""
+        formerly_owned = tmp_path / "formerly-owned.mkv"
+        formerly_owned.write_text("data", encoding="utf-8")
+        client = self._client(tmp_path)
+        removed_owner = MagicMock(hash="removed", save_path=str(tmp_path))
+        client.torrents.info.return_value = []
+        client.torrents_files.return_value = [{"name": formerly_owned.name}]
+
+        assert check_files_on_disk(client, [removed_owner]) == [str(formerly_owned)]
+        client.torrents_files.assert_not_called()
+
+    def test_metadata_failure_is_ignored_only_after_confirmed_removal(self, tmp_path):
+        """A per-torrent API failure is safe only when a refresh proves removal."""
+        formerly_owned = tmp_path / "formerly-owned.mkv"
+        formerly_owned.write_text("data", encoding="utf-8")
+        client = self._client(tmp_path)
+        initial_owner = MagicMock(hash="removed", save_path=str(tmp_path))
+        current_owner = MagicMock(hash="removed", save_path=str(tmp_path))
+        client.torrents.info.side_effect = [[current_owner], []]
+        client.torrents_files.side_effect = RuntimeError("torrent disappeared")
+
+        assert check_files_on_disk(client, [initial_owner]) == [str(formerly_owned)]
+        assert client.torrents.info.call_count == 2
+
+    def test_current_file_rename_is_reconciled_after_the_walk(self, tmp_path):
+        """Post-walk metadata replaces stale cached rename information."""
+        original = tmp_path / "original.mkv"
+        renamed = tmp_path / "renamed.mkv"
+        renamed.write_text("data", encoding="utf-8")
+        client = self._client(tmp_path)
+        torrent = MagicMock(hash="same-hash", save_path=str(tmp_path))
+        client.torrents.info.return_value = [torrent]
+        client.torrents_files.return_value = [{"name": original.name}]
+        assert fetch_torrent_files(client, torrent.hash, cache_scope=id(client)) == [{"name": original.name}]
+        real_rglob = Path.rglob
+
+        def rename_during_walk(path, pattern):
+            client.torrents_files.return_value = [{"name": renamed.name}]
+            return real_rglob(path, pattern)
+
+        with patch.object(Path, "rglob", autospec=True, side_effect=rename_during_walk):
+            assert check_files_on_disk(client, [torrent]) == []
+
+        assert fetch_torrent_files(client, torrent.hash, cache_scope=id(client)) == [{"name": renamed.name}]
+        assert client.torrents_files.call_count == 2
+        client.torrents_files.assert_called_with("same-hash")
+
+    def test_same_hash_save_path_change_recomputes_current_ownership(self, tmp_path):
+        """Refreshed save paths relocate cached info-hash file metadata safely."""
+        old_root = tmp_path / "old"
+        new_root = tmp_path / "new"
+        old_root.mkdir()
+        new_root.mkdir()
+        claimed = new_root / "claimed.mkv"
+        claimed.write_text("claimed", encoding="utf-8")
+        client = self._client(tmp_path)
+        torrent = MagicMock(hash="same-hash", save_path=str(old_root))
+        client.torrents.info.return_value = [torrent]
+        client.torrents_files.return_value = [{"name": claimed.name}]
+        real_rglob = Path.rglob
+
+        def change_save_path_during_walk(path, pattern):
+            torrent.save_path = str(new_root)
+            return real_rglob(path, pattern)
+
+        with patch.object(Path, "rglob", autospec=True, side_effect=change_save_path_during_walk):
+            assert check_files_on_disk(client, [torrent]) == []
+
+        client.torrents_files.assert_called_once_with("same-hash")
+
+    def test_torrent_readded_with_same_hash_uses_current_mapping_in_dry_run(self, tmp_path):
+        """A re-added hash protects its current path with one post-walk fetch."""
+        old_root = tmp_path / "old"
+        new_root = tmp_path / "new"
+        old_root.mkdir()
+        new_root.mkdir()
+        claimed = new_root / "claimed.mkv"
+        true_orphan = tmp_path / "orphan.mkv"
+        claimed.write_text("claimed", encoding="utf-8")
+        true_orphan.write_text("orphan", encoding="utf-8")
+        client = self._client(tmp_path)
+        initial_owner = MagicMock(
+            hash="same-hash",
+            save_path=str(old_root),
+            files=[MagicMock(name="previous-local-rename.mkv")],
+        )
+        readded_owner = MagicMock(hash="same-hash", save_path=str(new_root))
+        client.torrents.info.return_value = [readded_owner]
+        client.torrents_files.return_value = [{"name": claimed.name}]
+
+        orphaned_files = check_files_on_disk(client, [initial_owner])
+        plan = build_orphan_file_plan(orphaned_files)
+        delete_orphaned_files(
+            orphaned_files,
+            dry_run=True,
+            client=client,
+            torrents=[readded_owner],
+            plan=plan,
+        )
+
+        assert plan.paths == (true_orphan.resolve(),)
+        assert claimed.read_text(encoding="utf-8") == "claimed"
+        assert true_orphan.read_text(encoding="utf-8") == "orphan"
+        client.torrents_files.assert_called_once_with("same-hash")
+        client.torrents_delete.assert_not_called()
+
+    def test_active_torrent_metadata_failure_aborts_scan(self, tmp_path):
+        """Generic metadata failures cannot make an active file deletable."""
+        candidate = tmp_path / "candidate.mkv"
+        candidate.write_text("data", encoding="utf-8")
+        client = self._client(tmp_path)
+        active_owner = MagicMock(hash="active", save_path=str(tmp_path))
+        client.torrents.info.return_value = [active_owner]
+        client.torrents_files.side_effect = RuntimeError("temporary API failure")
+
+        with pytest.raises(SafetyCheckError, match="active torrent active"):
+            check_files_on_disk(client, [active_owner])
+
+        assert candidate.read_text(encoding="utf-8") == "data"
+
+    def test_new_owner_metadata_failure_aborts_reconciliation(self, tmp_path):
+        """An uninspectable concurrent addition blocks every orphan target."""
+        candidate = tmp_path / "candidate.mkv"
+        candidate.write_text("data", encoding="utf-8")
+        client = self._client(tmp_path)
+        new_owner = MagicMock(hash="new-owner", save_path=str(tmp_path))
+        client.torrents.info.side_effect = [[new_owner], [new_owner]]
+        client.torrents_files.side_effect = RuntimeError("temporary API failure")
+
+        with pytest.raises(SafetyCheckError, match="active torrent new-owner"):
+            check_files_on_disk(client, [])
+
+        assert candidate.read_text(encoding="utf-8") == "data"
 
 
 class TestEdgeCases:

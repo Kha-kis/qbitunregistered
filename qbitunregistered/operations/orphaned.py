@@ -11,6 +11,7 @@ from qbitunregistered.file_operations import (
     FileIdentity,
     SafetyCheckError,
     capture_file_identity,
+    fetch_torrent_files,
     is_internal_recycle_staging_path,
     move_files_to_recycle_bin,
     verify_file_identity,
@@ -71,6 +72,94 @@ def _get_categories(client, *, cache_scope: int) -> dict[str, Any]:
     return cast(dict[str, Any], client.torrent_categories.categories)
 
 
+def _index_torrent_snapshot(torrents: object, *, context: str) -> dict[str, Any]:
+    """Validate and index one qBittorrent torrent snapshot by hash."""
+    if torrents is None:
+        raise SafetyCheckError(f"qBittorrent returned no torrent list {context}")
+    if not isinstance(torrents, Sequence) or isinstance(torrents, (str, bytes)):
+        raise SafetyCheckError(f"qBittorrent returned a malformed torrent list {context}")
+
+    indexed: dict[str, Any] = {}
+    for torrent in torrents:
+        torrent_hash = getattr(torrent, "hash", None)
+        if not isinstance(torrent_hash, str) or not torrent_hash or torrent_hash in indexed:
+            raise SafetyCheckError(f"qBittorrent returned a missing or duplicate torrent hash {context}")
+        indexed[torrent_hash] = torrent
+    return indexed
+
+
+def _refresh_torrent_snapshot(client: QBittorrentClient, *, context: str) -> dict[str, Any]:
+    """Return one validated current torrent snapshot, failing closed."""
+    try:
+        torrents = client.torrents.info()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as error:
+        raise SafetyCheckError(f"Could not refresh qBittorrent state {context}") from error
+    return _index_torrent_snapshot(torrents, context=context)
+
+
+def _torrent_owned_paths(  # noqa: C901
+    client: QBittorrentClient,
+    torrent: Any,
+    resolved_save_paths: dict[str, Path],
+    *,
+    context: str,
+    refresh_file_metadata: bool = False,
+) -> set[Path]:
+    """Return canonical owned paths or confirm that a failed torrent is gone."""
+    torrent_hash = getattr(torrent, "hash", None)
+    save_path_value = getattr(torrent, "save_path", None)
+    if not isinstance(torrent_hash, str) or not torrent_hash:
+        raise SafetyCheckError(f"qBittorrent returned a torrent without a valid hash {context}")
+    if not isinstance(save_path_value, str) or not save_path_value:
+        raise SafetyCheckError(f"Torrent {torrent_hash} has no valid save path {context}")
+
+    try:
+        raw_files = fetch_torrent_files(
+            client,
+            torrent_hash,
+            cache_scope=id(client),
+            refresh=refresh_file_metadata,
+        )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as error:
+        refreshed = _refresh_torrent_snapshot(
+            client,
+            context=f"after file metadata failed for torrent {torrent_hash}",
+        )
+        if torrent_hash not in refreshed:
+            logging.info("Torrent %s disappeared during orphan scanning; ignoring its unavailable metadata.", torrent_hash)
+            return set()
+        raise SafetyCheckError(f"Could not read file metadata for active torrent {torrent_hash} {context}") from error
+
+    if raw_files is None:
+        raise SafetyCheckError(f"Torrent {torrent_hash} returned no file metadata {context}")
+    if not isinstance(raw_files, Sequence) or isinstance(raw_files, (str, bytes)):
+        raise SafetyCheckError(f"Torrent {torrent_hash} returned malformed file metadata {context}")
+
+    if save_path_value not in resolved_save_paths:
+        resolved_save_paths[save_path_value] = _resolve_active_save_root(
+            save_path_value,
+            description=f"Torrent {torrent_hash} save path",
+        )
+    save_path = resolved_save_paths[save_path_value]
+    owned_paths: set[Path] = set()
+    for file_info in raw_files:
+        name = file_info.get("name") if isinstance(file_info, Mapping) else getattr(file_info, "name", None)
+        if not isinstance(name, str) or not name:
+            raise SafetyCheckError(f"Torrent {torrent_hash} returned malformed file metadata {context}")
+        try:
+            owned_path = (save_path / name).resolve()
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path {context}") from error
+        if not owned_path.is_relative_to(save_path):
+            raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path {context}")
+        owned_paths.add(owned_path)
+    return owned_paths
+
+
 def check_files_on_disk(  # noqa: C901
     client,
     torrents: list[Any],
@@ -82,6 +171,9 @@ def check_files_on_disk(  # noqa: C901
 
     Returns:
         List of orphaned file paths as strings
+
+    Raises:
+        SafetyCheckError: If complete torrent ownership cannot be established.
     """
     # Avoid mutable default arguments - create fresh lists if None
     exclude_file_patterns = exclude_file_patterns or []
@@ -116,23 +208,10 @@ def check_files_on_disk(  # noqa: C901
 
     logging.info(f"Scanning {len(valid_save_paths)} save paths for orphaned files...")
 
-    # Track files used by torrents - use resolved paths for accurate comparison
-    # Cache resolved save paths to avoid redundant syscalls (1M+ syscalls → ~1K for 1K torrents)
-    resolved_save_paths = {}
-    torrent_files: set[Path] = set()
-
-    for torrent in torrents:
-        # Cache resolve() result per unique save_path
-        if torrent.save_path not in resolved_save_paths:
-            resolved_save_paths[torrent.save_path] = Path(torrent.save_path).resolve()
-
-        base_path = resolved_save_paths[torrent.save_path]
-        # Add all files for this torrent
-        torrent_files.update((base_path / file.name).resolve() for file in torrent.files)
-
-    logging.debug(
-        f"Tracking {len(torrent_files)} files from {len(torrents)} torrents (using {len(resolved_save_paths)} unique save paths)"
-    )
+    # Validate the caller's start-of-scan snapshot, but defer file metadata
+    # reads until after the filesystem walk so rename and re-add mappings are
+    # current without fetching every torrent twice.
+    initial_torrents = _index_torrent_snapshot(torrents, context="at orphan scan start")
 
     # Separate literal paths from patterns for efficient handling
     # Patterns (with wildcards) are compiled to regex, literals are resolved for exact matching
@@ -166,7 +245,7 @@ def check_files_on_disk(  # noqa: C901
         except re.error as e:
             logging.warning(f"Invalid directory pattern '{pattern}': {e}")
 
-    orphaned_files = []
+    candidate_files: list[tuple[Path, str]] = []
     files_checked = 0
     files_excluded_by_pattern = 0
     files_excluded_by_dir = 0
@@ -214,16 +293,48 @@ def check_files_on_disk(  # noqa: C901
                         files_excluded_by_pattern += 1
                         continue
 
-                # Use resolved path for comparison (already computed above)
-                if entry_resolved in torrent_files:
-                    continue  # Skip files that are tracked by torrents
-
-                orphaned_files.append(str(entry))
+                candidate_files.append((entry_resolved, str(entry)))
 
     logging.info(
         f"Scanned {files_checked} files, excluded {files_excluded_by_pattern} by pattern, "
         f"excluded {files_excluded_by_dir} by directory"
     )
+
+    # A long filesystem walk can overlap additions, re-additions, file renames,
+    # and save-path changes. Refresh ownership only after the walk, replacing
+    # any metadata cached by an earlier operation in this execution.
+    current_torrents = _refresh_torrent_snapshot(client, context="after the orphan filesystem scan")
+    resolved_save_paths: dict[str, Path] = {}
+    current_owned_paths: set[Path] = set()
+    for torrent_hash in sorted(current_torrents):
+        current_owned_paths.update(
+            _torrent_owned_paths(
+                client,
+                current_torrents[torrent_hash],
+                resolved_save_paths,
+                context="while reconciling current ownership after the orphan scan",
+                refresh_file_metadata=True,
+            )
+        )
+    logging.debug(
+        "Tracking %d files from %d current torrents after scanning from an initial snapshot of %d torrents "
+        "(using %d unique save paths)",
+        len(current_owned_paths),
+        len(current_torrents),
+        len(initial_torrents),
+        len(resolved_save_paths),
+    )
+
+    orphaned_files = [
+        display_path for resolved_path, display_path in candidate_files if resolved_path not in current_owned_paths
+    ]
+    removed_count = len(candidate_files) - len(orphaned_files)
+    if removed_count:
+        logging.info(
+            "Removed %d orphan candidates owned by the refreshed snapshot of %d torrents.",
+            removed_count,
+            len(current_torrents),
+        )
 
     return orphaned_files
 

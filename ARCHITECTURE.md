@@ -49,7 +49,7 @@ in 3.0. New integrations should use the installed console commands or
    must then succeed before the dependent deletion or recycle step can run.
    Every destructive completed-torrent source is verified against its distinct
    destination inode, including destinations that already existed.
-9. Log cache statistics, report the summary, and clean up
+9. Log phase timing and cache statistics, report the summary, and clean up
 ```
 
 **Key Features**:
@@ -89,12 +89,14 @@ in 3.0. New integrations should use the installed console commands or
 **Error Handling**: Collects all errors and reports them together for better user experience.
 
 #### `qbitunregistered/cache.py` - API Call Caching
-**Purpose**: In-memory caching with TTL to reduce redundant API calls
+**Purpose**: Execution-local caching to reduce redundant API calls
 
 **Design**:
-- Simple TTL-based cache (default 300 seconds)
+- General cached values use a 300-second TTL
+- Torrent tracker and file metadata remain cached for the complete execution,
+  including scans that take longer than 300 seconds
 - Global singleton instance accessible to all modules
-- Cleared when each CLI execution begins, then shared only within that execution
+- Entries and statistics are reset when each CLI execution begins
 - Decorator pattern for easy application to functions
 - Sentinel object to distinguish cache misses from cached None values
 - Automatic periodic cleanup triggered after threshold accesses or time
@@ -105,7 +107,9 @@ in 3.0. New integrations should use the installed console commands or
 - `skip_first_arg` flag for methods (skips 'self' or 'client')
 
 **Use Cases**:
-- Tracker information (cached per torrent)
+- Tracker information shared by impact, unregistered, tagging, and seeding
+  operations
+- Torrent file information shared by orphan discovery and ownership checks
 - Default save paths (cached globally)
 - Category information (cached globally)
 
@@ -113,6 +117,7 @@ in 3.0. New integrations should use the installed console commands or
 - Hit/miss counts
 - Cache size
 - Hit rate percentage
+- Per-namespace tracker/file hits and API fetch attempts
 
 #### `qbitunregistered/tracker_matcher.py` - Tracker Matching
 **Purpose**: Match tracker URLs against configured patterns
@@ -182,11 +187,19 @@ so CLI summaries, notifications, and scheduled exit codes remain truthful.
 **Scanning**:
 1. Get default save path and category save paths (cached)
 2. Remove redundant subdirectories (keep only top-level paths)
-3. Build set of all files referenced by torrents
-4. Scan disk directories
-5. Identify orphaned files using glob pattern exclusions
+3. Scan disk directories and collect eligible file candidates using the
+   configured exclusions
+4. Refresh the torrent snapshot and rebuild ownership from current file
+   mappings, replacing any earlier execution-cache entry for each torrent
+5. Remove currently owned paths from the candidate set
 6. Capture device, inode, type, size, and modification time for each target
 7. Delete or report from that same immutable plan
+
+This post-walk rebuild covers added or re-added hashes, local file renames, and
+save-path changes. Torrents absent from the refreshed snapshot no longer claim
+ownership. If a per-torrent metadata request fails, the torrent is considered
+gone only when a validated fresh snapshot proves its hash is absent. Active or
+uncertain ownership raises `SafetyCheckError`.
 
 The impact summary carries the configured orphan action with the plan.
 Permanent deletion contributes target bytes to estimated freed space; recycle
@@ -234,7 +247,8 @@ separate seeding-management operation.
 **Architecture**:
 - `find_tracker_config()`: Locate matching tracker in config (uses cached tracker fetching)
 - `apply_seed_limits()`: Consolidated batched application of both time and ratio limits
-- `_fetch_trackers()`: Cached tracker API calls
+- `fetch_torrent_trackers()`: Execution-scoped tracker API calls shared with
+  impact and unregistered checks
 
 **Batching**: Groups torrents by (time_limit, ratio_limit) tuple
 - Reduces API calls for 1000 torrents from 1000 to number of unique configurations
@@ -409,13 +423,18 @@ Main Script
 ### Caching Strategy
 
 **Cache Scope**: In-memory, cleared between script runs
-**TTL**: 300 seconds default
+**Lifetime**: 300 seconds by default; tracker and torrent-file metadata lasts
+until the execution cache is cleared
 **Keys Generated**: `(prefix, function_name, args, kwargs)` → JSON/pickle hash
 
 **Cached Operations**:
-1. Tracker fetching: `_fetch_trackers(client, torrent_hash)` → O(N) to O(1)
-2. Default save path: `_get_default_save_path(client)` → O(N) to O(1)
-3. Categories: `_get_categories(client)` → O(N) to O(1)
+1. Tracker fetching: `fetch_torrent_trackers(client, torrent_hash)` → one API
+   fetch per client/torrent/execution
+2. Torrent-file fetching: `fetch_torrent_files(client, torrent_hash)` → one API
+   fetch per client/torrent/execution, except an explicit post-orphan-scan
+   refresh that replaces a possibly older entry
+3. Default save path: `_get_default_save_path(client)` → O(N) to O(1)
+4. Categories: `_get_categories(client)` → O(N) to O(1)
 
 ## Error Handling Patterns
 
@@ -490,9 +509,10 @@ Main Script
    - Avoid regex compilation overhead
 
 5. **API Call Caching**:
-   - Cache tracker info across operations
+   - Cache tracker and torrent-file metadata across operations for the complete
+     execution
    - Cache category and save path info
-   - TTL prevents stale data while reusing results
+   - Final destructive ownership checks bypass the cache
 
 ### Metrics
 
@@ -542,8 +562,8 @@ Each script module is independent and can be:
 
 ### 3. Caching Decorator
 ```python
-@cached(ttl=300, key_prefix="tracker_config", skip_first_arg=True)
-def _fetch_trackers(client, torrent_hash):
+@cached(ttl=None, key_prefix="torrent_trackers", skip_first_arg=True)
+def fetch_torrent_trackers(client, torrent_hash, *, cache_scope):
     return client.torrents_trackers(torrent_hash)
 ```
 
@@ -641,7 +661,12 @@ def new_operation(client, torrents, config, dry_run=False):
 Logged at script completion:
 ```
 Cache stats - Hits: 45, Misses: 12, Size: 8, Hit rate: 78.95%
+Metadata cache stats - trackers: 8 hits, 5 API fetches; files: 4 hits, 7 API fetches
 ```
+
+The CLI also logs elapsed time for impact analysis, selected-operation
+execution, and the complete command. Per-namespace misses represent metadata
+API fetch attempts.
 
 ### Operation Summary
 
@@ -664,5 +689,5 @@ OPERATION SUMMARY
 1. **Long-Running Daemon**: Rate limiter available for continuous operation
 2. **Custom Hooks**: Plugin system for external integrations
 3. **Advanced Filtering**: Additional tag/filter combinations
-4. **Performance Tuning**: Configurable cache TTLs and batch sizes
+4. **Performance Tuning**: Profile cache effectiveness and batch sizes
 5. **Metrics Export**: Prometheus-style metrics output

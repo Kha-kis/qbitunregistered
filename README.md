@@ -61,7 +61,7 @@ a wheel and source distribution. To install a downloaded wheel instead of a
 source checkout:
 
 ```bash
-python -m pip install ./qbitunregistered-2.1.0-py3-none-any.whl
+python -m pip install ./qbitunregistered-2.1.1-py3-none-any.whl
 ```
 
 ## Upgrading
@@ -275,6 +275,15 @@ torrent-only deletion, cross-seeded-file preservation, recycling, and permanent
 deletion. Cross-seed tagging previews also list contradictory tags that will be
 removed. Before file mutation, execution refreshes qBittorrent's ownership
 state without the preview cache and aborts if it changed.
+
+Long orphan scans reconcile qBittorrent again after walking the filesystem.
+Ownership is rebuilt from the refreshed torrent list and current file mappings,
+so files claimed by added or re-added torrents, renamed files, and changed save
+paths are removed from the orphan plan. Torrents no longer present after the
+walk do not claim files. Incomplete or malformed ownership data aborts cleanup
+instead of authorizing deletion, and real execution performs another uncached
+ownership check immediately before mutation. Refreshed metadata replaces the
+execution-cache entry so later operations reuse the current mapping.
 
 Orphan cleanup also revalidates every confirmed file identity before a real
 mutation. If any planned file cannot be deleted or recycled, the operation is
@@ -557,6 +566,9 @@ If you encounter issues, check the following:
 - Ensure qBittorrent is running and accessible.
 - Verify that all required Python packages are installed.
 - Check the log output for errors and consult the FAQ.
+- Review the completion timing and metadata-cache statistics in the log when a
+  run is unexpectedly slow. Metadata cache misses are the number of tracker or
+  file API fetch attempts made during that execution.
 
 ## Frequently Asked Questions
 

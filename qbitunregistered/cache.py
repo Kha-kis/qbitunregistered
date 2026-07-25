@@ -1,16 +1,14 @@
 """
 Caching utilities for qbitunregistered API responses.
 
-Provides in-memory caching with TTL (time-to-live) to reduce redundant API calls
-within a single script execution.
+Provides in-memory caching to reduce redundant API calls within a single script
+execution.
 
 Cache Design Notes:
 - In-memory only: Cache is cleared between script runs
-- Default TTL: 300 seconds (5 minutes) is sufficient for single-execution scripts
-- Configuration: TTL is currently hardcoded by design. The script typically runs once
-  and exits, so configurable TTLs add complexity without clear benefit. If you need
-  different TTLs for different environments (e.g., long-running daemon mode), the
-  decorator's ttl parameter can be modified or made configurable via config.json.
+- Torrent tracker and file metadata lives for the complete execution because
+  scans can run substantially longer than the general cache TTL
+- Other cached values retain the default 300-second TTL
 """
 
 import time
@@ -18,7 +16,7 @@ import logging
 import json
 import pickle
 import hashlib
-from typing import Any, Optional, Callable, Dict, Tuple, Union
+from typing import Any, Callable, Dict, Tuple, Union
 from functools import wraps
 
 # Sentinel object to distinguish cache misses from cached None values
@@ -37,7 +35,7 @@ class SimpleCache:
     CLEANUP_ACCESS_THRESHOLD = 100  # Trigger cleanup after this many accesses
     CLEANUP_TIME_THRESHOLD = 300  # Trigger cleanup after this many seconds (5 minutes)
 
-    def __init__(self, default_ttl: int = 300):
+    def __init__(self, default_ttl: int | float = 300):
         """
         Initialize the cache.
 
@@ -50,14 +48,16 @@ class SimpleCache:
         if not isinstance(default_ttl, (int, float)) or default_ttl <= 0:
             raise ValueError(f"default_ttl must be a positive number, got: {default_ttl}")
 
-        self._cache: Dict[str, Tuple[Any, float]] = {}
+        self._cache: Dict[str, Tuple[Any, float | None]] = {}
         self._default_ttl = default_ttl
         self._hits = 0
         self._misses = 0
+        self._namespace_hits: dict[str, int] = {}
+        self._namespace_misses: dict[str, int] = {}
         self._access_count = 0  # Track accesses for periodic cleanup
         self._last_cleanup = time.time()
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def get(self, key: str, default: Any = None, *, namespace: str = "") -> Any:
         """
         Get a value from the cache.
 
@@ -72,24 +72,36 @@ class SimpleCache:
         self._maybe_cleanup()
 
         if key not in self._cache:
-            self._misses += 1
+            self._record_miss(namespace)
             logging.debug(f"Cache miss: {key}")
             return default
 
         value, expiry = self._cache[key]
 
         # Check if expired
-        if time.time() > expiry:
+        if expiry is not None and time.time() > expiry:
             del self._cache[key]
-            self._misses += 1
+            self._record_miss(namespace)
             logging.debug(f"Cache expired: {key}")
             return default
 
-        self._hits += 1
+        self._record_hit(namespace)
         logging.debug(f"Cache hit: {key}")
         return value
 
-    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    def _record_hit(self, namespace: str) -> None:
+        """Record one aggregate and optional namespace cache hit."""
+        self._hits += 1
+        if namespace:
+            self._namespace_hits[namespace] = self._namespace_hits.get(namespace, 0) + 1
+
+    def _record_miss(self, namespace: str) -> None:
+        """Record one aggregate and optional namespace cache miss."""
+        self._misses += 1
+        if namespace:
+            self._namespace_misses[namespace] = self._namespace_misses.get(namespace, 0) + 1
+
+    def set(self, key: str, value: Any, ttl: int | float | None = None) -> None:
         """
         Set a value in the cache.
 
@@ -112,6 +124,11 @@ class SimpleCache:
         self._cache[key] = (value, expiry)
         logging.debug(f"Cache set: {key} (TTL: {ttl}s)")
 
+    def set_for_execution(self, key: str, value: Any) -> None:
+        """Store a value until the cache is cleared at execution end/start."""
+        self._cache[key] = (value, None)
+        logging.debug(f"Execution-scoped cache set: {key}")
+
     def invalidate(self, key: str) -> None:
         """
         Invalidate a cache entry.
@@ -124,9 +141,15 @@ class SimpleCache:
             logging.debug(f"Cache invalidated: {key}")
 
     def clear(self) -> None:
-        """Clear all cache entries."""
+        """Clear all entries and reset statistics for a new execution."""
         count = len(self._cache)
         self._cache.clear()
+        self._hits = 0
+        self._misses = 0
+        self._namespace_hits.clear()
+        self._namespace_misses.clear()
+        self._access_count = 0
+        self._last_cleanup = time.time()
         logging.debug(f"Cache cleared: {count} entries removed")
 
     def stats(self) -> Dict[str, Union[int, float]]:
@@ -144,6 +167,19 @@ class SimpleCache:
         hit_rate = (self._hits / total * 100) if total > 0 else 0
 
         return {"hits": self._hits, "misses": self._misses, "size": len(self._cache), "hit_rate": round(hit_rate, 2)}
+
+    def namespace_stats(self, namespace: str) -> dict[str, int | float]:
+        """Return hit and API-fetch statistics for one decorated namespace."""
+        hits = self._namespace_hits.get(namespace, 0)
+        misses = self._namespace_misses.get(namespace, 0)
+        total = hits + misses
+        hit_rate = (hits / total * 100) if total else 0
+        return {
+            "hits": hits,
+            "misses": misses,
+            "api_fetches": misses,
+            "hit_rate": round(hit_rate, 2),
+        }
 
     def log_stats(self) -> None:
         """Log cache statistics."""
@@ -164,7 +200,7 @@ class SimpleCache:
             Number of expired entries removed
         """
         now = time.time()
-        expired_keys = [key for key, (_, expiry) in self._cache.items() if now > expiry]
+        expired_keys = [key for key, (_, expiry) in self._cache.items() if expiry is not None and now > expiry]
 
         for key in expired_keys:
             del self._cache[key]
@@ -208,12 +244,13 @@ def get_cache() -> SimpleCache:
     return _global_cache
 
 
-def cached(ttl: int = 300, key_prefix: str = "", skip_first_arg: bool = True):
+def cached(ttl: int | float | None = 300, key_prefix: str = "", skip_first_arg: bool = True):
     """
     Decorator to cache function results.
 
     Args:
-        ttl: Time-to-live in seconds
+        ttl: Time-to-live in seconds. ``None`` keeps the value until the
+            execution cache is explicitly cleared.
         key_prefix: Prefix for cache keys
         skip_first_arg: If True, skip the first positional argument (e.g., 'self' or 'client')
                         when generating cache keys. Set to False for standalone functions
@@ -258,7 +295,7 @@ def cached(ttl: int = 300, key_prefix: str = "", skip_first_arg: bool = True):
 
             # Try to get from cache using sentinel to distinguish misses from None values
             cache = get_cache()
-            cached_value = cache.get(cache_key, default=_CACHE_MISS)
+            cached_value = cache.get(cache_key, default=_CACHE_MISS, namespace=key_prefix)
 
             if cached_value is not _CACHE_MISS:
                 return cached_value
@@ -267,7 +304,10 @@ def cached(ttl: int = 300, key_prefix: str = "", skip_first_arg: bool = True):
             result = func(*args, **kwargs)
 
             # Cache the result
-            cache.set(cache_key, result, ttl)
+            if ttl is None:
+                cache.set_for_execution(cache_key, result)
+            else:
+                cache.set(cache_key, result, ttl)
 
             return result
 
@@ -283,4 +323,14 @@ def clear_cache() -> None:
 
 def log_cache_stats() -> None:
     """Log global cache statistics."""
-    get_cache().log_stats()
+    cache = get_cache()
+    cache.log_stats()
+    tracker_stats = cache.namespace_stats("torrent_trackers")
+    file_stats = cache.namespace_stats("torrent_files")
+    logging.info(
+        "Metadata cache stats - trackers: %d hits, %d API fetches; files: %d hits, %d API fetches",
+        tracker_stats["hits"],
+        tracker_stats["api_fetches"],
+        file_stats["hits"],
+        file_stats["api_fetches"],
+    )

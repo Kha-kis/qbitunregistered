@@ -439,6 +439,7 @@ class TestAnalyzeUnregistered:
         file_info = Mock()
         file_info.name = "movie.mkv"
         client.torrents_files.return_value = [file_info]
+        client.torrents_trackers.return_value = [tracker]
         config = {
             "unregistered": ["not registered"],
             "default_unregistered_tag": "unregistered",
@@ -475,8 +476,10 @@ class TestAnalyzeUnregistered:
         )
         summary = ImpactSummary()
 
+        client = Mock()
+        client.torrents_trackers.return_value = [tracker]
         _analyze_unregistered(
-            Mock(),
+            client,
             [torrent],
             {
                 "unregistered": ["not registered"],
@@ -513,7 +516,10 @@ class TestAnalyzeUnregistered:
         mock_tracker2.status = 2
         mock_tracker2.get = lambda k, d=None: {"msg": "Working", "url": "http://tracker2.example.com"}.get(k, d)
 
-        mock_client.torrents_trackers.return_value = [mock_tracker1, mock_tracker2]
+        mock_client.torrents_trackers.side_effect = lambda torrent_hash: {
+            "hash1": [mock_tracker1, mock_tracker2],
+            "hash2": [mock_tracker2],
+        }[torrent_hash]
         mock_torrent.trackers = [mock_tracker1, mock_tracker2]
         working_torrent = Mock(hash="hash2", save_path="/data", tags="")
         working_torrent.trackers = [mock_tracker2]
@@ -557,6 +563,10 @@ class TestAnalyzeUnregistered:
         file_info.name = "movie.mkv"
         client = Mock()
         client.torrents_files.return_value = [file_info]
+        client.torrents_trackers.side_effect = lambda torrent_hash: {
+            "source": [tracker],
+            "peer": [],
+        }[torrent_hash]
         summary = ImpactSummary()
 
         _analyze_unregistered(
@@ -606,6 +616,7 @@ class TestAnalyzeUnregistered:
         file_info.name = shared_file.name
         client = Mock()
         client.torrents_files.return_value = [file_info]
+        client.torrents_trackers.return_value = [tracker]
         config = {
             "unregistered": ["not registered"],
             "default_unregistered_tag": "unregistered",
