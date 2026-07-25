@@ -107,6 +107,11 @@ def verify_file_identity(identity: FileIdentity) -> os.stat_result:
     return current_stat
 
 
+def invalidate_torrent_files(torrent_hash: str, *, cache_scope: int) -> None:
+    """Discard execution-cached file metadata for one client and torrent."""
+    get_cache().invalidate(f"torrent_files:{cache_scope}:{torrent_hash}")
+
+
 def fetch_torrent_files(
     client: QBittorrentClient,
     torrent_hash: str,
@@ -162,7 +167,10 @@ def fetch_torrent_files(
     if cached_files is not _TORRENT_FILES_CACHE_MISS:
         return cast(list[Any], cached_files)
 
-    files = cast(list[Any], client.torrents_files(torrent_hash))
+    # Returning plain dictionaries avoids constructing one response wrapper per
+    # file in qbittorrent-api. This endpoint is hot during orphan ownership
+    # reconciliation, and all callers already accept mappings or objects.
+    files = cast(list[Any], client.torrents_files(torrent_hash, SIMPLE_RESPONSES=True))
     cache.set_for_execution(cache_key, files)
     return files
 

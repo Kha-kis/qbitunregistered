@@ -59,6 +59,22 @@ def _nonblank_recycle_bin_path(value: str) -> str:
     return value
 
 
+def _nonnegative_int(value: str) -> int:
+    """Parse a non-negative integer CLI value."""
+    parsed_value = int(value)
+    if parsed_value < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer")
+    return parsed_value
+
+
+def _positive_int(value: str) -> int:
+    """Parse a positive integer CLI value."""
+    parsed_value = int(value)
+    if parsed_value < 1:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed_value
+
+
 # Set up command-line argument parsing
 parser = argparse.ArgumentParser(description="Manage torrents in qBittorrent by checking torrent tracker messages.")
 parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -115,6 +131,18 @@ parser.add_argument(
     nargs="+",
     default=None,
     help="Additional absolute directory paths to scan for orphaned files. Overrides configured explicit roots.",
+)
+parser.add_argument(
+    "--orphan-min-age-seconds",
+    type=_nonnegative_int,
+    default=None,
+    help="Only report orphan candidates at least this many seconds old. Overrides configuration.",
+)
+parser.add_argument(
+    "--orphan-max-candidates",
+    type=_positive_int,
+    default=None,
+    help="Block a real orphan cleanup when its candidate count exceeds this limit. Overrides configuration.",
 )
 parser.add_argument(
     "--log-level", type=str, choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Set logging level (default: INFO)"
@@ -374,9 +402,17 @@ def main(argv: list[str] | None = None) -> int:
     exclude_files = args.exclude_files if args.exclude_files else config.get("exclude_files", [])
     exclude_dirs = args.exclude_dirs if args.exclude_dirs else config.get("exclude_dirs", [])
     orphan_scan_roots = args.orphan_scan_roots if args.orphan_scan_roots is not None else config.get("orphan_scan_roots", [])
+    orphan_min_age_seconds = (
+        args.orphan_min_age_seconds if args.orphan_min_age_seconds is not None else config.get("orphan_min_age_seconds", 0)
+    )
+    orphan_max_candidates = (
+        args.orphan_max_candidates if args.orphan_max_candidates is not None else config.get("orphan_max_candidates")
+    )
     config["exclude_files"] = exclude_files
     config["exclude_dirs"] = exclude_dirs
     config["orphan_scan_roots"] = orphan_scan_roots
+    config["orphan_min_age_seconds"] = orphan_min_age_seconds
+    config["orphan_max_candidates"] = orphan_max_candidates
 
     # Notification configuration
     for field in ("apprise_url", "notifiarr_key", "notifiarr_channel"):
@@ -547,6 +583,7 @@ def main(argv: list[str] | None = None) -> int:
                     exclude_file_patterns=exclude_files,
                     exclude_dirs=exclude_dirs_for_scan,
                     orphan_scan_roots=orphan_scan_roots,
+                    orphan_min_age_seconds=orphan_min_age_seconds,
                 )
                 orphan_plan = build_orphan_file_plan(orphaned_files)
             orphaned_files = [str(path) for path in orphan_plan.paths]
@@ -568,6 +605,7 @@ def main(argv: list[str] | None = None) -> int:
                 recycle_bin=recycle_bin,
                 plan=orphan_plan,
                 orphan_scan_roots=orphan_scan_roots,
+                orphan_max_candidates=orphan_max_candidates,
             )
             operation_results["succeeded"].append(_format_orphaned_operation_result(len(orphaned_files), dry_run, recycle_bin))
         except (KeyboardInterrupt, SystemExit):

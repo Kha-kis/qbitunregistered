@@ -177,9 +177,12 @@ so CLI summaries, notifications, and scheduled exit codes remain truthful.
 
 **Core Responsibility**: Find files on disk not associated with any torrent
 
-**Optimization Strategy** (4000+ → 15-20 API calls):
-- Fetch all torrent metadata once
-- Build set of files in-memory (fast)
+**Optimization Strategy**:
+- Fetch the bulk torrent snapshot once
+- Treat a validated existing regular single-file `content_path` as its exact
+  owned pathname without a per-torrent file-list request
+- Fetch exact file lists for multi-file boundaries only when they can overlap
+  filesystem candidates; uncertain bulk metadata falls back to exact metadata
 - Scan disk against in-memory set (fast)
 - Cache resolved paths per unique save_path (reduces syscalls 1M+ → ~1K)
 - Filter save paths to only needed directories
@@ -190,8 +193,10 @@ so CLI summaries, notifications, and scheduled exit codes remain truthful.
 2. Remove redundant subdirectories (keep only top-level paths)
 3. Scan disk directories and collect eligible file candidates using the
    configured exclusions
-4. Refresh the torrent snapshot and rebuild ownership from current file
-   mappings, replacing any earlier execution-cache entry for each torrent
+4. Refresh the torrent snapshot and rebuild exact ownership with the bulk
+   single-file shortcut and candidate-targeted multi-file metadata. Invalidate
+   every refreshed hash's earlier file-cache entry, then repopulate entries for
+   hashes whose exact file lists are fetched
 5. Remove currently owned paths from the candidate set
 6. Capture device, inode, type, size, and modification time for each target
 7. Delete or report from that same immutable plan
@@ -201,6 +206,16 @@ save-path changes. Torrents absent from the refreshed snapshot no longer claim
 ownership. If a per-torrent metadata request fails, the torrent is considered
 gone only when a validated fresh snapshot proves its hash is absent. Active or
 uncertain ownership raises `SafetyCheckError`.
+
+Bulk boundary trust requires an absolute canonical path beneath the torrent
+save path, an accessible regular file or directory, and no symlink in any
+component below the canonical save root. Missing, malformed, inaccessible, or
+symlinked boundaries use live exact file metadata. Directory boundaries never
+protect a whole tree in exact mode. Final real-run validation uses the same
+builder, limited to boundaries that can overlap the immutable candidate plan.
+The supported qBittorrent client has shared mutable HTTP session and application
+cache state without a thread-safety guarantee, so ownership requests remain
+sequential.
 
 Traversal authority and ownership are deliberately separate. Only the default,
 category, and explicit roots are walked. A per-torrent save path outside those
@@ -223,6 +238,11 @@ restore already deleted files, so it aborts remaining cleanup with explicit
 completed/planned counts. Neither path emits a success summary when a planned
 file action is incomplete; the exception flows through CLI results,
 notifications, and exit status.
+
+`orphan_min_age_seconds` filters discovery by modification age and defaults to
+zero. `orphan_max_candidates` is optional; a real run over the limit fails
+before any file move or unlink, while dry-run preserves and warns about the
+complete age-eligible target plan.
 
 Empty-directory pruning simulates already queued child-directory removals while
 walking upward, which removes nested empty parents but stops at canonical active
@@ -431,7 +451,9 @@ Main Script
 **Optimized Approach** (current):
 - Tag by tracker: Group by tag → 5 tags = 5 calls
 - Seeding management: Group by limits → 3 configs = 3 calls  
-- Orphaned files: Fetch all once, build set, scan disk = 15-20 calls
+- Orphaned files: one bulk snapshot plus exact file-list requests only for
+  uncertain or candidate-overlapping multi-file torrents; existing regular
+  single-file torrents require no file-list request
 
 ### Caching Strategy
 

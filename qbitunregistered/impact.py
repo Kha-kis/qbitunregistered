@@ -47,6 +47,7 @@ class ImpactSummary:
         orphaned_files: List of orphaned file paths to delete or recycle
         orphan_file_action: Planned action for orphaned files
         orphaned_file_bytes: Total bytes represented by orphaned files
+        orphan_max_candidates: Optional real-run orphan candidate limit
         disk_to_free_bytes: Total bytes that permanent deletions will free
         operation_details: Additional details per operation
     """
@@ -65,6 +66,7 @@ class ImpactSummary:
         self.operation_targets: dict[str, list[str]] = defaultdict(list)
         self.hard_link_plan: list["PlannedHardLink"] | None = None
         self.orphan_file_plan: "OrphanFilePlan | None" = None
+        self.orphan_max_candidates: int | None = None
         self.unregistered_deletion_plan: "UnregisteredDeletionPlan | None" = None
 
     def add_operation_target(self, operation: str, target: str) -> None:
@@ -194,6 +196,12 @@ class ImpactSummary:
                 warnings.append(
                     f"WARNING: {len(self.orphaned_files)} orphaned files will be deleted. " "Verify these are not needed!"
                 )
+
+        if self.orphan_max_candidates is not None and len(self.orphaned_files) > self.orphan_max_candidates:
+            warnings.append(
+                f"WARNING: {len(self.orphaned_files)} orphaned files exceed the configured maximum of "
+                f"{self.orphan_max_candidates}; real cleanup will be blocked before any file mutation."
+            )
 
         return warnings
 
@@ -456,8 +464,13 @@ def _analyze_orphaned(
         exclude_file_patterns=config.get("exclude_files", []),
         exclude_dirs=exclude_dirs,
         orphan_scan_roots=config.get("orphan_scan_roots", []),
+        orphan_min_age_seconds=config.get("orphan_min_age_seconds", 0),
     )
     summary.orphan_file_plan = build_orphan_file_plan(orphaned_files)
+    configured_maximum = config.get("orphan_max_candidates")
+    summary.orphan_max_candidates = (
+        configured_maximum if isinstance(configured_maximum, int) and not isinstance(configured_maximum, bool) else None
+    )
     action = OrphanFileAction.RECYCLE if recycle_bin else OrphanFileAction.PERMANENT_DELETE
     for identity in summary.orphan_file_plan.files:
         summary.add_orphaned_file(str(identity.path), identity.size, action)

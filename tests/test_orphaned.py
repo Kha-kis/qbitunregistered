@@ -1,8 +1,10 @@
 """Tests for orphaned file checking functionality."""
 
+import os
 from pathlib import Path
 from fnmatch import fnmatch
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
 import pytest
 from qbitunregistered.file_operations import (
     RECYCLE_STAGING_DIRECTORY_PREFIX,
@@ -272,7 +274,7 @@ class TestOrphanScanReconciliation:
         assert check_files_on_disk(client, [torrent]) == []
 
         assert client.torrents_files.call_count == 2
-        client.torrents_files.assert_called_with("existing")
+        client.torrents_files.assert_called_with("existing", SIMPLE_RESPONSES=True)
 
     def test_torrent_added_during_scan_removes_its_files_from_candidates(self, tmp_path):
         """A newly added owner is reconciled before an orphan plan is returned."""
@@ -286,7 +288,7 @@ class TestOrphanScanReconciliation:
         client.torrents_files.return_value = [{"name": claimed.name}]
 
         assert check_files_on_disk(client, []) == [str(unclaimed)]
-        client.torrents_files.assert_called_once_with("new-owner")
+        client.torrents_files.assert_called_once_with("new-owner", SIMPLE_RESPONSES=True)
 
     def test_removed_torrent_becomes_a_candidate_without_stale_metadata_fetch(self, tmp_path):
         """A torrent absent after the walk no longer contributes ownership."""
@@ -334,7 +336,7 @@ class TestOrphanScanReconciliation:
 
         assert fetch_torrent_files(client, torrent.hash, cache_scope=id(client)) == [{"name": renamed.name}]
         assert client.torrents_files.call_count == 2
-        client.torrents_files.assert_called_with("same-hash")
+        client.torrents_files.assert_called_with("same-hash", SIMPLE_RESPONSES=True)
 
     def test_same_hash_save_path_change_recomputes_current_ownership(self, tmp_path):
         """Refreshed save paths relocate cached info-hash file metadata safely."""
@@ -357,7 +359,7 @@ class TestOrphanScanReconciliation:
         with patch.object(Path, "rglob", autospec=True, side_effect=change_save_path_during_walk):
             assert check_files_on_disk(client, [torrent]) == []
 
-        client.torrents_files.assert_called_once_with("same-hash")
+        client.torrents_files.assert_called_once_with("same-hash", SIMPLE_RESPONSES=True)
 
     def test_torrent_readded_with_same_hash_uses_current_mapping_in_dry_run(self, tmp_path):
         """A re-added hash protects its current path with one post-walk fetch."""
@@ -392,7 +394,7 @@ class TestOrphanScanReconciliation:
         assert plan.paths == (true_orphan.resolve(),)
         assert claimed.read_text(encoding="utf-8") == "claimed"
         assert true_orphan.read_text(encoding="utf-8") == "orphan"
-        client.torrents_files.assert_called_once_with("same-hash")
+        client.torrents_files.assert_called_once_with("same-hash", SIMPLE_RESPONSES=True)
         client.torrents_delete.assert_not_called()
 
     def test_active_torrent_metadata_failure_aborts_scan(self, tmp_path):
@@ -422,6 +424,217 @@ class TestOrphanScanReconciliation:
             check_files_on_disk(client, [])
 
         assert candidate.read_text(encoding="utf-8") == "data"
+
+
+class TestOrphanOwnershipFastPath:
+    """Exercise exact bulk ownership shortcuts and conservative fallbacks."""
+
+    @staticmethod
+    def _client(save_root: Path, torrents: list[SimpleNamespace]) -> MagicMock:
+        client = MagicMock()
+        client.application.default_save_path = str(save_root)
+        client.torrent_categories.categories = {}
+        client.torrents.info.return_value = torrents
+        return client
+
+    def test_bulk_single_file_snapshot_avoids_per_torrent_requests(self, tmp_path):
+        torrents = []
+        for index in range(250):
+            owned_file = tmp_path / f"owned-{index}.mkv"
+            owned_file.write_text("owned", encoding="utf-8")
+            torrents.append(
+                SimpleNamespace(
+                    hash=f"hash-{index}",
+                    save_path=str(tmp_path),
+                    content_path=str(owned_file),
+                )
+            )
+        orphan = tmp_path / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        client = self._client(tmp_path, torrents)
+
+        assert check_files_on_disk(client, torrents) == [str(orphan)]
+        client.torrents_files.assert_not_called()
+
+    @pytest.mark.parametrize("fast_path", ["single", "disjoint-directory"])
+    def test_fast_path_invalidates_pre_scan_file_metadata(self, tmp_path, fast_path):
+        old_mapping = [{"name": "old-name.mkv"}]
+        new_mapping = [{"name": "new-name.mkv"}]
+        if fast_path == "single":
+            content_path = tmp_path / "owned.mkv"
+            content_path.write_text("owned", encoding="utf-8")
+        else:
+            content_path = tmp_path / "empty-bundle"
+            content_path.mkdir()
+        orphan = tmp_path / "orphan.nfo"
+        orphan.write_text("orphan", encoding="utf-8")
+        torrent = SimpleNamespace(
+            hash=fast_path,
+            save_path=str(tmp_path),
+            content_path=str(content_path),
+        )
+        client = self._client(tmp_path, [torrent])
+        client.torrents_files.return_value = old_mapping
+        assert fetch_torrent_files(client, torrent.hash, cache_scope=id(client)) == old_mapping
+        client.torrents_files.return_value = new_mapping
+
+        check_files_on_disk(client, [torrent])
+
+        assert fetch_torrent_files(client, torrent.hash, cache_scope=id(client)) == new_mapping
+        assert client.torrents_files.call_count == 2
+
+    def test_multi_file_boundary_fetches_exact_paths(self, tmp_path):
+        content_dir = tmp_path / "bundle"
+        content_dir.mkdir()
+        owned = content_dir / "owned.mkv"
+        orphan = content_dir / "orphan.nfo"
+        owned.write_text("owned", encoding="utf-8")
+        orphan.write_text("orphan", encoding="utf-8")
+        torrent = SimpleNamespace(
+            hash="multi",
+            save_path=str(tmp_path),
+            content_path=str(content_dir),
+        )
+        client = self._client(tmp_path, [torrent])
+        client.torrents_files.return_value = [{"name": "bundle/owned.mkv"}]
+
+        assert check_files_on_disk(client, [torrent]) == [str(orphan)]
+        client.torrents_files.assert_called_once_with("multi", SIMPLE_RESPONSES=True)
+
+    @pytest.mark.parametrize("content_path", ["relative/file.mkv", "missing.mkv"])
+    def test_uncertain_bulk_content_path_falls_back_to_exact_metadata(self, tmp_path, content_path):
+        owned = tmp_path / "owned.mkv"
+        owned.write_text("owned", encoding="utf-8")
+        if content_path == "missing.mkv":
+            content_path = str(tmp_path / content_path)
+        torrent = SimpleNamespace(
+            hash="uncertain",
+            save_path=str(tmp_path),
+            content_path=content_path,
+        )
+        client = self._client(tmp_path, [torrent])
+        client.torrents_files.return_value = [{"name": owned.name}]
+
+        assert check_files_on_disk(client, [torrent]) == []
+        client.torrents_files.assert_called_once_with("uncertain", SIMPLE_RESPONSES=True)
+
+    @pytest.mark.parametrize("symlink_kind", ["file", "parent"])
+    def test_symlinked_bulk_content_path_never_bypasses_exact_metadata(self, tmp_path, symlink_kind):
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        owned = real_dir / "owned.mkv"
+        owned.write_text("owned", encoding="utf-8")
+        if symlink_kind == "file":
+            content_path = tmp_path / "owned-link.mkv"
+            content_path.symlink_to(owned)
+        else:
+            parent_link = tmp_path / "parent-link"
+            parent_link.symlink_to(real_dir, target_is_directory=True)
+            content_path = parent_link / owned.name
+        torrent = SimpleNamespace(
+            hash=f"symlink-{symlink_kind}",
+            save_path=str(tmp_path),
+            content_path=str(content_path),
+        )
+        client = self._client(tmp_path, [torrent])
+        client.torrents_files.return_value = [{"name": "real/owned.mkv"}]
+
+        check_files_on_disk(client, [torrent])
+
+        client.torrents_files.assert_called_once_with(f"symlink-{symlink_kind}", SIMPLE_RESPONSES=True)
+
+    def test_final_validation_only_fetches_overlapping_multi_file_boundary(self, tmp_path):
+        overlap_dir = tmp_path / "overlap"
+        disjoint_dir = tmp_path / "disjoint"
+        overlap_dir.mkdir()
+        disjoint_dir.mkdir()
+        orphan = overlap_dir / "orphan.nfo"
+        orphan.write_text("orphan", encoding="utf-8")
+        overlap = SimpleNamespace(hash="overlap", save_path=str(tmp_path), content_path=str(overlap_dir))
+        disjoint = SimpleNamespace(hash="disjoint", save_path=str(tmp_path), content_path=str(disjoint_dir))
+        client = self._client(tmp_path, [overlap, disjoint])
+        client.torrents_files.return_value = []
+
+        delete_orphaned_files(
+            [str(orphan)],
+            dry_run=False,
+            client=client,
+            plan=build_orphan_file_plan([str(orphan)]),
+        )
+
+        assert not orphan.exists()
+        assert client.torrents_files.call_args_list == [call("overlap", SIMPLE_RESPONSES=True)]
+
+
+class TestOrphanCircuitBreakers:
+    """Verify age and candidate-count controls without changing defaults."""
+
+    @staticmethod
+    def _client(save_root: Path) -> MagicMock:
+        client = MagicMock()
+        client.application.default_save_path = str(save_root)
+        client.torrent_categories.categories = {}
+        client.torrents.info.return_value = []
+        return client
+
+    def test_minimum_age_filters_recent_candidates(self, tmp_path):
+        old_file = tmp_path / "old.mkv"
+        recent_file = tmp_path / "recent.mkv"
+        old_file.write_text("old", encoding="utf-8")
+        recent_file.write_text("recent", encoding="utf-8")
+        old_timestamp = old_file.stat().st_mtime - 120
+        os.utime(old_file, (old_timestamp, old_timestamp))
+        client = self._client(tmp_path)
+
+        assert check_files_on_disk(client, [], orphan_min_age_seconds=60) == [str(old_file)]
+        assert set(check_files_on_disk(client, [])) == {str(old_file), str(recent_file)}
+
+    @pytest.mark.parametrize("recycle", [False, True])
+    def test_maximum_candidate_limit_blocks_real_run_before_mutation(self, tmp_path, recycle):
+        first = tmp_path / "first.mkv"
+        second = tmp_path / "second.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        client = self._client(tmp_path)
+        recycle_bin = str(tmp_path / "recycle") if recycle else None
+        plan = build_orphan_file_plan([str(first), str(second)])
+
+        with pytest.raises(SafetyCheckError, match="2 candidates exceed.*maximum of 1"):
+            delete_orphaned_files(
+                [str(first), str(second)],
+                dry_run=False,
+                client=client,
+                recycle_bin=recycle_bin,
+                plan=plan,
+                orphan_max_candidates=1,
+            )
+
+        assert first.read_text(encoding="utf-8") == "first"
+        assert second.read_text(encoding="utf-8") == "second"
+        assert not (tmp_path / "recycle").exists()
+        client.torrents.info.assert_not_called()
+
+    def test_maximum_candidate_limit_does_not_hide_dry_run_targets(self, tmp_path, caplog):
+        first = tmp_path / "first.mkv"
+        second = tmp_path / "second.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        client = self._client(tmp_path)
+        plan = build_orphan_file_plan([str(first), str(second)])
+
+        with caplog.at_level("INFO"):
+            delete_orphaned_files(
+                [str(first), str(second)],
+                dry_run=True,
+                client=client,
+                torrents=[],
+                plan=plan,
+                orphan_max_candidates=1,
+            )
+
+        assert "Would delete orphaned file" in caplog.text
+        assert first.exists()
+        assert second.exists()
 
 
 class TestEdgeCases:

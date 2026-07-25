@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional validated `orphan_scan_roots` configuration and
   `--orphan-scan-roots` override for adding nonstandard managed trees to orphan
   traversal without changing the default qBittorrent save-path behavior
+- Backward-compatible `orphan_min_age_seconds` and `orphan_max_candidates`
+  circuit breakers with matching CLI overrides. Dry-run keeps the full
+  age-eligible preview; a real run over the maximum fails before file mutation.
 
 ### Changed
 
@@ -21,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   broadening the filesystem scan. Real execution refreshes the discovered roots
   and rejects the complete plan before mutation if any target is no longer
   authorized.
+- Cold orphan reconciliation now uses validated bulk `content_path` metadata
+  for exact existing single-file ownership and fetches multi-file lists only
+  for content boundaries that can overlap candidates. Missing, malformed,
+  inaccessible, and symlinked bulk paths fall back to live exact metadata.
+  Final ownership validation uses the same candidate-targeted builder, and
+  file-list responses use the client's plain-dictionary mode.
 
 ## [2.1.1] - 2026-07-25
 

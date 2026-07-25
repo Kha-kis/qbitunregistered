@@ -1,6 +1,7 @@
 import logging
 import re
 import stat
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from qbitunregistered.file_operations import (
     SafetyCheckError,
     capture_file_identity,
     fetch_torrent_files,
+    invalidate_torrent_files,
     is_internal_recycle_staging_path,
     move_files_to_recycle_bin,
     verify_file_identity,
@@ -30,6 +32,15 @@ class OrphanFilePlan:
     def paths(self) -> tuple[Path, ...]:
         """Return the confirmed paths in deterministic order."""
         return tuple(identity.path for identity in self.files)
+
+
+@dataclass(frozen=True, slots=True)
+class _TorrentOwnership:
+    """Exact owned files and active save paths from one torrent snapshot."""
+
+    owned_paths: frozenset[Path]
+    active_save_paths: frozenset[Path]
+    file_metadata_fetches: int
 
 
 @cached(ttl=300, key_prefix="app_default_save_path")
@@ -100,13 +111,14 @@ def _refresh_torrent_snapshot(client: QBittorrentClient, *, context: str) -> dic
     return _index_torrent_snapshot(torrents, context=context)
 
 
-def _torrent_owned_paths(  # noqa: C901
+def _exact_torrent_owned_paths(  # noqa: C901
     client: QBittorrentClient,
     torrent: Any,
     resolved_save_paths: dict[str, Path],
     *,
     context: str,
     refresh_file_metadata: bool = False,
+    tolerate_confirmed_removal: bool = False,
 ) -> set[Path]:
     """Return canonical owned paths or confirm that a failed torrent is gone."""
     torrent_hash = getattr(torrent, "hash", None)
@@ -126,13 +138,14 @@ def _torrent_owned_paths(  # noqa: C901
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as error:
-        refreshed = _refresh_torrent_snapshot(
-            client,
-            context=f"after file metadata failed for torrent {torrent_hash}",
-        )
-        if torrent_hash not in refreshed:
-            logging.info("Torrent %s disappeared during orphan scanning; ignoring its unavailable metadata.", torrent_hash)
-            return set()
+        if tolerate_confirmed_removal:
+            refreshed = _refresh_torrent_snapshot(
+                client,
+                context=f"after file metadata failed for torrent {torrent_hash}",
+            )
+            if torrent_hash not in refreshed:
+                logging.info("Torrent %s disappeared during orphan scanning; ignoring its unavailable metadata.", torrent_hash)
+                return set()
         raise SafetyCheckError(f"Could not read file metadata for active torrent {torrent_hash} {context}") from error
 
     if raw_files is None:
@@ -161,6 +174,104 @@ def _torrent_owned_paths(  # noqa: C901
     return owned_paths
 
 
+def _candidate_parent_paths(candidate_paths: set[Path]) -> set[Path]:
+    """Return candidate paths and ancestors for constant-time boundary checks."""
+    parents = set(candidate_paths)
+    for candidate_path in candidate_paths:
+        parents.update(candidate_path.parents)
+    return parents
+
+
+def _validated_content_boundary(torrent: Any, save_path: Path) -> tuple[Path, int] | None:
+    """Return a trustworthy bulk content path and mode, or request exact fallback."""
+    content_path_value = getattr(torrent, "content_path", None)
+    if not isinstance(content_path_value, str) or not content_path_value:
+        return None
+    try:
+        content_path = Path(content_path_value)
+        if not content_path.is_absolute():
+            return None
+        relative_content_path = content_path.relative_to(save_path)
+        if ".." in relative_content_path.parts:
+            return None
+        inspected_path = save_path
+        content_stat = save_path.lstat()
+        if stat.S_ISLNK(content_stat.st_mode):
+            return None
+        for part in relative_content_path.parts:
+            inspected_path /= part
+            content_stat = inspected_path.lstat()
+            if stat.S_ISLNK(content_stat.st_mode):
+                return None
+        resolved_content_path = content_path.resolve()
+        if not resolved_content_path.is_relative_to(save_path):
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return resolved_content_path, content_stat.st_mode
+
+
+def _build_torrent_ownership(
+    client: QBittorrentClient,
+    torrents: dict[str, Any],
+    candidate_paths: set[Path],
+    *,
+    context: str,
+    refresh_file_metadata: bool,
+    tolerate_confirmed_removal: bool,
+) -> _TorrentOwnership:
+    """Build exact ownership, using bulk boundaries only when they are conclusive."""
+    candidate_boundaries = _candidate_parent_paths(candidate_paths)
+    resolved_save_paths: dict[str, Path] = {}
+    owned_paths: set[Path] = set()
+    active_save_paths: set[Path] = set()
+    file_metadata_fetches = 0
+
+    for torrent_hash in sorted(torrents):
+        torrent = torrents[torrent_hash]
+        if refresh_file_metadata:
+            # Fast paths must still retire pre-walk mappings so later
+            # operations cannot consume metadata older than reconciliation.
+            invalidate_torrent_files(torrent_hash, cache_scope=id(client))
+        save_path_value = getattr(torrent, "save_path", None)
+        if not isinstance(save_path_value, str) or not save_path_value:
+            raise SafetyCheckError(f"Torrent {torrent_hash} has no valid save path {context}")
+        if save_path_value not in resolved_save_paths:
+            resolved_save_paths[save_path_value] = _resolve_active_save_root(
+                save_path_value,
+                description=f"Torrent {torrent_hash} save path",
+            )
+        save_path = resolved_save_paths[save_path_value]
+        active_save_paths.add(save_path)
+
+        content_boundary = _validated_content_boundary(torrent, save_path)
+        if content_boundary is not None:
+            content_path, content_mode = content_boundary
+            if stat.S_ISREG(content_mode):
+                owned_paths.add(content_path)
+                continue
+            if stat.S_ISDIR(content_mode) and content_path not in candidate_boundaries:
+                continue
+
+        file_metadata_fetches += 1
+        owned_paths.update(
+            _exact_torrent_owned_paths(
+                client,
+                torrent,
+                resolved_save_paths,
+                context=context,
+                refresh_file_metadata=refresh_file_metadata,
+                tolerate_confirmed_removal=tolerate_confirmed_removal,
+            )
+        )
+
+    return _TorrentOwnership(
+        owned_paths=frozenset(owned_paths),
+        active_save_paths=frozenset(active_save_paths),
+        file_metadata_fetches=file_metadata_fetches,
+    )
+
+
 def _resolve_explicit_scan_roots(orphan_scan_roots: Sequence[str] | None) -> set[Path]:
     """Return canonical operator-authorized orphan traversal roots."""
     if orphan_scan_roots is None:
@@ -185,6 +296,7 @@ def check_files_on_disk(  # noqa: C901
     exclude_file_patterns: list[str] | None = None,
     exclude_dirs: list[str] | None = None,
     orphan_scan_roots: Sequence[str] | None = None,
+    orphan_min_age_seconds: int = 0,
 ) -> list[str]:
     """
     Identifies orphaned files on disk that are not associated with any active torrents in qBittorrent.
@@ -195,6 +307,9 @@ def check_files_on_disk(  # noqa: C901
     Raises:
         SafetyCheckError: If complete torrent ownership cannot be established.
     """
+    if isinstance(orphan_min_age_seconds, bool) or not isinstance(orphan_min_age_seconds, int) or orphan_min_age_seconds < 0:
+        raise SafetyCheckError("Minimum orphan age must be a non-negative integer number of seconds")
+
     # Avoid mutable default arguments - create fresh lists if None
     exclude_file_patterns = exclude_file_patterns or []
     exclude_dirs = exclude_dirs or []
@@ -266,9 +381,12 @@ def check_files_on_disk(  # noqa: C901
             logging.warning(f"Invalid directory pattern '{pattern}': {e}")
 
     candidate_files: list[tuple[Path, str]] = []
+    scan_started_ns = time.time_ns()
+    minimum_age_ns = orphan_min_age_seconds * 1_000_000_000
     files_checked = 0
     files_excluded_by_pattern = 0
     files_excluded_by_dir = 0
+    files_excluded_by_age = 0
 
     # Scan managed roots recursively.
     for save_path in sorted(filtered_scan_roots, key=lambda path: len(path.parts)):
@@ -313,40 +431,49 @@ def check_files_on_disk(  # noqa: C901
                         files_excluded_by_pattern += 1
                         continue
 
+                if minimum_age_ns:
+                    try:
+                        modified_ns = entry_resolved.stat().st_mtime_ns
+                    except OSError as error:
+                        raise SafetyCheckError(f"Could not verify orphan candidate age safely: {entry}") from error
+                    if scan_started_ns - modified_ns < minimum_age_ns:
+                        files_excluded_by_age += 1
+                        continue
+
                 candidate_files.append((entry_resolved, str(entry)))
 
     logging.info(
-        f"Scanned {files_checked} files, excluded {files_excluded_by_pattern} by pattern, "
-        f"excluded {files_excluded_by_dir} by directory"
+        "Scanned %d files, excluded %d by pattern, %d by directory, and %d by minimum age",
+        files_checked,
+        files_excluded_by_pattern,
+        files_excluded_by_dir,
+        files_excluded_by_age,
     )
 
     # A long filesystem walk can overlap additions, re-additions, file renames,
     # and save-path changes. Refresh ownership only after the walk, replacing
     # any metadata cached by an earlier operation in this execution.
     current_torrents = _refresh_torrent_snapshot(client, context="after the orphan filesystem scan")
-    resolved_save_paths: dict[str, Path] = {}
-    current_owned_paths: set[Path] = set()
-    for torrent_hash in sorted(current_torrents):
-        current_owned_paths.update(
-            _torrent_owned_paths(
-                client,
-                current_torrents[torrent_hash],
-                resolved_save_paths,
-                context="while reconciling current ownership after the orphan scan",
-                refresh_file_metadata=True,
-            )
-        )
+    ownership = _build_torrent_ownership(
+        client,
+        current_torrents,
+        {path for path, _display_path in candidate_files},
+        context="while reconciling current ownership after the orphan scan",
+        refresh_file_metadata=True,
+        tolerate_confirmed_removal=True,
+    )
     logging.debug(
         "Tracking %d files from %d current torrents after scanning from an initial snapshot of %d torrents "
-        "(using %d unique save paths)",
-        len(current_owned_paths),
+        "(using %d unique save paths and %d exact file metadata requests)",
+        len(ownership.owned_paths),
         len(current_torrents),
         len(initial_torrents),
-        len(resolved_save_paths),
+        len(ownership.active_save_paths),
+        ownership.file_metadata_fetches,
     )
 
     orphaned_files = [
-        display_path for resolved_path, display_path in candidate_files if resolved_path not in current_owned_paths
+        display_path for resolved_path, display_path in candidate_files if resolved_path not in ownership.owned_paths
     ]
     removed_count = len(candidate_files) - len(orphaned_files)
     if removed_count:
@@ -423,62 +550,20 @@ def _get_active_configured_save_roots(client: QBittorrentClient, *, use_cache: b
 
 def _revalidate_orphan_ownership(client: QBittorrentClient, plan: OrphanFilePlan) -> set[Path]:
     """Fail closed on new owners and return current canonical save roots."""
-    try:
-        current_torrents = client.torrents.info()
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception as error:
-        raise SafetyCheckError("Could not refresh qBittorrent state before orphan cleanup") from error
-    if current_torrents is None:
-        raise SafetyCheckError("qBittorrent returned no torrent list during final orphan validation")
-    if not isinstance(current_torrents, Sequence) or isinstance(current_torrents, (str, bytes)):
-        raise SafetyCheckError("qBittorrent returned a malformed torrent list during final orphan validation")
-
-    owned_paths: set[Path] = set()
-    active_save_paths: set[Path] = set()
-    seen_hashes: set[str] = set()
-    for torrent in current_torrents:
-        torrent_hash = getattr(torrent, "hash", None)
-        save_path_value = getattr(torrent, "save_path", None)
-        if not isinstance(torrent_hash, str) or not torrent_hash or torrent_hash in seen_hashes:
-            raise SafetyCheckError("qBittorrent returned a missing or duplicate torrent hash")
-        if not isinstance(save_path_value, str) or not save_path_value:
-            raise SafetyCheckError(f"Torrent {torrent_hash} has no valid save path")
-        seen_hashes.add(torrent_hash)
-        save_path = _resolve_active_save_root(
-            save_path_value,
-            description=f"Torrent {torrent_hash} save path",
-        )
-        active_save_paths.add(save_path)
-
-        try:
-            raw_files = client.torrents_files(torrent_hash)
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception as error:
-            raise SafetyCheckError(f"Could not read file metadata for torrent {torrent_hash}") from error
-        if raw_files is None:
-            raise SafetyCheckError(f"Torrent {torrent_hash} returned no file metadata")
-        if not isinstance(raw_files, Sequence) or isinstance(raw_files, (str, bytes)):
-            raise SafetyCheckError(f"Torrent {torrent_hash} returned malformed file metadata")
-
-        for file_info in raw_files:
-            name = file_info.get("name") if isinstance(file_info, dict) else getattr(file_info, "name", None)
-            if not isinstance(name, str) or not name:
-                raise SafetyCheckError(f"Torrent {torrent_hash} returned malformed file metadata")
-            try:
-                owned_path = (save_path / name).resolve()
-            except (OSError, RuntimeError, ValueError) as error:
-                raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path") from error
-            if not owned_path.is_relative_to(save_path):
-                raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path")
-            owned_paths.add(owned_path)
-
-    claimed_paths = sorted(set(plan.paths) & owned_paths)
+    current_torrents = _refresh_torrent_snapshot(client, context="before orphan cleanup")
+    ownership = _build_torrent_ownership(
+        client,
+        current_torrents,
+        set(plan.paths),
+        context="during final orphan validation",
+        refresh_file_metadata=True,
+        tolerate_confirmed_removal=False,
+    )
+    claimed_paths = sorted(set(plan.paths) & ownership.owned_paths)
     if claimed_paths:
         formatted_paths = ", ".join(str(path) for path in claimed_paths)
         raise SafetyCheckError(f"Confirmed orphan path is now owned by qBittorrent: {formatted_paths}")
-    return active_save_paths
+    return set(ownership.active_save_paths)
 
 
 def _raise_incomplete_orphan_cleanup(
@@ -514,6 +599,7 @@ def delete_orphaned_files(  # noqa: C901
     *,
     plan: OrphanFilePlan | None = None,
     orphan_scan_roots: Sequence[str] | None = None,
+    orphan_max_candidates: int | None = None,
 ) -> None:
     """
     Deletes orphaned files and removes empty directories, while preserving active save paths.
@@ -530,6 +616,8 @@ def delete_orphaned_files(  # noqa: C901
             compatibility.
         orphan_scan_roots: Optional operator-authorized traversal roots to
             preserve during empty-directory pruning.
+        orphan_max_candidates: Optional real-run candidate limit. Dry-run
+            continues reporting the complete intended target set.
 
     Raises:
         SafetyCheckError: If traversal authority, ownership, or identity
@@ -552,6 +640,15 @@ def delete_orphaned_files(  # noqa: C901
     resolved_plan = OrphanFilePlan(
         files=tuple(identity for identity in candidate_plan.files if not is_internal_recycle_staging_path(identity.path))
     )
+    if orphan_max_candidates is not None and (
+        isinstance(orphan_max_candidates, bool) or not isinstance(orphan_max_candidates, int) or orphan_max_candidates < 1
+    ):
+        raise SafetyCheckError("Maximum orphan candidate count must be a positive integer")
+    if not dry_run and orphan_max_candidates is not None and len(resolved_plan.files) > orphan_max_candidates:
+        raise SafetyCheckError(
+            f"Orphan cleanup blocked: {len(resolved_plan.files)} candidates exceed the configured maximum "
+            f"of {orphan_max_candidates}"
+        )
     orphaned_files_set = set(resolved_plan.paths)
     expected_identities = {identity.path: identity for identity in resolved_plan.files}
     processed_files: set[Path] = set()

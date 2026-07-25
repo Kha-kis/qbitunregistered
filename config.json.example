@@ -50,6 +50,10 @@
 
   "//": "Optional additional absolute roots for orphan scanning. qBittorrent's default and category save paths are always scanned; use this only for nonstandard extra trees.",
   "orphan_scan_roots": [],
+
+  "//": "Optional orphan circuit breakers. Age 0 preserves current discovery behavior; null leaves the real-run candidate count unlimited. Dry-run always reports the complete age-eligible target set.",
+  "orphan_min_age_seconds": 0,
+  "orphan_max_candidates": null,
   
   "//": "A list of messages or patterns to match for unregistered torrents. Each entry in this list can be a full message (e.g., 'This torrent does not exist') or a pattern to match messages that start with specific text (e.g., 'starts_with:Trump').",
   "unregistered": [

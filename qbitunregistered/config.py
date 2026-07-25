@@ -44,6 +44,7 @@ def validate_config(config: dict[str, Any]) -> None:
     _validate_host(config, errors)
     _validate_basic_types(config, errors)
     _validate_orphan_scan_roots(config, errors)
+    _validate_orphan_safety_limits(config, errors)
     _validate_tracker_tags(config, errors)
     _validate_target_dir(config)
     _validate_scheduled_times(config, errors)
@@ -221,6 +222,19 @@ def _validate_orphan_scan_roots(config: dict[str, Any], errors: list[str]) -> No
             errors.append(f"'orphan_scan_roots[{index}]' must be a nonblank absolute path")
         elif not Path(root).is_absolute():
             errors.append(f"'orphan_scan_roots[{index}]' must be an absolute path: '{root}'")
+
+
+def _validate_orphan_safety_limits(config: dict[str, Any], errors: list[str]) -> None:
+    """Validate optional orphan age and candidate-count circuit breakers."""
+    minimum_age = config.get("orphan_min_age_seconds", 0)
+    if isinstance(minimum_age, bool) or not isinstance(minimum_age, int) or minimum_age < 0:
+        errors.append("'orphan_min_age_seconds' must be a non-negative integer")
+
+    maximum_candidates = config.get("orphan_max_candidates")
+    if maximum_candidates is not None and (
+        isinstance(maximum_candidates, bool) or not isinstance(maximum_candidates, int) or maximum_candidates < 1
+    ):
+        errors.append("'orphan_max_candidates' must be null or a positive integer")
 
 
 def _validate_tracker_tags(config: dict[str, Any], errors: list[str]) -> None:
