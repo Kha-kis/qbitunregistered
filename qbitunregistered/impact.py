@@ -455,6 +455,7 @@ def _analyze_orphaned(
         list(torrents),
         exclude_file_patterns=config.get("exclude_files", []),
         exclude_dirs=exclude_dirs,
+        orphan_scan_roots=config.get("orphan_scan_roots", []),
     )
     summary.orphan_file_plan = build_orphan_file_plan(orphaned_files)
     action = OrphanFileAction.RECYCLE if recycle_bin else OrphanFileAction.PERMANENT_DELETE

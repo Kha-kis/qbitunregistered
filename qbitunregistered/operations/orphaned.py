@@ -1,5 +1,6 @@
 import logging
 import re
+import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -160,11 +161,30 @@ def _torrent_owned_paths(  # noqa: C901
     return owned_paths
 
 
+def _resolve_explicit_scan_roots(orphan_scan_roots: Sequence[str] | None) -> set[Path]:
+    """Return canonical operator-authorized orphan traversal roots."""
+    if orphan_scan_roots is None:
+        return set()
+    if not isinstance(orphan_scan_roots, Sequence) or isinstance(orphan_scan_roots, (str, bytes)):
+        raise SafetyCheckError("Explicit orphan scan roots are malformed")
+
+    resolved_roots: set[Path] = set()
+    for index, root in enumerate(orphan_scan_roots):
+        resolved_roots.add(
+            _resolve_active_save_root(
+                root,
+                description=f"Explicit orphan scan root at index {index}",
+            )
+        )
+    return resolved_roots
+
+
 def check_files_on_disk(  # noqa: C901
-    client,
+    client: QBittorrentClient,
     torrents: list[Any],
     exclude_file_patterns: list[str] | None = None,
     exclude_dirs: list[str] | None = None,
+    orphan_scan_roots: Sequence[str] | None = None,
 ) -> list[str]:
     """
     Identifies orphaned files on disk that are not associated with any active torrents in qBittorrent.
@@ -181,32 +201,32 @@ def check_files_on_disk(  # noqa: C901
 
     logging.debug("Entering check_files_on_disk function...")
 
-    # Get the default save path (cached to reduce API calls)
-    # Use id(client) to scope cache per client instance, preventing contamination
-    default_save_path = Path(_get_default_save_path(client, cache_scope=id(client)))
+    # qBittorrent's configured roots preserve the existing default traversal
+    # scope. Operator roots are additive; individual torrent save paths never
+    # grant traversal authority.
+    managed_scan_roots = _get_active_configured_save_roots(client, use_cache=True)
+    managed_scan_roots.update(_resolve_explicit_scan_roots(orphan_scan_roots))
 
-    # Get explicitly defined category save paths (cached to reduce API calls)
-    categories = _get_categories(client, cache_scope=id(client))
-    category_paths = {
-        Path(category.get("savePath", "")).resolve() if category.get("savePath") else default_save_path / category_name
-        for category_name, category in categories.items()
-    }
-
-    # Only scan the default save path and category save paths
-    valid_save_paths = {default_save_path} | category_paths
-
-    # Ensure paths exist before scanning
-    valid_save_paths = {path for path in valid_save_paths if path.exists()}
+    existing_scan_roots: set[Path] = set()
+    for root in managed_scan_roots:
+        try:
+            root_stat = root.stat()
+        except FileNotFoundError:
+            logging.warning("Skipping orphan scan root that does not exist: %s", root)
+            continue
+        except OSError as error:
+            raise SafetyCheckError(f"Could not inspect orphan scan root safely: {root}") from error
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise SafetyCheckError(f"Orphan scan root is not a directory: {root}")
+        existing_scan_roots.add(root)
 
     # Remove redundant subdirectories (keep only the highest-level paths)
-    filtered_save_paths = set()
-    for path in sorted(valid_save_paths, key=lambda p: len(str(p))):
-        if not any(parent in filtered_save_paths for parent in path.parents):
-            filtered_save_paths.add(path)
+    filtered_scan_roots: set[Path] = set()
+    for path in sorted(existing_scan_roots, key=lambda item: len(item.parts)):
+        if not any(parent in filtered_scan_roots for parent in path.parents):
+            filtered_scan_roots.add(path)
 
-    valid_save_paths = filtered_save_paths
-
-    logging.info(f"Scanning {len(valid_save_paths)} save paths for orphaned files...")
+    logging.info("Scanning %d managed roots for orphaned files...", len(filtered_scan_roots))
 
     # Validate the caller's start-of-scan snapshot, but defer file metadata
     # reads until after the filesystem walk so rename and re-add mappings are
@@ -250,9 +270,9 @@ def check_files_on_disk(  # noqa: C901
     files_excluded_by_pattern = 0
     files_excluded_by_dir = 0
 
-    # Scan category paths recursively
-    for save_path in sorted(valid_save_paths, key=lambda p: len(str(p))):  # Sort by shortest path first
-        logging.info(f"Checking files in: {save_path}")
+    # Scan managed roots recursively.
+    for save_path in sorted(filtered_scan_roots, key=lambda path: len(path.parts)):
+        logging.info("Checking files in: %s", save_path)
 
         for entry in save_path.rglob("*"):  # Recursive check inside category paths
             if is_internal_recycle_staging_path(entry):
@@ -493,6 +513,7 @@ def delete_orphaned_files(  # noqa: C901
     recycle_bin: str | None = None,
     *,
     plan: OrphanFilePlan | None = None,
+    orphan_scan_roots: Sequence[str] | None = None,
 ) -> None:
     """
     Deletes orphaned files and removes empty directories, while preserving active save paths.
@@ -507,10 +528,12 @@ def delete_orphaned_files(  # noqa: C901
         plan: Optional identity plan produced during impact analysis. When
             omitted, identities are captured before any mutation for backward
             compatibility.
+        orphan_scan_roots: Optional operator-authorized traversal roots to
+            preserve during empty-directory pruning.
 
     Raises:
-        SafetyCheckError: If ownership or identity validation fails, or any
-            planned file action cannot be completed.
+        SafetyCheckError: If traversal authority, ownership, or identity
+            validation fails, or any planned file action cannot be completed.
     """
     deleted_files_count = 0
     skipped_files: list[tuple[Path, str]] = []
@@ -537,7 +560,21 @@ def delete_orphaned_files(  # noqa: C901
         logging.info("No orphaned files found. Nothing to delete.")
         return
 
-    active_save_paths = _get_active_configured_save_roots(client, use_cache=dry_run)
+    managed_scan_roots = _get_active_configured_save_roots(client, use_cache=dry_run)
+    managed_scan_roots.update(_resolve_explicit_scan_roots(orphan_scan_roots))
+    if not dry_run:
+        unauthorized_paths = sorted(
+            path for path in resolved_plan.paths if not any(path.is_relative_to(root) for root in managed_scan_roots)
+        )
+        if unauthorized_paths:
+            action = "moved to the recycle bin" if recycle_bin else "deleted"
+            _raise_incomplete_orphan_cleanup(
+                [(path, "path is no longer beneath a current managed orphan scan root") for path in unauthorized_paths],
+                action=action,
+                completed_count=0,
+                planned_count=len(resolved_plan.files),
+            )
+    active_save_paths = set(managed_scan_roots)
 
     # Track directories that will become empty
     potential_empty_dirs = set()

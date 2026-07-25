@@ -125,6 +125,29 @@ The latest update introduces two new configurable tags in `config.json`:
 
 These can be customized to align with your tagging strategy, providing enhanced flexibility in torrent management.
 
+### Orphan Scan Roots
+
+Orphan scanning recursively covers qBittorrent's configured default save path
+and category save paths. Nested directories under those paths are already
+included. To manage an additional nonstandard tree, add absolute paths with:
+
+```json
+{
+  "orphan_scan_roots": ["/srv/additional-downloads"]
+}
+```
+
+Explicit roots are additive to the qBittorrent-discovered roots. Every entry
+must be a nonblank absolute path; it does not need to exist when the
+configuration is validated. Paths outside the discovered and explicit roots
+are not traversed. A torrent save path outside those roots protects its exact
+registered files but does not authorize scanning the surrounding directory.
+Ownership is path-based, so another pathname that hardlinks to the same inode
+is not treated as registered unless qBittorrent reports that pathname. Before
+real mutation, qBittorrent's default and category roots are read again. The
+entire plan is rejected if a confirmed path is no longer beneath a current
+discovered root or the unchanged explicit roots.
+
 ### Logging Configuration
 
 Control logging behavior through `config.json` or command-line arguments:
@@ -258,6 +281,9 @@ Here's what you can specify when running `qbitunregistered`:
 - `--tag-by-age`: Perform tagging based on torrent age in months.
 - `--exclude-files`: Exclude files from being considered in operations based on glob patterns (e.g., `*.tmp`, `*.part`). Multiple patterns can be specified separated by spaces.
 - `--exclude-dirs`: Exclude directories from being scanned for orphaned files. Full paths should be specified, and wildcards can be used to match multiple directories (e.g., `/path/to/exclude/*`). Multiple paths can be specified separated by spaces.
+- `--orphan-scan-roots`: Replace the configured list of additional orphan scan
+  roots for this run. Values must be nonblank absolute paths. qBittorrent's
+  default and category roots remain included.
 - `--log-level`: Set logging verbosity (DEBUG, INFO, WARNING, ERROR). Overrides config.json setting.
 - `--log-file`: Write logs to specified file in addition to console. Useful for scheduled/cron runs.
 - `--yes`, `-y`: Skip impact analysis and confirmation and proceed with operations automatically. Use with caution and only after testing the same operation set with dry-run.
@@ -276,7 +302,11 @@ deletion. Cross-seed tagging previews also list contradictory tags that will be
 removed. Before file mutation, execution refreshes qBittorrent's ownership
 state without the preview cache and aborts if it changed.
 
-Long orphan scans reconcile qBittorrent again after walking the filesystem.
+Long orphan scans traverse only qBittorrent's default and category roots plus
+any configured explicit roots, then reconcile qBittorrent again after walking
+the filesystem. Per-torrent save paths outside those managed roots do not
+broaden traversal. Exact registered file paths still protect current torrent
+content wherever it is stored; hardlinked aliases remain distinct pathnames.
 Ownership is rebuilt from the refreshed torrent list and current file mappings,
 so files claimed by added or re-added torrents, renamed files, and changed save
 paths are removed from the orphan plan. Torrents no longer present after the

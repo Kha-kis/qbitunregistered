@@ -127,6 +127,120 @@ class TestSetOperations:
         assert excluded_parent in exclude_dirs
 
 
+class TestManagedScanRoots:
+    """Test the explicit traversal-authority boundary for orphan discovery."""
+
+    @staticmethod
+    def _client(default_root: Path, categories: dict | None = None) -> MagicMock:
+        client = MagicMock()
+        client.application.default_save_path = str(default_root)
+        client.torrent_categories.categories = categories or {}
+        client.torrents.info.return_value = []
+        return client
+
+    def test_default_root_is_scanned_and_outside_paths_are_untouched(self, tmp_path):
+        default_root = tmp_path / "default"
+        outside_root = tmp_path / "outside"
+        default_root.mkdir()
+        outside_root.mkdir()
+        managed_orphan = default_root / "managed.mkv"
+        outside_file = outside_root / "outside.mkv"
+        managed_orphan.write_text("managed", encoding="utf-8")
+        outside_file.write_text("outside", encoding="utf-8")
+        client = self._client(default_root)
+
+        assert check_files_on_disk(client, []) == [str(managed_orphan)]
+        assert outside_file.read_text(encoding="utf-8") == "outside"
+
+    def test_explicit_roots_are_additive_to_default_root(self, tmp_path):
+        default_root = tmp_path / "default"
+        explicit_root = tmp_path / "explicit"
+        default_root.mkdir()
+        explicit_root.mkdir()
+        default_orphan = default_root / "default.mkv"
+        explicit_orphan = explicit_root / "explicit.mkv"
+        default_orphan.write_text("default", encoding="utf-8")
+        explicit_orphan.write_text("explicit", encoding="utf-8")
+        client = self._client(default_root)
+
+        found = check_files_on_disk(client, [], orphan_scan_roots=[str(explicit_root)])
+
+        assert set(found) == {str(default_orphan), str(explicit_orphan)}
+
+    def test_category_root_is_scanned(self, tmp_path):
+        default_root = tmp_path / "default"
+        category_root = tmp_path / "category"
+        default_root.mkdir()
+        category_root.mkdir()
+        category_orphan = category_root / "category.mkv"
+        category_orphan.write_text("category", encoding="utf-8")
+        client = self._client(default_root, {"movies": {"savePath": str(category_root)}})
+
+        assert check_files_on_disk(client, []) == [str(category_orphan)]
+
+    def test_torrent_save_path_outside_managed_roots_does_not_expand_traversal(self, tmp_path):
+        default_root = tmp_path / "default"
+        torrent_root = tmp_path / "torrent-save"
+        default_root.mkdir()
+        torrent_root.mkdir()
+        managed_orphan = default_root / "managed.mkv"
+        registered = torrent_root / "registered.mkv"
+        outside_unregistered = torrent_root / "unregistered.mkv"
+        managed_orphan.write_text("managed", encoding="utf-8")
+        registered.write_text("registered", encoding="utf-8")
+        outside_unregistered.write_text("outside", encoding="utf-8")
+        client = self._client(default_root)
+        torrent = MagicMock(hash="outside-owner", save_path=str(torrent_root))
+        client.torrents.info.return_value = [torrent]
+        client.torrents_files.return_value = [{"name": registered.name}]
+
+        assert check_files_on_disk(client, [torrent]) == [str(managed_orphan)]
+        assert outside_unregistered.read_text(encoding="utf-8") == "outside"
+
+    def test_active_qbittorrent_path_under_explicit_root_is_protected(self, tmp_path):
+        default_root = tmp_path / "default"
+        explicit_root = tmp_path / "explicit"
+        default_root.mkdir()
+        explicit_root.mkdir()
+        registered = explicit_root / "registered.mkv"
+        registered.write_text("registered", encoding="utf-8")
+        client = self._client(default_root)
+        torrent = MagicMock(hash="explicit-owner", save_path=str(explicit_root))
+        client.torrents.info.return_value = [torrent]
+        client.torrents_files.return_value = [{"name": registered.name}]
+
+        assert check_files_on_disk(client, [torrent], orphan_scan_roots=[str(explicit_root)]) == []
+
+    def test_unregistered_hardlink_alias_inside_managed_root_remains_candidate(self, tmp_path):
+        default_root = tmp_path / "default"
+        explicit_root = tmp_path / "explicit"
+        torrent_root = tmp_path / "torrent-save"
+        default_root.mkdir()
+        explicit_root.mkdir()
+        torrent_root.mkdir()
+        registered = torrent_root / "registered.mkv"
+        alias = explicit_root / "alias.mkv"
+        registered.write_text("shared inode", encoding="utf-8")
+        alias.hardlink_to(registered)
+        client = self._client(default_root)
+        torrent = MagicMock(hash="outside-owner", save_path=str(torrent_root))
+        client.torrents.info.return_value = [torrent]
+        client.torrents_files.return_value = [{"name": registered.name}]
+
+        assert registered.stat().st_ino == alias.stat().st_ino
+        assert check_files_on_disk(client, [torrent], orphan_scan_roots=[str(explicit_root)]) == [str(alias)]
+
+    def test_existing_explicit_root_must_be_a_directory(self, tmp_path):
+        default_root = tmp_path / "default"
+        invalid_root = tmp_path / "not-a-directory"
+        default_root.mkdir()
+        invalid_root.write_text("file", encoding="utf-8")
+        client = self._client(default_root)
+
+        with pytest.raises(SafetyCheckError, match="not a directory"):
+            check_files_on_disk(client, [], orphan_scan_roots=[str(invalid_root)])
+
+
 class TestOrphanScanReconciliation:
     """Regression tests for long-running scan ownership changes."""
 
@@ -584,6 +698,100 @@ class TestRecycleBin:
         assert second.read_text(encoding="utf-8") == "second"
         assert not (tmp_path / "recycle").exists()
 
+    @pytest.mark.parametrize("use_recycle_bin", [False, True], ids=["permanent", "recycle"])
+    def test_current_default_root_change_blocks_all_mutation(
+        self,
+        mock_client,
+        tmp_path,
+        use_recycle_bin,
+    ):
+        """A stale discovered root cannot authorize confirmed file mutation."""
+        old_root = tmp_path / "old-default"
+        new_root = tmp_path / "new-default"
+        old_root.mkdir()
+        new_root.mkdir()
+        first = old_root / "first.mkv"
+        second = old_root / "second.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        mock_client.application.default_save_path = str(old_root)
+        mock_client.torrent_categories.categories = {}
+        mock_client.torrents.info.return_value = []
+        orphaned_files = check_files_on_disk(mock_client, [])
+        plan = build_orphan_file_plan(orphaned_files)
+        mock_client.application.default_save_path = str(new_root)
+        recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
+
+        with pytest.raises(SafetyCheckError, match="0 of 2 planned files"):
+            delete_orphaned_files(
+                orphaned_files,
+                dry_run=False,
+                client=mock_client,
+                recycle_bin=str(recycle_bin) if recycle_bin else None,
+                plan=plan,
+            )
+
+        assert first.read_text(encoding="utf-8") == "first"
+        assert second.read_text(encoding="utf-8") == "second"
+        assert recycle_bin is None or not recycle_bin.exists()
+
+    def test_removed_category_root_blocks_all_mutation(self, mock_client, tmp_path):
+        """Removing a category revokes its independent traversal authority."""
+        default_root = tmp_path / "default"
+        category_root = tmp_path / "category"
+        default_root.mkdir()
+        category_root.mkdir()
+        orphan = category_root / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        mock_client.application.default_save_path = str(default_root)
+        mock_client.torrent_categories.categories = {"movies": {"savePath": str(category_root)}}
+        mock_client.torrents.info.return_value = []
+        orphaned_files = check_files_on_disk(mock_client, [])
+        plan = build_orphan_file_plan(orphaned_files)
+        mock_client.torrent_categories.categories = {}
+
+        with pytest.raises(SafetyCheckError, match="0 of 1 planned files"):
+            delete_orphaned_files(
+                orphaned_files,
+                dry_run=False,
+                client=mock_client,
+                plan=plan,
+            )
+
+        assert orphan.read_text(encoding="utf-8") == "orphan"
+
+    def test_explicit_root_remains_authorized_when_default_root_changes(self, mock_client, tmp_path):
+        """Stable explicit authority survives unrelated qB root changes."""
+        old_default = tmp_path / "old-default"
+        new_default = tmp_path / "new-default"
+        explicit_root = tmp_path / "explicit"
+        old_default.mkdir()
+        new_default.mkdir()
+        explicit_root.mkdir()
+        orphan = explicit_root / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        mock_client.application.default_save_path = str(old_default)
+        mock_client.torrent_categories.categories = {}
+        mock_client.torrents.info.return_value = []
+        orphaned_files = check_files_on_disk(
+            mock_client,
+            [],
+            orphan_scan_roots=[str(explicit_root)],
+        )
+        plan = build_orphan_file_plan(orphaned_files)
+        mock_client.application.default_save_path = str(new_default)
+
+        delete_orphaned_files(
+            orphaned_files,
+            dry_run=False,
+            client=mock_client,
+            plan=plan,
+            orphan_scan_roots=[str(explicit_root)],
+        )
+
+        assert not orphan.exists()
+        assert explicit_root.is_dir()
+
     @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
     def test_symlinked_default_save_root_is_never_pruned(self, mock_client, tmp_path, caplog, dry_run):
         """Canonical default roots protect their real directories."""
@@ -634,6 +842,32 @@ class TestRecycleBin:
         assert orphan.exists() is dry_run
         assert season_dir.exists() is dry_run
         assert season_dir.parent.exists() is dry_run
+
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+    def test_explicit_scan_root_is_never_pruned(self, mock_client, tmp_path, caplog, dry_run):
+        """An operator-authorized scan root remains a pruning boundary."""
+        default_root = tmp_path / "default"
+        explicit_root = tmp_path / "explicit"
+        content_dir = explicit_root / "nested"
+        default_root.mkdir()
+        content_dir.mkdir(parents=True)
+        orphan = content_dir / "orphan.mkv"
+        orphan.write_text("orphan", encoding="utf-8")
+        mock_client.application.default_save_path = str(default_root)
+
+        delete_orphaned_files(
+            [str(orphan)],
+            dry_run=dry_run,
+            client=mock_client,
+            torrents=[],
+            orphan_scan_roots=[str(explicit_root)],
+        )
+
+        assert explicit_root.is_dir()
+        action = "Would remove" if dry_run else "Deleted"
+        assert f"{action} empty directory: {explicit_root}" not in caplog.messages
+        assert orphan.exists() is dry_run
+        assert content_dir.exists() is dry_run
 
     @pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
     def test_internal_recovery_path_is_excluded_from_scan_and_pruning(
@@ -704,7 +938,7 @@ class TestRecycleBin:
         """The uncached current torrent snapshot protects canonical save roots."""
         default_save_root = tmp_path / "default"
         default_save_root.mkdir()
-        real_torrent_root = tmp_path / "real-current"
+        real_torrent_root = default_save_root / "real-current"
         real_torrent_root.mkdir()
         configured_torrent_root = tmp_path / "configured-current"
         configured_torrent_root.symlink_to(real_torrent_root, target_is_directory=True)

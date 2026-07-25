@@ -441,6 +441,48 @@ class TestConfigValidation:
         assert "must be an absolute path" in str(exc_info.value)
         assert "security requirement" in str(exc_info.value)
 
+    def test_nonexistent_orphan_scan_root_is_valid(self, tmp_path):
+        """Explicit scan roots are format-validated without requiring existence."""
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "orphan_scan_roots": [str(tmp_path / "not-created")],
+        }
+
+        validate_config(config)
+
+    def test_orphan_scan_roots_must_be_a_list(self, tmp_path):
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "orphan_scan_roots": str(tmp_path),
+        }
+
+        with pytest.raises(ConfigValidationError, match="'orphan_scan_roots' must be a list"):
+            validate_config(config)
+
+    @pytest.mark.parametrize(
+        ("root", "expected_error"),
+        [
+            (123, "must be a string"),
+            ("", "must be a nonblank absolute path"),
+            ("   ", "must be a nonblank absolute path"),
+            ("relative/path", "must be an absolute path"),
+        ],
+    )
+    def test_orphan_scan_root_entries_fail_closed(self, root, expected_error):
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "orphan_scan_roots": [root],
+        }
+
+        with pytest.raises(ConfigValidationError, match=expected_error):
+            validate_config(config)
+
 
 class TestDryRunResolution:
     """Test command-line and configuration dry-run precedence."""

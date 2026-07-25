@@ -291,14 +291,16 @@ class TestAnalyzeOrphaned:
         orphan.write_bytes(b"x" * (2 * 1024**2))
         recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
         config = {"recycle_bin": str(recycle_bin)} if recycle_bin else {}
+        config["orphan_scan_roots"] = [str(tmp_path / "extra")]
         summary = ImpactSummary()
 
         with patch(
             "qbitunregistered.operations.orphaned.check_files_on_disk",
             return_value=[str(orphan)],
-        ):
+        ) as scan:
             _analyze_orphaned(Mock(), [], config, summary)
 
+        assert scan.call_args.kwargs["orphan_scan_roots"] == [str(tmp_path / "extra")]
         formatted = summary.format_summary()
         expected_action = OrphanFileAction.RECYCLE if use_recycle_bin else OrphanFileAction.PERMANENT_DELETE
         assert summary.orphan_file_action is expected_action

@@ -111,6 +111,12 @@ parser.add_argument("--tag-by-cross-seed", action="store_true", help="If set, ta
 parser.add_argument("--exclude-files", nargs="+", default=[], help="List of file patterns to exclude.")
 parser.add_argument("--exclude-dirs", nargs="+", default=[], help="List of directories to exclude.")
 parser.add_argument(
+    "--orphan-scan-roots",
+    nargs="+",
+    default=None,
+    help="Additional absolute directory paths to scan for orphaned files. Overrides configured explicit roots.",
+)
+parser.add_argument(
     "--log-level", type=str, choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Set logging level (default: INFO)"
 )
 parser.add_argument("--log-file", type=str, help="Write logs to specified file in addition to console")
@@ -367,8 +373,10 @@ def main(argv: list[str] | None = None) -> int:
         config["target_dir"] = target_dir
     exclude_files = args.exclude_files if args.exclude_files else config.get("exclude_files", [])
     exclude_dirs = args.exclude_dirs if args.exclude_dirs else config.get("exclude_dirs", [])
+    orphan_scan_roots = args.orphan_scan_roots if args.orphan_scan_roots is not None else config.get("orphan_scan_roots", [])
     config["exclude_files"] = exclude_files
     config["exclude_dirs"] = exclude_dirs
+    config["orphan_scan_roots"] = orphan_scan_roots
 
     # Notification configuration
     for field in ("apprise_url", "notifiarr_key", "notifiarr_channel"):
@@ -538,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
                     torrents,
                     exclude_file_patterns=exclude_files,
                     exclude_dirs=exclude_dirs_for_scan,
+                    orphan_scan_roots=orphan_scan_roots,
                 )
                 orphan_plan = build_orphan_file_plan(orphaned_files)
             orphaned_files = [str(path) for path in orphan_plan.paths]
@@ -558,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
                 torrents=torrents,
                 recycle_bin=recycle_bin,
                 plan=orphan_plan,
+                orphan_scan_roots=orphan_scan_roots,
             )
             operation_results["succeeded"].append(_format_orphaned_operation_result(len(orphaned_files), dry_run, recycle_bin))
         except (KeyboardInterrupt, SystemExit):
