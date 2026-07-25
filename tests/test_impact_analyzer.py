@@ -1,5 +1,7 @@
 """Tests for the impact analyzer module."""
 
+from typing import Any
+
 import pytest
 from unittest.mock import Mock, patch
 from qbitunregistered.impact import (
@@ -141,6 +143,17 @@ class TestImpactSummary:
 
         assert any("orphaned files will be moved to the recycle bin" in warning for warning in warnings)
         assert not any("orphaned files will be deleted" in warning for warning in warnings)
+
+    def test_warning_when_orphan_candidate_limit_will_block_real_cleanup(self):
+        summary = ImpactSummary()
+        summary.orphan_max_candidates = 1
+        summary.add_orphaned_file("/path/first")
+        summary.add_orphaned_file("/path/second")
+
+        warnings = summary.get_warning_messages()
+
+        assert any("exceed the configured maximum of 1" in warning for warning in warnings)
+        assert any("blocked before any file mutation" in warning for warning in warnings)
 
     def test_format_summary_empty(self):
         """Test formatting empty summary."""
@@ -290,8 +303,10 @@ class TestAnalyzeOrphaned:
         orphan = tmp_path / "orphan.mkv"
         orphan.write_bytes(b"x" * (2 * 1024**2))
         recycle_bin = tmp_path / "recycle" if use_recycle_bin else None
-        config = {"recycle_bin": str(recycle_bin)} if recycle_bin else {}
+        config: dict[str, Any] = {"recycle_bin": str(recycle_bin)} if recycle_bin else {}
         config["orphan_scan_roots"] = [str(tmp_path / "extra")]
+        config["orphan_min_age_seconds"] = 60
+        config["orphan_max_candidates"] = 1
         summary = ImpactSummary()
 
         with patch(
@@ -301,6 +316,8 @@ class TestAnalyzeOrphaned:
             _analyze_orphaned(Mock(), [], config, summary)
 
         assert scan.call_args.kwargs["orphan_scan_roots"] == [str(tmp_path / "extra")]
+        assert scan.call_args.kwargs["orphan_min_age_seconds"] == 60
+        assert summary.orphan_max_candidates == 1
         formatted = summary.format_summary()
         expected_action = OrphanFileAction.RECYCLE if use_recycle_bin else OrphanFileAction.PERMANENT_DELETE
         assert summary.orphan_file_action is expected_action
@@ -755,7 +772,7 @@ class TestAnalyzeCrossSeeding:
 
         clear_cache()
         client = Mock()
-        client.torrents_files.side_effect = lambda torrent_hash: {
+        client.torrents_files.side_effect = lambda torrent_hash, **_kwargs: {
             "shared1": [{"name": "movie.mkv"}],
             "shared2": [{"name": "movie.mkv"}],
             "unique": [{"name": "other.mkv"}],

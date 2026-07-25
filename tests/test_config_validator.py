@@ -252,6 +252,39 @@ class TestConfigValidation:
 
         validate_config(config)
 
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("orphan_min_age_seconds", -1, "non-negative integer"),
+            ("orphan_min_age_seconds", True, "non-negative integer"),
+            ("orphan_min_age_seconds", 1.5, "non-negative integer"),
+            ("orphan_max_candidates", 0, "null or a positive integer"),
+            ("orphan_max_candidates", False, "null or a positive integer"),
+            ("orphan_max_candidates", "10", "null or a positive integer"),
+        ],
+    )
+    def test_invalid_orphan_safety_limits(self, field, value, message):
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            field: value,
+        }
+
+        with pytest.raises(ConfigValidationError, match=message):
+            validate_config(config)
+
+    def test_valid_orphan_safety_limits(self):
+        config = {
+            "host": "localhost:8080",
+            "username": "admin",
+            "password": "password",
+            "orphan_min_age_seconds": 0,
+            "orphan_max_candidates": 10,
+        }
+
+        validate_config(config)
+
     def test_dormant_scheduled_hard_links_do_not_require_target_dir(self):
         config = {
             "host": "localhost:8080",

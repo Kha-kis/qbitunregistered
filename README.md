@@ -148,6 +148,22 @@ real mutation, qBittorrent's default and category roots are read again. The
 entire plan is rejected if a confirmed path is no longer beneath a current
 discovered root or the unchanged explicit roots.
 
+Two optional circuit breakers are available:
+
+```json
+{
+  "orphan_min_age_seconds": 86400,
+  "orphan_max_candidates": 100
+}
+```
+
+`orphan_min_age_seconds` ignores newer files during discovery; its default is
+`0`. `orphan_max_candidates` defaults to `null` (unlimited). When a real run
+exceeds a configured maximum, the entire cleanup is blocked before any file is
+moved or unlinked. Dry-run still reports every age-eligible intended target and
+warns that the real cleanup would be blocked. The built-in scheduler uses the
+same validated configuration.
+
 ### Logging Configuration
 
 Control logging behavior through `config.json` or command-line arguments:
@@ -284,6 +300,10 @@ Here's what you can specify when running `qbitunregistered`:
 - `--orphan-scan-roots`: Replace the configured list of additional orphan scan
   roots for this run. Values must be nonblank absolute paths. qBittorrent's
   default and category roots remain included.
+- `--orphan-min-age-seconds`: Replace the configured non-negative minimum
+  candidate age for this run.
+- `--orphan-max-candidates`: Replace the configured positive real-run
+  candidate limit for this run.
 - `--log-level`: Set logging verbosity (DEBUG, INFO, WARNING, ERROR). Overrides config.json setting.
 - `--log-file`: Write logs to specified file in addition to console. Useful for scheduled/cron runs.
 - `--yes`, `-y`: Skip impact analysis and confirmation and proceed with operations automatically. Use with caution and only after testing the same operation set with dry-run.
@@ -314,6 +334,16 @@ walk do not claim files. Incomplete or malformed ownership data aborts cleanup
 instead of authorizing deletion, and real execution performs another uncached
 ownership check immediately before mutation. Refreshed metadata replaces the
 execution-cache entry so later operations reuse the current mapping.
+
+For an existing regular single-file torrent, the canonical bulk
+`content_path` is already an exact owned pathname, so no per-torrent file-list
+request is needed. Multi-file torrents still use exact file paths; their file
+lists are requested only when their validated content directory can overlap a
+candidate. Missing, malformed, inaccessible, or symlinked bulk paths fall back
+to live exact metadata and never authorize deletion. Final validation applies
+the same boundary targeting to the confirmed plan. Requests remain sequential
+because the supported client exposes shared session and cache state without a
+thread-safety guarantee.
 
 Orphan cleanup also revalidates every confirmed file identity before a real
 mutation. If any planned file cannot be deleted or recycled, the operation is

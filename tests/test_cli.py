@@ -873,6 +873,39 @@ def test_cli_orphan_scan_roots_override_configured_explicit_roots(tmp_path) -> N
     assert delete.call_args.kwargs["orphan_scan_roots"] == [str(cli_root)]
 
 
+def test_cli_orphan_safety_limits_override_configuration(tmp_path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        orphan_min_age_seconds=60,
+        orphan_max_candidates=100,
+    )
+    client = _empty_client(tmp_path)
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.check_files_on_disk", return_value=[]) as scan,
+        patch("qbitunregistered.cli.delete_orphaned_files") as delete,
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(
+            [
+                "--config",
+                str(config_path),
+                "--orphaned",
+                "--orphan-min-age-seconds",
+                "120",
+                "--orphan-max-candidates",
+                "5",
+                "--dry-run",
+                "--yes",
+            ]
+        )
+
+    assert result == EXIT_SUCCESS
+    assert scan.call_args.kwargs["orphan_min_age_seconds"] == 120
+    assert delete.call_args.kwargs["orphan_max_candidates"] == 5
+
+
 def test_preview_and_execution_share_explicit_orphan_scan_roots(tmp_path) -> None:
     """Confirmed targets and pruning use the same additive explicit roots."""
     from qbitunregistered.operations.orphaned import check_files_on_disk, delete_orphaned_files
@@ -1051,7 +1084,7 @@ def test_orphan_owner_added_during_confirmation_blocks_all_mutation(tmp_path, us
     assert other_orphan.read_text(encoding="utf-8") == "other"
     if recycle_bin is not None:
         assert not recycle_bin.exists()
-    client.torrents_files.assert_called_once_with("new-owner")
+    client.torrents_files.assert_called_once_with("new-owner", SIMPLE_RESPONSES=True)
 
 
 def test_orphan_execution_does_not_add_files_newly_orphaned_during_confirmation(tmp_path) -> None:

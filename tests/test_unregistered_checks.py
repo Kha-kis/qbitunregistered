@@ -747,7 +747,7 @@ class TestUnregisteredRecycleBin:
             "second": [second_file_info],
         }
         mock_client.torrents.info.return_value = torrents
-        mock_client.torrents_files.side_effect = lambda torrent_hash: files_by_hash[torrent_hash]
+        mock_client.torrents_files.side_effect = lambda torrent_hash, **_kwargs: files_by_hash[torrent_hash]
         plan = build_unregistered_deletion_plan(
             mock_client,
             torrents,
@@ -1153,7 +1153,7 @@ class TestUnregisteredRecycleBin:
 
         # Setup client mocks
         mock_client.torrents.info.return_value = [mock_torrent, mock_other_torrent]
-        mock_client.torrents_files.side_effect = lambda torrent_hash: {
+        mock_client.torrents_files.side_effect = lambda torrent_hash, **_kwargs: {
             "unreg123": [mock_file_info],
             "other456": [mock_other_file_info],
         }[torrent_hash]
@@ -1410,7 +1410,7 @@ class TestUnregisteredRecycleBin:
             file_info.name = "data.bin"
             files_by_hash[torrent_hash] = [file_info]
 
-        mock_client.torrents_files.side_effect = lambda torrent_hash: files_by_hash[torrent_hash]
+        mock_client.torrents_files.side_effect = lambda torrent_hash, **_kwargs: files_by_hash[torrent_hash]
         plan = build_unregistered_deletion_plan(
             mock_client,
             torrents,
