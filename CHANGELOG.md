@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-25
+
 ### Added
 
 - Optional validated `orphan_scan_roots` configuration and
@@ -30,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inaccessible, and symlinked bulk paths fall back to live exact metadata.
   Final ownership validation uses the same candidate-targeted builder, and
   file-list responses use the client's plain-dictionary mode.
+- BasedPyright project and CI analysis now includes the complete test suite.
+  Existing test doubles and typed fixtures were corrected so the package and
+  tests report zero language-server diagnostics without blanket suppressions.
 
 ## [2.1.1] - 2026-07-25
 
@@ -360,7 +365,8 @@ This release represents a comprehensive overhaul focused on performance, securit
 
 *Note: This is the first release with a formal changelog. Previous versions are not documented here.*
 
-[Unreleased]: https://github.com/Kha-kis/qbitunregistered/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/Kha-kis/qbitunregistered/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/Kha-kis/qbitunregistered/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/Kha-kis/qbitunregistered/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/Kha-kis/qbitunregistered/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Kha-kis/qbitunregistered/compare/v1.0.0...v2.0.0
