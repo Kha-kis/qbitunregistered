@@ -5,10 +5,11 @@ from collections import defaultdict
 from unittest.mock import Mock, patch
 
 
-class MockTorrent:
+class MockTorrent(Mock):
     """Mock torrent object for testing."""
 
     def __init__(self, name, hash_val, creation_date=None, state="complete"):
+        super().__init__()
         self.name = name
         self.hash = hash_val
         # Convert datetime to timestamp for added_on
@@ -22,10 +23,11 @@ class MockTorrent:
         self.state_enum = MockStateEnum()
 
 
-class MockClient:
+class MockClient(Mock):
     """Mock qBittorrent client for testing."""
 
     def __init__(self):
+        super().__init__()
         self.tagged_torrents = defaultdict(list)
         self.api_calls = []
 

@@ -1,5 +1,10 @@
 """Tests for qBittorrent client construction."""
 
+from typing import Any
+from unittest.mock import MagicMock
+
+from qbittorrentapi import Client
+
 from qbitunregistered.client import build_client_kwargs, create_client
 
 
@@ -47,11 +52,11 @@ def test_api_key_takes_precedence():
 
 
 def test_create_client_passes_resolved_arguments():
-    captured = {}
+    captured: dict[str, Any] = {}
 
-    def fake_client(**kwargs):
+    def fake_client(**kwargs: Any) -> Client:
         captured.update(kwargs)
-        return object()
+        return MagicMock(spec=Client)
 
     config = {
         "host": "localhost:8080",
