@@ -403,6 +403,57 @@ def test_execution_confirmed_absence_aborts_conflicting_passed_deletion_plan() -
     client.torrents_delete.assert_not_called()
 
 
+def test_preview_cached_trackers_do_not_bypass_supplied_plan_prevalidation() -> None:
+    """A previewed torrent disappearing at confirmation aborts before tag mutation."""
+    from qbitunregistered.cache import clear_cache
+    from qbitunregistered.impact import ImpactSummary, _analyze_unregistered
+    from qbitunregistered.operations.unregistered_checks import unregistered_checks
+
+    clear_cache()
+    client = MagicMock()
+    planned = _unregistered_torrent("planned")
+    planned.tags = "delete"
+    other = _unregistered_torrent("other")
+    other.save_path = "/other"
+    tracker_metadata = {
+        "planned": [{"msg": "Working fine", "status": 2}],
+        "other": [{"msg": "Unregistered torrent", "status": 4}],
+    }
+    client.torrents_trackers.side_effect = lambda *, torrent_hash: tracker_metadata[torrent_hash]
+    config = {
+        **_unregistered_config(),
+        "use_delete_tags": True,
+        "delete_tags": ["delete"],
+        "delete_files": {"delete": False},
+    }
+    summary = ImpactSummary()
+
+    _analyze_unregistered(client, [planned, other], config, summary)
+
+    assert summary.unregistered_deletion_plan is not None
+    assert [deletion.torrent_hash for deletion in summary.unregistered_deletion_plan.deletions] == ["planned"]
+    assert client.torrents_trackers.call_count == 2
+
+    client.torrents.info.return_value = [other]
+
+    with pytest.raises(SafetyCheckError, match="Planned torrent planned is no longer available"):
+        unregistered_checks(
+            client,
+            [planned, other],
+            config,
+            use_delete_tags=True,
+            delete_tags=["delete"],
+            delete_files={"delete": False},
+            dry_run=False,
+            deletion_plan=summary.unregistered_deletion_plan,
+        )
+
+    client.torrents.info.assert_called_once_with()
+    assert client.torrents_trackers.call_count == 2
+    client.torrents_add_tags.assert_not_called()
+    client.torrents_delete.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("current_torrents", "expected_message"),
     [

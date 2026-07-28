@@ -809,6 +809,10 @@ def unregistered_checks(  # noqa: C901
             cross_seeding_tag_hashes.extend(unregistered_hashes)
             tag_counts[cross_seeding_tag] = tag_counts.get(cross_seeding_tag, 0) + len(unregistered_hashes)
 
+    if deletion_plan is not None and deletion_plan.deletions and not dry_run:
+        current_torrents = _refresh_torrents_for_deletion(client)
+        _revalidate_delete_tags(current_torrents, deletion_plan.deletions, delete_tags)
+
     # Apply tags in batches (2 API calls instead of N)
     if not dry_run:
         if default_tag_hashes:
