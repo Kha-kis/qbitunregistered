@@ -172,6 +172,13 @@ snapshot without cache before mutation. Every planned torrent's current
 matching delete tag is also revalidated before its deletion request. An
 incomplete recycle move preserves the torrent and raises an operation failure
 so CLI summaries, notifications, and scheduled exit codes remain truthful.
+Tracker reads shared by impact preview and execution tolerate unavailable
+per-torrent metadata only when a fresh, validated torrent snapshot proves that
+exact hash is absent. Confirmed removals are omitted from path counts and new
+deletion plans and carried in the immutable preview plan so execution cannot
+process a same-hash re-add through the stale bulk snapshot. An execution-time
+removal that conflicts with a supplied deletion plan aborts before tagging or
+deletion. Active or uncertain state also fails closed before tagging.
 
 #### `qbitunregistered/operations/orphaned.py` - Detect & Delete Orphaned Files
 
@@ -206,6 +213,12 @@ save-path changes. Torrents absent from the refreshed snapshot no longer claim
 ownership. If a per-torrent metadata request fails, the torrent is considered
 gone only when a validated fresh snapshot proves its hash is absent. Active or
 uncertain ownership raises `SafetyCheckError`.
+
+The scan captures each filesystem candidate's identity at discovery and carries
+that immutable evidence into plan construction. A candidate already absent at
+plan capture is logged and omitted because the plan cannot mutate it. A
+candidate that is inaccessible, non-regular, replaced after discovery, or
+changes during capture still fails the complete plan closed.
 
 Bulk boundary trust requires an absolute canonical path beneath the torrent
 save path, an accessible regular file or directory, and no symlink in any

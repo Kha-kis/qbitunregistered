@@ -5,6 +5,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, NoReturn, cast
 from fnmatch import translate
 
@@ -32,6 +33,20 @@ class OrphanFilePlan:
     def paths(self) -> tuple[Path, ...]:
         """Return the confirmed paths in deterministic order."""
         return tuple(identity.path for identity in self.files)
+
+
+class OrphanScanResult(list[str]):
+    """List-compatible orphan paths with immutable discovery identities."""
+
+    __slots__ = ("_discovered_identities",)
+
+    def __init__(self, paths: Sequence[str], discovered_identities: Mapping[str, FileIdentity]) -> None:
+        super().__init__(paths)
+        self._discovered_identities: Mapping[str, FileIdentity] = MappingProxyType(dict(discovered_identities))
+
+    def discovered_identity(self, path: str) -> FileIdentity | None:
+        """Return the filesystem identity captured when this path was discovered."""
+        return self._discovered_identities.get(path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,7 +395,7 @@ def check_files_on_disk(  # noqa: C901
         except re.error as e:
             logging.warning(f"Invalid directory pattern '{pattern}': {e}")
 
-    candidate_files: list[tuple[Path, str]] = []
+    candidate_files: list[tuple[FileIdentity, str]] = []
     scan_started_ns = time.time_ns()
     minimum_age_ns = orphan_min_age_seconds * 1_000_000_000
     files_checked = 0
@@ -440,7 +455,12 @@ def check_files_on_disk(  # noqa: C901
                         files_excluded_by_age += 1
                         continue
 
-                candidate_files.append((entry_resolved, str(entry)))
+                candidate_identity = _capture_current_orphan_identity(
+                    entry_resolved,
+                    missing_log_message="Orphan candidate disappeared during discovery; omitting path: %s",
+                )
+                if candidate_identity is not None:
+                    candidate_files.append((candidate_identity, str(entry)))
 
     logging.info(
         "Scanned %d files, excluded %d by pattern, %d by directory, and %d by minimum age",
@@ -457,7 +477,7 @@ def check_files_on_disk(  # noqa: C901
     ownership = _build_torrent_ownership(
         client,
         current_torrents,
-        {path for path, _display_path in candidate_files},
+        {identity.path for identity, _display_path in candidate_files},
         context="while reconciling current ownership after the orphan scan",
         refresh_file_metadata=True,
         tolerate_confirmed_removal=True,
@@ -472,10 +492,10 @@ def check_files_on_disk(  # noqa: C901
         ownership.file_metadata_fetches,
     )
 
-    orphaned_files = [
-        display_path for resolved_path, display_path in candidate_files if resolved_path not in ownership.owned_paths
+    orphaned_candidates = [
+        (identity, display_path) for identity, display_path in candidate_files if identity.path not in ownership.owned_paths
     ]
-    removed_count = len(candidate_files) - len(orphaned_files)
+    removed_count = len(candidate_files) - len(orphaned_candidates)
     if removed_count:
         logging.info(
             "Removed %d orphan candidates owned by the refreshed snapshot of %d torrents.",
@@ -483,23 +503,61 @@ def check_files_on_disk(  # noqa: C901
             len(current_torrents),
         )
 
-    return orphaned_files
+    return OrphanScanResult(
+        [display_path for _identity, display_path in orphaned_candidates],
+        {display_path: identity for identity, display_path in orphaned_candidates},
+    )
 
 
-def build_orphan_file_plan(orphaned_files: list[str]) -> OrphanFilePlan:
+def _capture_current_orphan_identity(path: Path, *, missing_log_message: str) -> FileIdentity | None:
+    """Capture one unchanged regular file, or return ``None`` if it is absent."""
+    try:
+        discovered_stat = path.lstat()
+    except FileNotFoundError:
+        logging.info(missing_log_message, path)
+        return None
+    except OSError as error:
+        raise SafetyCheckError(f"Could not inspect orphan candidate safely: {path}") from error
+    identity = capture_file_identity(path)
+    if not identity.matches(discovered_stat):
+        raise SafetyCheckError(f"Orphan candidate changed during identity capture: {path}")
+    return identity
+
+
+def build_orphan_file_plan(orphaned_files: Sequence[str]) -> OrphanFilePlan:
     """Capture immutable identities for paths found by the orphan scan.
 
     Raises:
-        SafetyCheckError: If any path cannot be confirmed as the same regular
-            file discovered by the scan.
+        SafetyCheckError: If any existing path cannot be confirmed as the same
+            regular file discovered by the scan.
     """
-    identities = tuple(
-        sorted(
-            (capture_file_identity(Path(path)) for path in orphaned_files if not is_internal_recycle_staging_path(Path(path))),
-            key=lambda item: item.path,
-        )
-    )
-    return OrphanFilePlan(files=identities)
+    identities: list[FileIdentity] = []
+    for value in orphaned_files:
+        path = Path(value)
+        if is_internal_recycle_staging_path(path):
+            continue
+        if isinstance(orphaned_files, OrphanScanResult):
+            identity = orphaned_files.discovered_identity(value)
+            if identity is None:
+                raise SafetyCheckError(f"Orphan scan evidence is missing for candidate: {path}")
+            try:
+                current_stat = path.lstat()
+            except FileNotFoundError:
+                logging.info("Orphan candidate disappeared before plan capture; omitting path: %s", path)
+                continue
+            except OSError as error:
+                raise SafetyCheckError(f"Could not inspect orphan candidate before plan capture: {path}") from error
+            if not identity.matches(current_stat):
+                raise SafetyCheckError(f"Orphan candidate changed after discovery: {path}")
+        else:
+            identity = _capture_current_orphan_identity(
+                path,
+                missing_log_message="Orphan candidate disappeared before plan capture; omitting path: %s",
+            )
+            if identity is None:
+                continue
+        identities.append(identity)
+    return OrphanFilePlan(files=tuple(sorted(identities, key=lambda item: item.path)))
 
 
 def _resolve_active_save_root(value: object, *, description: str) -> Path:

@@ -402,9 +402,9 @@ def _analyze_unregistered(
         DeletionAction,
         build_unregistered_deletion_plan,
         compile_patterns,
+        fetch_available_torrent_trackers,
         process_torrent,
     )
-    from qbitunregistered.operations.seeding_management import fetch_torrent_trackers
 
     exact_patterns, starts_with_patterns = compile_patterns(config.get("unregistered", []))
     default_tag = config.get("default_unregistered_tag", "unregistered")
@@ -413,9 +413,15 @@ def _analyze_unregistered(
     delete_tags = config.get("delete_tags", [])
     hashes_by_path: dict[str, list[str]] = defaultdict(list)
     all_hashes_by_path: dict[str, list[str]] = defaultdict(list)
+    available_torrents: list[TorrentInfo] = []
+    confirmed_absent_hashes: set[str] = set()
     for torrent in torrents:
+        trackers = fetch_available_torrent_trackers(client, torrent.hash)
+        if trackers is None:
+            confirmed_absent_hashes.add(torrent.hash)
+            continue
+        available_torrents.append(torrent)
         all_hashes_by_path[torrent.save_path].append(torrent.hash)
-        trackers = fetch_torrent_trackers(client, torrent.hash, cache_scope=id(client))
         if process_torrent(torrent, exact_patterns, starts_with_patterns, trackers):
             hashes_by_path[torrent.save_path].append(torrent.hash)
 
@@ -426,12 +432,13 @@ def _analyze_unregistered(
 
     summary.unregistered_deletion_plan = build_unregistered_deletion_plan(
         client,
-        torrents,
+        available_torrents,
         config,
         use_delete,
         delete_tags,
         config.get("delete_files", {}),
         config.get("recycle_bin"),
+        confirmed_absent_hashes=tuple(confirmed_absent_hashes),
     )
     action_labels = {
         DeletionAction.TORRENT_ONLY: "delete torrent only (keep files)",

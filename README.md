@@ -334,6 +334,20 @@ walk do not claim files. Incomplete or malformed ownership data aborts cleanup
 instead of authorizing deletion, and real execution performs another uncached
 ownership check immediately before mutation. Refreshed metadata replaces the
 execution-cache entry so later operations reuse the current mapping.
+Candidates that disappear after discovery but before plan capture are
+omitted because no path remains to mutate; inaccessible, replaced, non-regular,
+or otherwise uncertain candidates still abort the plan. The scan carries each
+candidate's discovery-time identity into planning, so a stable replacement
+installed before plan construction is rejected rather than authorized.
+
+Unregistered scanning handles the same live-removal race conservatively. If a
+per-torrent tracker request fails, preview and execution skip that torrent only
+after a fresh, validated qBittorrent snapshot confirms its exact hash is absent.
+Preview-confirmed absences remain suppressed through execution, including a
+same-hash re-add during confirmation. If execution proves a torrent absent that
+still appears in a confirmed deletion plan, the operation aborts before tagging
+or deletion. An active torrent, malformed response, or failed refresh also
+aborts the operation.
 
 For an existing regular single-file torrent, the canonical bulk
 `content_path` is already an exact owned pathname, so no per-torrent file-list

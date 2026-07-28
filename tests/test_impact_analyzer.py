@@ -367,6 +367,28 @@ class TestAnalyzeUnregistered:
 
         assert summary.is_empty()
 
+    def test_analyze_unregistered_omits_torrent_confirmed_removed_after_tracker_failure(self):
+        """Preview uses the same confirmed-removal policy as execution."""
+        from qbittorrentapi.exceptions import NotFound404Error
+
+        client = Mock()
+        client.torrents_trackers.side_effect = NotFound404Error()
+        client.torrents.info.return_value = []
+        torrent = Mock(hash="removed", save_path="/data", tags="")
+        summary = ImpactSummary()
+
+        _analyze_unregistered(
+            client,
+            [torrent],
+            {"unregistered": ["not registered"]},
+            summary,
+        )
+
+        assert summary.is_empty()
+        assert summary.unregistered_deletion_plan is not None
+        assert summary.unregistered_deletion_plan.deletions == ()
+        assert summary.unregistered_deletion_plan.confirmed_absent_hashes == ("removed",)
+
     def test_analyze_unregistered_with_matches(self):
         """Test analyzing unregistered with matching torrents."""
         mock_client = Mock()

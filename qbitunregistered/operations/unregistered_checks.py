@@ -4,7 +4,7 @@ from pathlib import Path
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 from tqdm import tqdm
 
 from qbitunregistered.file_operations import (
@@ -68,6 +68,22 @@ class UnregisteredDeletionPlan:
 
     deletions: tuple[PlannedTorrentDeletion, ...]
     ownership_snapshot: OwnershipSnapshot | None
+    confirmed_absent_hashes: tuple[str, ...] = ()
+
+
+def _validated_plan_absent_hashes(plan: UnregisteredDeletionPlan) -> set[str]:
+    """Return absent hashes after enforcing deletion-plan invariants."""
+    confirmed_absent_hashes: set[str] = set()
+    for torrent_hash in plan.confirmed_absent_hashes:
+        if not isinstance(torrent_hash, str) or not torrent_hash:
+            raise SafetyCheckError("Confirmed deletion plan contains malformed absent torrent hashes")
+        confirmed_absent_hashes.add(torrent_hash)
+    conflicting_hashes = confirmed_absent_hashes & {deletion.torrent_hash for deletion in plan.deletions}
+    if conflicting_hashes:
+        raise SafetyCheckError(
+            "Confirmed deletion plan contains torrents already proven absent: " + ", ".join(sorted(conflicting_hashes))
+        )
+    return confirmed_absent_hashes
 
 
 def _torrent_file_name(file_info: Any, torrent_hash: str) -> str:
@@ -156,10 +172,23 @@ def build_unregistered_deletion_plan(
     delete_tags: Sequence[str],
     delete_files: Mapping[str, bool],
     recycle_bin: str | None,
+    *,
+    confirmed_absent_hashes: Sequence[str] = (),
 ) -> UnregisteredDeletionPlan:
     """Build the exact torrent and file actions used by preview and execution."""
+    normalized_absent_hashes: set[str] = set()
+    for torrent_hash in confirmed_absent_hashes:
+        if not isinstance(torrent_hash, str) or not torrent_hash:
+            raise SafetyCheckError("Confirmed-absent torrent hashes are malformed")
+        normalized_absent_hashes.add(torrent_hash)
+    absent_hashes = tuple(sorted(normalized_absent_hashes))
+
     if not use_delete_tags:
-        return UnregisteredDeletionPlan(deletions=(), ownership_snapshot=None)
+        return UnregisteredDeletionPlan(
+            deletions=(),
+            ownership_snapshot=None,
+            confirmed_absent_hashes=absent_hashes,
+        )
 
     candidates: list[tuple[TorrentInfo, str, bool]] = []
     allow_file_deletion = config.get("use_delete_files", False) is True
@@ -170,7 +199,11 @@ def build_unregistered_deletion_plan(
         candidates.append((torrent, matching_tag, allow_file_deletion and delete_files.get(matching_tag, False)))
 
     if not candidates:
-        return UnregisteredDeletionPlan(deletions=(), ownership_snapshot=None)
+        return UnregisteredDeletionPlan(
+            deletions=(),
+            ownership_snapshot=None,
+            confirmed_absent_hashes=absent_hashes,
+        )
 
     needs_ownership = any(delete_requested for _torrent, _tag, delete_requested in candidates)
     snapshot = _build_ownership_snapshot(client, torrents, use_cache=True) if needs_ownership else None
@@ -249,7 +282,11 @@ def build_unregistered_deletion_plan(
             )
         )
 
-    return UnregisteredDeletionPlan(deletions=tuple(planned), ownership_snapshot=snapshot)
+    return UnregisteredDeletionPlan(
+        deletions=tuple(planned),
+        ownership_snapshot=snapshot,
+        confirmed_absent_hashes=absent_hashes,
+    )
 
 
 def _refresh_torrents_for_deletion(client: QBittorrentClient) -> Sequence[TorrentInfo]:
@@ -265,6 +302,59 @@ def _refresh_torrents_for_deletion(client: QBittorrentClient) -> Sequence[Torren
     if not isinstance(current_torrents, Sequence) or isinstance(current_torrents, (str, bytes)):
         raise SafetyCheckError("qBittorrent returned a malformed torrent list during final deletion validation")
     return current_torrents
+
+
+def _refresh_torrent_hashes_after_tracker_failure(client: QBittorrentClient, torrent_hash: str) -> set[str]:
+    """Return validated current hashes after one torrent's trackers fail."""
+    try:
+        current_torrents = client.torrents.info()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as refresh_error:
+        raise SafetyCheckError(
+            f"Could not refresh qBittorrent state after tracker metadata failed for torrent {torrent_hash}"
+        ) from refresh_error
+    if current_torrents is None:
+        raise SafetyCheckError(
+            f"qBittorrent returned no torrent list after tracker metadata failed for torrent {torrent_hash}"
+        )
+    if not isinstance(current_torrents, Sequence) or isinstance(current_torrents, (str, bytes)):
+        raise SafetyCheckError(
+            f"qBittorrent returned a malformed torrent list after tracker metadata failed for torrent {torrent_hash}"
+        )
+
+    current_hashes: set[str] = set()
+    for torrent in current_torrents:
+        current_hash = getattr(torrent, "hash", None)
+        if not isinstance(current_hash, str) or not current_hash or current_hash in current_hashes:
+            raise SafetyCheckError(
+                f"qBittorrent returned a missing or duplicate torrent hash after tracker metadata failed "
+                f"for torrent {torrent_hash}"
+            )
+        current_hashes.add(current_hash)
+    return current_hashes
+
+
+def fetch_available_torrent_trackers(client: QBittorrentClient, torrent_hash: str) -> list[Any] | None:
+    """Return tracker metadata, or ``None`` when a fresh snapshot proves removal.
+
+    Tracker metadata can become unavailable when a torrent disappears between
+    the bulk torrent read and its per-torrent tracker request. Any active or
+    uncertain torrent state remains a safety failure.
+    """
+    try:
+        return cast(list[Any], fetch_torrent_trackers(client, torrent_hash, cache_scope=id(client)))
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as tracker_error:
+        current_hashes = _refresh_torrent_hashes_after_tracker_failure(client, torrent_hash)
+        if torrent_hash in current_hashes:
+            raise SafetyCheckError(f"Could not read tracker metadata for active torrent {torrent_hash}") from tracker_error
+        logging.info(
+            "Torrent %s disappeared during unregistered scanning; ignoring its unavailable tracker metadata.",
+            torrent_hash,
+        )
+        return None
 
 
 def _revalidate_ownership_snapshot(
@@ -514,6 +604,7 @@ def delete_torrents_and_files(
             recycle_bin,
         )
 
+    _validated_plan_absent_hashes(plan)
     if not plan.deletions:
         return
 
@@ -631,15 +722,11 @@ def unregistered_checks(  # noqa: C901
     tag_counts: dict[str, int] = {}
     default_tag = config["default_unregistered_tag"]
     cross_seeding_tag = config["cross_seeding_tag"]
-    resolved_deletion_plan = deletion_plan or build_unregistered_deletion_plan(
-        client,
-        torrents,
-        config,
-        use_delete_tags,
-        delete_tags,
-        delete_files,
-        recycle_bin,
-    )
+    confirmed_absent_hashes: set[str] = set()
+    planned_deletion_hashes: set[str] = set()
+    if deletion_plan is not None:
+        confirmed_absent_hashes = _validated_plan_absent_hashes(deletion_plan)
+        planned_deletion_hashes = {deletion.torrent_hash for deletion in deletion_plan.deletions}
 
     # Pre-compile patterns for efficient matching
     unregistered_patterns = config.get("unregistered", [])
@@ -648,13 +735,30 @@ def unregistered_checks(  # noqa: C901
     # First pass: Collect all torrent data and unregistered status
     # Store per-path lists of unregistered torrent hashes for second pass
     unregistered_hashes_per_path: dict[str, list[str]] = {}
+    available_torrents: list[TorrentInfo] = []
 
     for torrent in tqdm(torrents, desc="Checking for unregistered torrents", unit="torrent"):
-        update_torrent_file_paths(torrent_file_paths, torrent)
+        if torrent.hash in confirmed_absent_hashes:
+            logging.info(
+                "Skipping torrent %s because impact analysis already confirmed it absent.",
+                torrent.hash,
+            )
+            continue
 
         # Use the same execution-scoped tracker metadata as impact analysis and
         # seeding management.
-        trackers = fetch_torrent_trackers(client, torrent.hash, cache_scope=id(client))
+        trackers = fetch_available_torrent_trackers(client, torrent.hash)
+        if trackers is None:
+            confirmed_absent_hashes.add(torrent.hash)
+            if torrent.hash in planned_deletion_hashes:
+                raise SafetyCheckError(
+                    f"Planned torrent {torrent.hash} disappeared during unregistered scanning; "
+                    "refusing the confirmed deletion plan"
+                )
+            continue
+
+        available_torrents.append(torrent)
+        update_torrent_file_paths(torrent_file_paths, torrent)
         unregistered_count = process_torrent(torrent, exact_matches, starts_with_patterns, trackers)
 
         unregistered_counts_per_path[torrent.save_path] = (
@@ -669,6 +773,21 @@ def unregistered_checks(  # noqa: C901
             if torrent.save_path not in unregistered_hashes_per_path:
                 unregistered_hashes_per_path[torrent.save_path] = []
             unregistered_hashes_per_path[torrent.save_path].append(torrent.hash)
+
+    resolved_deletion_plan = (
+        deletion_plan
+        if deletion_plan is not None
+        else build_unregistered_deletion_plan(
+            client,
+            available_torrents,
+            config,
+            use_delete_tags,
+            delete_tags,
+            delete_files,
+            recycle_bin,
+            confirmed_absent_hashes=tuple(confirmed_absent_hashes),
+        )
+    )
 
     # Second pass: Now that we have complete per-path counts, assign tags correctly
     default_tag_hashes: list[str] = []
@@ -718,7 +837,7 @@ def unregistered_checks(  # noqa: C901
         delete_tags,
         delete_files,
         dry_run,
-        torrents,
+        available_torrents,
         recycle_bin,
         plan=resolved_deletion_plan,
     )
