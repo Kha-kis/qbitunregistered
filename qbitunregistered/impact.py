@@ -400,9 +400,9 @@ def _analyze_unregistered(
     """Analyze the exact tags and deletions selected by unregistered checks."""
     from qbitunregistered.operations.unregistered_checks import (
         DeletionAction,
+        _fetch_available_torrent_trackers_batch,
         build_unregistered_deletion_plan,
         compile_patterns,
-        fetch_available_torrent_trackers,
         process_torrent,
     )
 
@@ -414,12 +414,14 @@ def _analyze_unregistered(
     hashes_by_path: dict[str, list[str]] = defaultdict(list)
     all_hashes_by_path: dict[str, list[str]] = defaultdict(list)
     available_torrents: list[TorrentInfo] = []
-    confirmed_absent_hashes: set[str] = set()
+    trackers_by_hash, confirmed_absent_hashes = _fetch_available_torrent_trackers_batch(
+        client,
+        [torrent.hash for torrent in torrents],
+    )
     for torrent in torrents:
-        trackers = fetch_available_torrent_trackers(client, torrent.hash)
-        if trackers is None:
-            confirmed_absent_hashes.add(torrent.hash)
+        if torrent.hash in confirmed_absent_hashes:
             continue
+        trackers = trackers_by_hash[torrent.hash]
         available_torrents.append(torrent)
         all_hashes_by_path[torrent.save_path].append(torrent.hash)
         if process_torrent(torrent, exact_patterns, starts_with_patterns, trackers):

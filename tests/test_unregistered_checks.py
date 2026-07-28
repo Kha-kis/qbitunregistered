@@ -287,6 +287,64 @@ def test_unregistered_scan_omits_torrent_confirmed_removed_after_tracker_404(cap
     client.torrents_delete.assert_not_called()
 
 
+def test_preview_batches_failed_tracker_requests_into_one_refresh() -> None:
+    """Impact analysis confirms multiple unavailable torrents with one snapshot."""
+    from qbitunregistered.cache import clear_cache
+    from qbitunregistered.impact import ImpactSummary, _analyze_unregistered
+
+    clear_cache()
+    client = MagicMock()
+    client.torrents_trackers.side_effect = NotFound404Error()
+    client.torrents.info.return_value = []
+    torrents = [_unregistered_torrent("first"), _unregistered_torrent("second")]
+    summary = ImpactSummary()
+
+    _analyze_unregistered(client, torrents, _unregistered_config(), summary)
+
+    assert summary.unregistered_deletion_plan is not None
+    assert summary.unregistered_deletion_plan.confirmed_absent_hashes == ("first", "second")
+    assert client.torrents_trackers.call_count == 2
+    client.torrents.info.assert_called_once_with()
+    client.torrents_add_tags.assert_not_called()
+    client.torrents_delete.assert_not_called()
+
+
+def test_unregistered_scan_batches_failed_trackers_before_any_mutation() -> None:
+    """One active failed hash aborts the complete scan after one bulk refresh."""
+    from qbitunregistered.cache import clear_cache
+    from qbitunregistered.operations.unregistered_checks import unregistered_checks
+
+    clear_cache()
+    client = MagicMock()
+    active = _unregistered_torrent("active")
+    removed = _unregistered_torrent("removed")
+    tag_target = _unregistered_torrent("tag-target")
+
+    def fetch_trackers(*, torrent_hash):
+        if torrent_hash in {"active", "removed"}:
+            raise NotFound404Error()
+        return [{"msg": "Unregistered torrent", "status": 4}]
+
+    client.torrents_trackers.side_effect = fetch_trackers
+    client.torrents.info.return_value = [active]
+
+    with pytest.raises(SafetyCheckError, match="active torrent active"):
+        unregistered_checks(
+            client,
+            [active, removed, tag_target],
+            _unregistered_config(),
+            use_delete_tags=False,
+            delete_tags=[],
+            delete_files={},
+            dry_run=False,
+        )
+
+    assert client.torrents_trackers.call_count == 3
+    client.torrents.info.assert_called_once_with()
+    client.torrents_add_tags.assert_not_called()
+    client.torrents_delete.assert_not_called()
+
+
 def test_preview_confirmed_absence_suppresses_same_hash_readd_during_execution() -> None:
     """A re-added hash cannot become an unpreviewed tag target."""
     from qbitunregistered.cache import clear_cache
