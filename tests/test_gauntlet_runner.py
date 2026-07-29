@@ -251,10 +251,25 @@ def test_nonlocked_sample_count_is_rejected_before_measurement(tmp_path: Path) -
 
 
 def test_comparison_rejects_unknown_identity_and_reports_pending_baseline() -> None:
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+    quick_profile = quality_bar.profiles["quick"]
+    pending_quick_profile = replace(
+        quick_profile,
+        baseline=BaselineMeasurement(
+            status="pending_clean_evaluator_commit",
+            median_runtime_seconds=None,
+            peak_memory_bytes=None,
+            environment=None,
+        ),
+    )
+    pending_quality_bar = replace(
+        quality_bar,
+        profiles={**quality_bar.profiles, "quick": pending_quick_profile},
+    )
     result = _valid_quick_result()
     result["commit"] = "unknown"
     result["candidate_state"] = {"clean": None, "diff_sha256": "unknown"}
-    report = compare_result(result, load_quality_bar(QUALITY_BAR_PATH))
+    report = compare_result(result, pending_quality_bar)
 
     assert report["overall"] == "fail"
     assert report["gates"]["identity"]["status"] == "non_comparable"
@@ -274,7 +289,7 @@ def test_comparison_rejects_unknown_identity_and_reports_pending_baseline() -> N
     }
     mismatched_report = compare_result(
         mismatched_result,
-        load_quality_bar(QUALITY_BAR_PATH),
+        pending_quality_bar,
     )
     assert mismatched_report["gates"]["measurement_policy"]["status"] == "non_comparable"
 
@@ -283,7 +298,7 @@ def test_comparison_rejects_unknown_identity_and_reports_pending_baseline() -> N
     assert (
         compare_result(
             missing_policy_result,
-            load_quality_bar(QUALITY_BAR_PATH),
+            pending_quality_bar,
         )["gates"][
             "measurement_policy"
         ]["status"]
@@ -295,7 +310,7 @@ def test_comparison_rejects_unknown_identity_and_reports_pending_baseline() -> N
     assert (
         compare_result(
             extra_policy_result,
-            load_quality_bar(QUALITY_BAR_PATH),
+            pending_quality_bar,
         )["gates"][
             "measurement_policy"
         ]["status"]

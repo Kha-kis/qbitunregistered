@@ -59,7 +59,23 @@ minimum = 0
 maximum = 674
 
 [profiles.quick.baseline]
-status = "pending_clean_evaluator_commit"
+status = "measured"
+median_runtime_seconds = 2.7542041121050715
+peak_memory_bytes = 43144627
+
+[profiles.quick.baseline.environment]
+cpu_affinity_digest = "09c72b735e87ea9f9301117bea6637af10d6678e5d5dedd5c341c7861139ae64"
+effective_cpu_count = "32"
+filesystem_block_size = "131072"
+filesystem_id = "48edfcfd33e45a8202a0d031ed504e02dd431dab7fc0f7365504ba278e0ba762"
+filesystem_type = "tmpfs"
+implementation = "CPython"
+kernel_release = "6.12.38+deb12-amd64"
+logical_cpu_count = "32"
+machine = "x86_64"
+operating_system = "Linux"
+processor = "Intel_R_ Xeon_R_ CPU E5-2667 v4 _ 3.20GHz"
+python = "3.12.8"
 
 [profiles.quick.targets]
 runtime_baseline_fraction_max = 0.5
@@ -110,7 +126,23 @@ minimum = 0
 maximum = 6739
 
 [profiles.full.baseline]
-status = "pending_clean_evaluator_commit"
+status = "measured"
+median_runtime_seconds = 23.02422409900464
+peak_memory_bytes = 171493107
+
+[profiles.full.baseline.environment]
+cpu_affinity_digest = "09c72b735e87ea9f9301117bea6637af10d6678e5d5dedd5c341c7861139ae64"
+effective_cpu_count = "32"
+filesystem_block_size = "131072"
+filesystem_id = "48edfcfd33e45a8202a0d031ed504e02dd431dab7fc0f7365504ba278e0ba762"
+filesystem_type = "tmpfs"
+implementation = "CPython"
+kernel_release = "6.12.38+deb12-amd64"
+logical_cpu_count = "32"
+machine = "x86_64"
+operating_system = "Linux"
+processor = "Intel_R_ Xeon_R_ CPU E5-2667 v4 _ 3.20GHz"
+python = "3.12.8"
 
 [profiles.full.targets]
 runtime_baseline_fraction_max = 0.5
