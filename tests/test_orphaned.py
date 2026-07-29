@@ -17,7 +17,7 @@ from qbitunregistered.file_operations import (
 from qbitunregistered.operations.orphaned import (
     OrphanFilePlan,
     OrphanScanResult,
-    _candidate_parent_paths,
+    _candidate_directory_boundaries,
     _capture_current_orphan_identity,
     _exact_torrent_owned_paths,
     _potential_empty_directories,
@@ -330,22 +330,85 @@ class TestSetOperations:
         assert excluded_parent in exclude_dirs
 
 
-class TestBoundedParentTraversal:
+class TestCandidateDirectoryBoundaries:
     """Verify parent expansion remains exact and within cleanup authority."""
 
-    def test_candidate_parent_paths_matches_naive_ancestor_union(self, tmp_path):
+    def test_multiple_candidates_with_shared_parents_have_exact_union(self, tmp_path):
         shared_root = tmp_path / "downloads"
         candidates = {
             shared_root / "show" / "season-01" / "episode-01.mkv",
             shared_root / "show" / "season-01" / "episode-02.mkv",
             shared_root / "show" / "season-02" / "episode-03.mkv",
-            shared_root / "show",
+            shared_root / "movie.mkv",
         }
-        expected = set(candidates)
         for candidate in candidates:
-            expected.update(candidate.parents)
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_text("candidate", encoding="utf-8")
+        expected: set[Path] = set()
+        for candidate in candidates:
+            expected.add(candidate.parent)
+            expected.update(candidate.parent.parents)
 
-        assert _candidate_parent_paths(candidates) == expected
+        boundaries = _candidate_directory_boundaries(candidates)
+
+        assert boundaries == expected
+        assert boundaries.isdisjoint(candidates)
+
+    def test_nested_candidate_roots_deduplicate_shared_ancestors(self, tmp_path):
+        outer_root = (tmp_path / "downloads").resolve()
+        nested_root = outer_root / "series"
+        outer_candidate = outer_root / "movie.mkv"
+        nested_candidate = nested_root / "show" / "episode.mkv"
+        nested_candidate.parent.mkdir(parents=True)
+        outer_candidate.write_text("outer", encoding="utf-8")
+        nested_candidate.write_text("nested", encoding="utf-8")
+
+        boundaries = _candidate_directory_boundaries(
+            {outer_candidate, nested_candidate}
+        )
+
+        expected = {
+            outer_candidate.parent,
+            nested_candidate.parent,
+            *outer_candidate.parent.parents,
+            *nested_candidate.parent.parents,
+        }
+        assert boundaries == expected
+        assert outer_root in boundaries
+        assert nested_root in boundaries
+
+    def test_candidate_directly_under_save_root_indexes_root_not_file(self, tmp_path):
+        save_root = (tmp_path / "downloads").resolve()
+        save_root.mkdir()
+        candidate = save_root / "movie.mkv"
+        candidate.write_text("candidate", encoding="utf-8")
+
+        boundaries = _candidate_directory_boundaries({candidate})
+
+        assert save_root in boundaries
+        assert candidate not in boundaries
+        assert boundaries == {save_root, *save_root.parents}
+
+    def test_empty_candidates_have_no_directory_boundaries(self):
+        assert _candidate_directory_boundaries(set()) == set()
+
+    def test_hardlink_candidates_index_both_directory_paths(self, tmp_path):
+        first_dir = (tmp_path / "first").resolve()
+        second_dir = (tmp_path / "second").resolve()
+        first_dir.mkdir()
+        second_dir.mkdir()
+        original = first_dir / "movie.mkv"
+        alias = second_dir / "movie.mkv"
+        original.write_text("candidate", encoding="utf-8")
+        alias.hardlink_to(original)
+
+        boundaries = _candidate_directory_boundaries({original, alias})
+
+        assert first_dir in boundaries
+        assert second_dir in boundaries
+        assert original not in boundaries
+        assert alias not in boundaries
+        assert original.stat().st_ino == alias.stat().st_ino
 
     def test_potential_empty_directories_stops_at_active_authorized_root(self, tmp_path):
         authorized_root = tmp_path / "downloads"
@@ -830,7 +893,7 @@ class TestValidatedContentBoundary:
         canonical_boundary, content_mode = boundary
         assert canonical_boundary == canonical_content
         assert stat.S_ISDIR(content_mode)
-        assert canonical_boundary in _candidate_parent_paths({candidate})
+        assert canonical_boundary in _candidate_directory_boundaries({candidate})
 
     def test_outside_boundary_falls_back_before_filesystem_inspection(self, tmp_path):
         save_root = (tmp_path / "save").resolve()
@@ -1000,6 +1063,21 @@ class TestOrphanOwnershipFastPath:
 
         assert check_files_on_disk(client, [torrent]) == [str(orphan)]
         client.torrents_files.assert_called_once_with("multi", SIMPLE_RESPONSES=True)
+
+    def test_disjoint_directory_boundary_skips_exact_metadata(self, tmp_path):
+        content_dir = tmp_path / "disjoint-bundle"
+        content_dir.mkdir()
+        orphan = tmp_path / "orphan.nfo"
+        orphan.write_text("orphan", encoding="utf-8")
+        torrent = SimpleNamespace(
+            hash="disjoint-directory",
+            save_path=str(tmp_path),
+            content_path=str(content_dir),
+        )
+        client = self._client(tmp_path, [torrent])
+
+        assert check_files_on_disk(client, [torrent]) == [str(orphan)]
+        client.torrents_files.assert_not_called()
 
     @pytest.mark.parametrize("content_path", ["relative/file.mkv", "missing.mkv"])
     def test_uncertain_bulk_content_path_falls_back_to_exact_metadata(self, tmp_path, content_path):

@@ -200,20 +200,18 @@ def _exact_torrent_owned_paths(  # noqa: C901
     return owned_paths
 
 
-def _candidate_parent_paths(candidate_paths: set[Path]) -> set[Path]:
-    """Return candidate paths and ancestors for constant-time boundary checks."""
-    parents: set[Path] = set()
-    expanded_paths: set[Path] = set()
+def _candidate_directory_boundaries(candidate_paths: set[Path]) -> set[Path]:
+    """Return candidate parent directories and ancestors for boundary checks."""
+    boundaries: set[Path] = set()
     for candidate_path in candidate_paths:
-        current_path = candidate_path
-        while current_path not in expanded_paths:
-            parents.add(current_path)
-            expanded_paths.add(current_path)
+        current_path = candidate_path.parent
+        while current_path not in boundaries:
+            boundaries.add(current_path)
             parent_path = current_path.parent
             if parent_path == current_path:
                 break
             current_path = parent_path
-    return parents
+    return boundaries
 
 
 def _validated_content_boundary(
@@ -261,7 +259,7 @@ def _build_torrent_ownership(
     tolerate_confirmed_removal: bool,
 ) -> _TorrentOwnership:
     """Build exact ownership, using bulk boundaries only when they are conclusive."""
-    candidate_boundaries = _candidate_parent_paths(candidate_paths)
+    candidate_boundaries = _candidate_directory_boundaries(candidate_paths)
     resolved_save_paths: dict[str, Path] = {}
     owned_paths: set[Path] = set()
     active_save_paths: set[Path] = set()
