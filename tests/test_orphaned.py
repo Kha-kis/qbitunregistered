@@ -363,9 +363,7 @@ class TestCandidateDirectoryBoundaries:
         outer_candidate.write_text("outer", encoding="utf-8")
         nested_candidate.write_text("nested", encoding="utf-8")
 
-        boundaries = _candidate_directory_boundaries(
-            {outer_candidate, nested_candidate}
-        )
+        boundaries = _candidate_directory_boundaries({outer_candidate, nested_candidate})
 
         expected = {
             outer_candidate.parent,
@@ -771,9 +769,7 @@ class TestValidatedContentBoundary:
     """Exercise lexical and filesystem safety checks for bulk ownership."""
 
     @pytest.mark.parametrize("content_kind", ["file", "directory"])
-    def test_returns_canonical_regular_boundary_after_final_resolution(
-        self, tmp_path, content_kind
-    ):
+    def test_returns_canonical_regular_boundary_after_final_resolution(self, tmp_path, content_kind):
         save_root = tmp_path.resolve()
         content_path = save_root / "content"
         if content_kind == "file":
@@ -794,17 +790,11 @@ class TestValidatedContentBoundary:
         assert boundary is not None
         canonical_path, content_mode = boundary
         assert canonical_path == content_path
-        assert (
-            stat.S_ISREG(content_mode)
-            if content_kind == "file"
-            else stat.S_ISDIR(content_mode)
-        )
+        assert stat.S_ISREG(content_mode) if content_kind == "file" else stat.S_ISDIR(content_mode)
         assert resolved_paths == [content_path]
 
     @pytest.mark.parametrize("symlink_kind", ["root", "component"])
-    def test_symlink_boundary_falls_back_to_exact_metadata(
-        self, tmp_path, symlink_kind
-    ):
+    def test_symlink_boundary_falls_back_to_exact_metadata(self, tmp_path, symlink_kind):
         real_root = tmp_path / "real"
         real_root.mkdir()
         owned = real_root / "owned.mkv"
@@ -819,41 +809,26 @@ class TestValidatedContentBoundary:
             parent_link.symlink_to(real_root, target_is_directory=True)
             content_path = parent_link / owned.name
 
-        assert (
-            _validated_content_boundary(
-                SimpleNamespace(content_path=str(content_path)), save_root
-            )
-            is None
-        )
+        assert _validated_content_boundary(SimpleNamespace(content_path=str(content_path)), save_root) is None
 
     @pytest.mark.parametrize("reparse_location", ["root", "component"])
-    def test_reparse_boundary_falls_back_to_exact_metadata(
-        self, tmp_path, reparse_location
-    ):
+    def test_reparse_boundary_falls_back_to_exact_metadata(self, tmp_path, reparse_location):
         save_root = tmp_path.resolve()
         content_path = save_root / "owned.mkv"
         content_path.write_text("owned", encoding="utf-8")
         root_stat = save_root.lstat()
         component_stat = content_path.lstat()
         reparse_stat = SimpleNamespace(
-            st_mode=(
-                root_stat.st_mode
-                if reparse_location == "root"
-                else component_stat.st_mode
-            ),
+            st_mode=(root_stat.st_mode if reparse_location == "root" else component_stat.st_mode),
             st_reparse_tag=1,
         )
-        lstat_results = (
-            [reparse_stat] if reparse_location == "root" else [root_stat, reparse_stat]
-        )
+        lstat_results = [reparse_stat] if reparse_location == "root" else [root_stat, reparse_stat]
 
         with (
             patch.object(Path, "lstat", autospec=True, side_effect=lstat_results),
             patch.object(Path, "resolve", autospec=True) as resolve,
         ):
-            boundary = _validated_content_boundary(
-                SimpleNamespace(content_path=str(content_path)), save_root
-            )
+            boundary = _validated_content_boundary(SimpleNamespace(content_path=str(content_path)), save_root)
 
         assert boundary is None
         resolve.assert_not_called()
@@ -881,12 +856,8 @@ class TestValidatedContentBoundary:
                 swapped = True
             return inspected_stat
 
-        with patch.object(
-            Path, "lstat", autospec=True, side_effect=swap_parent_after_lstat
-        ):
-            boundary = _validated_content_boundary(
-                SimpleNamespace(content_path=str(inspected_content)), save_root
-            )
+        with patch.object(Path, "lstat", autospec=True, side_effect=swap_parent_after_lstat):
+            boundary = _validated_content_boundary(SimpleNamespace(content_path=str(inspected_content)), save_root)
 
         assert swapped
         assert boundary is not None
@@ -902,9 +873,7 @@ class TestValidatedContentBoundary:
         outside.write_text("outside", encoding="utf-8")
 
         with patch.object(Path, "lstat", autospec=True) as lstat:
-            boundary = _validated_content_boundary(
-                SimpleNamespace(content_path=str(outside)), save_root
-            )
+            boundary = _validated_content_boundary(SimpleNamespace(content_path=str(outside)), save_root)
 
         assert boundary is None
         lstat.assert_not_called()
@@ -913,17 +882,10 @@ class TestValidatedContentBoundary:
         save_root = tmp_path.resolve()
         content_path = save_root / "nested" / ".." / "owned.mkv"
 
-        assert (
-            _validated_content_boundary(
-                SimpleNamespace(content_path=str(content_path)), save_root
-            )
-            is None
-        )
+        assert _validated_content_boundary(SimpleNamespace(content_path=str(content_path)), save_root) is None
 
     @pytest.mark.parametrize("failure", ["missing", "os-error"])
-    def test_uninspectable_boundary_falls_back_to_exact_metadata(
-        self, tmp_path, failure
-    ):
+    def test_uninspectable_boundary_falls_back_to_exact_metadata(self, tmp_path, failure):
         save_root = tmp_path.resolve()
         content_path = save_root / "owned.mkv"
         if failure == "os-error":
@@ -939,9 +901,7 @@ class TestValidatedContentBoundary:
             lstat_patch = patch.object(Path, "resolve", autospec=True)
 
         with lstat_patch:
-            boundary = _validated_content_boundary(
-                SimpleNamespace(content_path=str(content_path)), save_root
-            )
+            boundary = _validated_content_boundary(SimpleNamespace(content_path=str(content_path)), save_root)
 
         assert boundary is None
 
@@ -952,9 +912,7 @@ class TestValidatedContentBoundary:
         original.write_text("owned", encoding="utf-8")
         alias.hardlink_to(original)
 
-        boundary = _validated_content_boundary(
-            SimpleNamespace(content_path=str(alias)), save_root
-        )
+        boundary = _validated_content_boundary(SimpleNamespace(content_path=str(alias)), save_root)
 
         assert boundary is not None
         inspected_path, content_mode = boundary
@@ -982,9 +940,7 @@ class TestValidatedContentBoundary:
             ),
         ],
     )
-    def test_windows_different_anchor_cannot_be_relative_to_save_root(
-        self, save_root, content_path
-    ):
+    def test_windows_different_anchor_cannot_be_relative_to_save_root(self, save_root, content_path):
         with pytest.raises(ValueError):
             content_path.relative_to(save_root)
 
@@ -1143,9 +1099,7 @@ class TestOrphanOwnershipFastPath:
             )
 
         assert candidate.read_text(encoding="utf-8") == "preserve"
-        client.torrents_files.assert_called_once_with(
-            "symlink-final", SIMPLE_RESPONSES=True
-        )
+        client.torrents_files.assert_called_once_with("symlink-final", SIMPLE_RESPONSES=True)
         client.torrents_delete.assert_not_called()
 
     def test_parent_swap_final_validation_preserves_exact_owner(self, tmp_path):
@@ -1165,9 +1119,7 @@ class TestOrphanOwnershipFastPath:
             content_path=str(inspected_content),
         )
         client = self._client(save_root, [torrent])
-        client.torrents_files.return_value = [
-            {"name": candidate.relative_to(save_root).as_posix()}
-        ]
+        client.torrents_files.return_value = [{"name": candidate.relative_to(save_root).as_posix()}]
         plan = build_orphan_file_plan([str(candidate)])
         real_lstat = Path.lstat
         swapped = False
@@ -1199,9 +1151,7 @@ class TestOrphanOwnershipFastPath:
 
         assert swapped
         assert candidate.read_text(encoding="utf-8") == "preserve"
-        client.torrents_files.assert_called_once_with(
-            "parent-swap-final", SIMPLE_RESPONSES=True
-        )
+        client.torrents_files.assert_called_once_with("parent-swap-final", SIMPLE_RESPONSES=True)
         client.torrents_delete.assert_not_called()
 
     def test_final_validation_only_fetches_overlapping_multi_file_boundary(self, tmp_path):

@@ -214,9 +214,7 @@ def _candidate_directory_boundaries(candidate_paths: set[Path]) -> set[Path]:
     return boundaries
 
 
-def _validated_content_boundary(
-    torrent: Any, save_path: Path
-) -> tuple[Path, int] | None:
+def _validated_content_boundary(torrent: Any, save_path: Path) -> tuple[Path, int] | None:
     """Return a trustworthy bulk content path and mode, or request exact fallback."""
     content_path_value = getattr(torrent, "content_path", None)
     if not isinstance(content_path_value, str) or not content_path_value:
@@ -230,16 +228,12 @@ def _validated_content_boundary(
             return None
         inspected_path = save_path
         content_stat = save_path.lstat()
-        if stat.S_ISLNK(content_stat.st_mode) or bool(
-            getattr(content_stat, "st_reparse_tag", 0)
-        ):
+        if stat.S_ISLNK(content_stat.st_mode) or bool(getattr(content_stat, "st_reparse_tag", 0)):
             return None
         for part in relative_content_path.parts:
             inspected_path /= part
             content_stat = inspected_path.lstat()
-            if stat.S_ISLNK(content_stat.st_mode) or bool(
-                getattr(content_stat, "st_reparse_tag", 0)
-            ):
+            if stat.S_ISLNK(content_stat.st_mode) or bool(getattr(content_stat, "st_reparse_tag", 0)):
                 return None
         resolved_content_path = content_path.resolve()
         if not resolved_content_path.is_relative_to(save_path):
