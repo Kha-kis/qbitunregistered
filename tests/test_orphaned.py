@@ -2,6 +2,7 @@
 
 import logging
 import os
+import stat
 from pathlib import Path, PureWindowsPath
 from fnmatch import fnmatch
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from qbitunregistered.operations.orphaned import (
     _capture_current_orphan_identity,
     _exact_torrent_owned_paths,
     _potential_empty_directories,
+    _validated_content_boundary,
     build_orphan_file_plan,
     check_files_on_disk,
     delete_orphaned_files,
@@ -702,6 +704,183 @@ class TestOrphanScanReconciliation:
         assert candidate.read_text(encoding="utf-8") == "data"
 
 
+class TestValidatedContentBoundary:
+    """Exercise lexical and filesystem safety checks for bulk ownership."""
+
+    @pytest.mark.parametrize("content_kind", ["file", "directory"])
+    def test_returns_inspected_regular_boundary_without_final_resolution(
+        self, tmp_path, content_kind
+    ):
+        save_root = tmp_path.resolve()
+        content_path = save_root / "content"
+        if content_kind == "file":
+            content_path.write_text("owned", encoding="utf-8")
+        else:
+            content_path.mkdir()
+        torrent = SimpleNamespace(content_path=str(content_path))
+
+        with patch.object(Path, "resolve", autospec=True) as resolve:
+            boundary = _validated_content_boundary(torrent, save_root)
+
+        assert boundary is not None
+        inspected_path, content_mode = boundary
+        assert inspected_path == content_path
+        assert (
+            stat.S_ISREG(content_mode)
+            if content_kind == "file"
+            else stat.S_ISDIR(content_mode)
+        )
+        resolve.assert_not_called()
+
+    @pytest.mark.parametrize("symlink_kind", ["root", "component"])
+    def test_symlink_boundary_falls_back_to_exact_metadata(self, tmp_path, symlink_kind):
+        real_root = tmp_path / "real"
+        real_root.mkdir()
+        owned = real_root / "owned.mkv"
+        owned.write_text("owned", encoding="utf-8")
+        if symlink_kind == "root":
+            save_root = tmp_path / "save-link"
+            save_root.symlink_to(real_root, target_is_directory=True)
+            content_path = save_root / owned.name
+        else:
+            save_root = tmp_path
+            parent_link = save_root / "parent-link"
+            parent_link.symlink_to(real_root, target_is_directory=True)
+            content_path = parent_link / owned.name
+
+        assert (
+            _validated_content_boundary(
+                SimpleNamespace(content_path=str(content_path)), save_root
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("reparse_location", ["root", "component"])
+    def test_reparse_boundary_falls_back_to_exact_metadata(
+        self, tmp_path, reparse_location
+    ):
+        save_root = tmp_path.resolve()
+        content_path = save_root / "owned.mkv"
+        content_path.write_text("owned", encoding="utf-8")
+        root_stat = save_root.lstat()
+        component_stat = content_path.lstat()
+        reparse_stat = SimpleNamespace(
+            st_mode=(
+                root_stat.st_mode
+                if reparse_location == "root"
+                else component_stat.st_mode
+            ),
+            st_reparse_tag=1,
+        )
+        lstat_results = (
+            [reparse_stat]
+            if reparse_location == "root"
+            else [root_stat, reparse_stat]
+        )
+
+        with (
+            patch.object(Path, "lstat", autospec=True, side_effect=lstat_results),
+            patch.object(Path, "resolve", autospec=True) as resolve,
+        ):
+            boundary = _validated_content_boundary(
+                SimpleNamespace(content_path=str(content_path)), save_root
+            )
+
+        assert boundary is None
+        resolve.assert_not_called()
+
+    def test_outside_boundary_falls_back_before_filesystem_inspection(self, tmp_path):
+        save_root = (tmp_path / "save").resolve()
+        save_root.mkdir()
+        outside = tmp_path / "outside.mkv"
+        outside.write_text("outside", encoding="utf-8")
+
+        with patch.object(Path, "lstat", autospec=True) as lstat:
+            boundary = _validated_content_boundary(
+                SimpleNamespace(content_path=str(outside)), save_root
+            )
+
+        assert boundary is None
+        lstat.assert_not_called()
+
+    def test_parent_traversal_boundary_falls_back(self, tmp_path):
+        save_root = tmp_path.resolve()
+        content_path = save_root / "nested" / ".." / "owned.mkv"
+
+        assert (
+            _validated_content_boundary(
+                SimpleNamespace(content_path=str(content_path)), save_root
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("failure", ["missing", "os-error"])
+    def test_uninspectable_boundary_falls_back_to_exact_metadata(self, tmp_path, failure):
+        save_root = tmp_path.resolve()
+        content_path = save_root / "owned.mkv"
+        if failure == "os-error":
+            content_path.write_text("owned", encoding="utf-8")
+            root_stat = save_root.lstat()
+            lstat_patch = patch.object(
+                Path,
+                "lstat",
+                autospec=True,
+                side_effect=[root_stat, PermissionError("denied")],
+            )
+        else:
+            lstat_patch = patch.object(Path, "resolve", autospec=True)
+
+        with lstat_patch:
+            boundary = _validated_content_boundary(
+                SimpleNamespace(content_path=str(content_path)), save_root
+            )
+
+        assert boundary is None
+
+    def test_hardlink_returns_the_inspected_alias(self, tmp_path):
+        save_root = tmp_path.resolve()
+        original = save_root / "original.mkv"
+        alias = save_root / "alias.mkv"
+        original.write_text("owned", encoding="utf-8")
+        alias.hardlink_to(original)
+
+        boundary = _validated_content_boundary(
+            SimpleNamespace(content_path=str(alias)), save_root
+        )
+
+        assert boundary is not None
+        inspected_path, content_mode = boundary
+        assert inspected_path == alias
+        assert stat.S_ISREG(content_mode)
+        assert inspected_path.stat().st_ino == original.stat().st_ino
+
+    def test_windows_casefolded_relative_path_reconstructs_canonical_spelling(self):
+        canonical_root = PureWindowsPath("C:/Library")
+        reported_path = PureWindowsPath("c:/library/Movie/owned.mkv")
+
+        relative_path = reported_path.relative_to(canonical_root)
+        reconstructed_path = canonical_root / relative_path
+
+        assert str(relative_path) == r"Movie\owned.mkv"
+        assert str(reconstructed_path) == r"C:\Library\Movie\owned.mkv"
+
+    @pytest.mark.parametrize(
+        ("save_root", "content_path"),
+        [
+            (PureWindowsPath("C:/save"), PureWindowsPath("D:/save/owned.mkv")),
+            (
+                PureWindowsPath(r"\\server\share\save"),
+                PureWindowsPath(r"\\other\share\save\owned.mkv"),
+            ),
+        ],
+    )
+    def test_windows_different_anchor_cannot_be_relative_to_save_root(
+        self, save_root, content_path
+    ):
+        with pytest.raises(ValueError):
+            content_path.relative_to(save_root)
+
+
 class TestOrphanOwnershipFastPath:
     """Exercise exact bulk ownership shortcuts and conservative fallbacks."""
 
@@ -818,6 +997,33 @@ class TestOrphanOwnershipFastPath:
         check_files_on_disk(client, [torrent])
 
         client.torrents_files.assert_called_once_with(f"symlink-{symlink_kind}", SIMPLE_RESPONSES=True)
+
+    def test_symlink_boundary_final_validation_preserves_exact_owner(self, tmp_path):
+        candidate = tmp_path / "candidate.mkv"
+        candidate.write_text("preserve", encoding="utf-8")
+        content_alias = tmp_path / "content-link.mkv"
+        content_alias.symlink_to(candidate)
+        torrent = SimpleNamespace(
+            hash="symlink-final",
+            save_path=str(tmp_path),
+            content_path=str(content_alias),
+        )
+        client = self._client(tmp_path, [torrent])
+        client.torrents_files.return_value = [{"name": candidate.name}]
+
+        with pytest.raises(SafetyCheckError, match="now owned by qBittorrent"):
+            delete_orphaned_files(
+                [str(candidate)],
+                dry_run=False,
+                client=client,
+                plan=build_orphan_file_plan([str(candidate)]),
+            )
+
+        assert candidate.read_text(encoding="utf-8") == "preserve"
+        client.torrents_files.assert_called_once_with(
+            "symlink-final", SIMPLE_RESPONSES=True
+        )
+        client.torrents_delete.assert_not_called()
 
     def test_final_validation_only_fetches_overlapping_multi_file_boundary(self, tmp_path):
         overlap_dir = tmp_path / "overlap"

@@ -230,19 +230,20 @@ def _validated_content_boundary(torrent: Any, save_path: Path) -> tuple[Path, in
             return None
         inspected_path = save_path
         content_stat = save_path.lstat()
-        if stat.S_ISLNK(content_stat.st_mode):
+        if stat.S_ISLNK(content_stat.st_mode) or bool(
+            getattr(content_stat, "st_reparse_tag", 0)
+        ):
             return None
         for part in relative_content_path.parts:
             inspected_path /= part
             content_stat = inspected_path.lstat()
-            if stat.S_ISLNK(content_stat.st_mode):
+            if stat.S_ISLNK(content_stat.st_mode) or bool(
+                getattr(content_stat, "st_reparse_tag", 0)
+            ):
                 return None
-        resolved_content_path = content_path.resolve()
-        if not resolved_content_path.is_relative_to(save_path):
-            return None
     except (OSError, RuntimeError, ValueError):
         return None
-    return resolved_content_path, content_stat.st_mode
+    return inspected_path, content_stat.st_mode
 
 
 def _build_torrent_ownership(
