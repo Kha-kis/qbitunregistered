@@ -290,6 +290,61 @@ when automatic port selection is unsuitable. Do not point this test at a real
 qBittorrent instance; the script intentionally manages only the disposable
 container it creates.
 
+### Running the Deterministic Gauntlet
+
+The repository-local gauntlet measures the real orphan discovery, immutable
+plan, and dry-run reconciliation pipeline against a sanitized fake
+qBittorrent client and temporary filesystem. It never connects to a live
+client. Fixture construction is excluded from the reported runtime. Each run
+performs one untraced warm-up, retains five untraced timing samples, and then
+performs one separately traced, untimed memory pass. The application cache is
+cleared before every pass; the materialized fixture and operating system page
+cache remain warm after the explicit warm-up.
+
+Run the quick candidate profile and write its JSON result outside the source
+tree:
+
+```bash
+uv run python -m benchmarks.gauntlet \
+    --profile quick \
+    --output /tmp/qbitunregistered-gauntlet-quick.json
+```
+
+The full 12,000-torrent and 94,000-file profile is intentionally excluded from
+ordinary pytest runs. Invoke it explicitly when establishing or evaluating a
+performance baseline:
+
+```bash
+uv run python -m benchmarks.gauntlet \
+    --profile full \
+    --output /tmp/qbitunregistered-gauntlet-full.json
+```
+
+Results contain sanitized workload identity, intended-action digest, API read
+counts normalized per pass, mutation counters, sample median/minimum/maximum
+and median absolute deviation, and separately traced peak memory. Candidate
+identity covers the commit plus staged, unstaged, and untracked content without
+including raw paths or diffs in the result.
+
+Compare an optimization candidate with the checked-in quality bar:
+
+```bash
+uv run python -m benchmarks.gauntlet \
+    --profile quick \
+    --compare \
+    --output /tmp/qbitunregistered-gauntlet-quick.json
+```
+
+Comparison validates the fixture and action oracles, measurement policy,
+environment, API budgets, and zero-mutation evidence before evaluating runtime
+and memory. A result is non-comparable when its repository identity changes
+during execution or its environment differs from the recorded baseline.
+
+Do not commit raw local benchmark results. Performance-baseline values belong
+only in the reviewed `benchmarks/gauntlet/quality-bar.toml`; a performance
+change must preserve the locked action digest and zero-mutation result before
+its speed is considered.
+
 ## Continuous Integration
 
 ### GitHub Actions

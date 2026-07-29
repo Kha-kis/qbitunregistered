@@ -1,0 +1,119 @@
+schema_version = 2
+evaluator_schema_version = 3
+evaluator_version = "1.1.0"
+result_schema = "qbitunregistered.gauntlet.result"
+scope = "orphan_discovery_plan_and_dry_run_reconciliation"
+
+[measurement_policy]
+timed_samples = 5
+warmup_passes = 1
+memory_passes = 1
+sequence = "one warmup, five untraced timed samples, one traced untimed memory pass"
+timed_samples_traced = false
+memory_pass_timed = false
+application_cache = "cleared before every pass"
+fixture_metadata = "materialized once and reused after the explicit warmup"
+os_page_cache = "not flushed; timed and memory passes are warm"
+sample_rejection = "none; all five timed samples are retained"
+
+[profiles.quick]
+seed = 20260729
+fixture_manifest_digest = "6686b7d19ce528f2c770d9800fc3aa7236b1702782a77b390858bf55e2426364"
+intended_action_digest = "3996ef55b845e6d45c2fa30ff9032b8317d06d90514c51402f6ec8ecf6d0f239"
+candidate_count = 1
+
+[profiles.quick.workload]
+torrents = 1200
+filesystem_files = 9400
+owned_files = 9399
+orphan_files = 1
+exact_metadata_torrents = 674
+bulk_path_torrents = 526
+configured_roots = 3
+shards = 32
+timed_samples = 5
+warmup_passes = 1
+memory_passes = 1
+
+[profiles.quick.reconciliation]
+file_action_count = 1
+empty_directory_count = 1
+file_action_digest = "2889b52c70dbe2c6f66e3bf34f918a94b00f558076ea06890f8b63e487f75152"
+empty_directory_digest = "9b8079f59abcb8777e9eda287fb53840c619017c73eb4a1d319a32d5e31437d9"
+digest = "59ccd9dc383d9a8be622c339240ae32b250a484a369fa49c6c32866ceb499273"
+
+[profiles.quick.api_budgets."application.default_save_path"]
+minimum = 1
+maximum = 1
+
+[profiles.quick.api_budgets."torrent_categories.categories"]
+minimum = 1
+maximum = 1
+
+[profiles.quick.api_budgets."torrents.info"]
+minimum = 1
+maximum = 1
+
+[profiles.quick.api_budgets.torrents_files]
+minimum = 0
+maximum = 674
+
+[profiles.quick.baseline]
+status = "pending_clean_evaluator_commit"
+
+[profiles.quick.targets]
+runtime_baseline_fraction_max = 0.5
+peak_memory_baseline_fraction_max = 1.25
+relative_mad_max = 0.15
+relative_range_max = 0.50
+
+[profiles.full]
+seed = 20260729
+fixture_manifest_digest = "65914526552afb61cb6c2aca9186cd1d068a55257f195e0800208788d6afcac7"
+intended_action_digest = "7f0b9f0932623b7f66ac770e9ef2195f243b788fe8cdb085995dd4d68b16c4c7"
+candidate_count = 3
+
+[profiles.full.workload]
+torrents = 12000
+filesystem_files = 94000
+owned_files = 93997
+orphan_files = 3
+exact_metadata_torrents = 6739
+bulk_path_torrents = 5261
+configured_roots = 3
+shards = 128
+timed_samples = 5
+warmup_passes = 1
+memory_passes = 1
+
+[profiles.full.reconciliation]
+file_action_count = 3
+empty_directory_count = 3
+file_action_digest = "55c3e77a282c6a10697811d937c21aeabd753ec98acab3060e7b1d2bb5b179ff"
+empty_directory_digest = "68c949f3fe1a71ce74dd1a31e44cfe9998f1378a5f2f8bc22a761904c9d85683"
+digest = "9c52984d6297dce68d129210e9184b1c184bb53c7614e0529aaf9cc3bd551f84"
+
+[profiles.full.api_budgets."application.default_save_path"]
+minimum = 1
+maximum = 1
+
+[profiles.full.api_budgets."torrent_categories.categories"]
+minimum = 1
+maximum = 1
+
+[profiles.full.api_budgets."torrents.info"]
+minimum = 1
+maximum = 1
+
+[profiles.full.api_budgets.torrents_files]
+minimum = 0
+maximum = 6739
+
+[profiles.full.baseline]
+status = "pending_clean_evaluator_commit"
+
+[profiles.full.targets]
+runtime_baseline_fraction_max = 0.5
+peak_memory_baseline_fraction_max = 1.25
+relative_mad_max = 0.15
+relative_range_max = 0.50
