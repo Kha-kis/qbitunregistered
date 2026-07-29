@@ -1,5 +1,6 @@
 """Tests for orphaned file checking functionality."""
 
+import logging
 import os
 from pathlib import Path
 from fnmatch import fnmatch
@@ -101,6 +102,76 @@ class TestPathResolution:
         path2 = Path("/tmp/test").resolve()
 
         assert path1 == path2
+
+
+class TestOrphanFilePlanCapture:
+    """Exercise live filesystem churn while capturing immutable plans."""
+
+    def test_candidate_confirmed_missing_before_capture_is_omitted(self, tmp_path, caplog):
+        missing = tmp_path / "removed-after-scan.mkv"
+        caplog.set_level(logging.INFO)
+
+        plan = build_orphan_file_plan([str(missing)])
+
+        assert plan.files == ()
+        assert "disappeared before plan capture" in caplog.text
+
+    def test_existing_non_regular_candidate_still_fails_closed(self, tmp_path):
+        directory = tmp_path / "not-a-file"
+        directory.mkdir()
+
+        with pytest.raises(SafetyCheckError, match="Could not inspect file safely"):
+            build_orphan_file_plan([str(directory)])
+
+    def test_inaccessible_candidate_still_fails_closed(self, tmp_path):
+        candidate = tmp_path / "candidate.mkv"
+        candidate.write_text("data", encoding="utf-8")
+
+        with (
+            patch.object(Path, "lstat", side_effect=PermissionError("access denied")),
+            pytest.raises(SafetyCheckError, match="Could not inspect orphan candidate safely"),
+        ):
+            build_orphan_file_plan([str(candidate)])
+
+    def test_replaced_candidate_during_capture_still_fails_closed(self, tmp_path):
+        candidate = tmp_path / "candidate.mkv"
+        candidate.write_text("original", encoding="utf-8")
+        replacement = tmp_path / "replacement.mkv"
+        replacement.write_text("replacement", encoding="utf-8")
+
+        def replace_before_capture(path):
+            os.replace(replacement, path)
+            return capture_file_identity(path)
+
+        with (
+            patch(
+                "qbitunregistered.operations.orphaned.capture_file_identity",
+                side_effect=replace_before_capture,
+            ),
+            pytest.raises(SafetyCheckError, match="Orphan candidate changed during identity capture"),
+        ):
+            build_orphan_file_plan([str(candidate)])
+
+    def test_replacement_after_discovery_cannot_enter_plan(self, tmp_path):
+        """Discovery identity prevents a stable pre-plan replacement."""
+        from qbitunregistered.cache import clear_cache
+
+        clear_cache()
+        candidate = tmp_path / "candidate.mkv"
+        candidate.write_text("discovered", encoding="utf-8")
+        client = MagicMock()
+        client.application.default_save_path = str(tmp_path)
+        client.torrent_categories.categories = {}
+        client.torrents.info.return_value = []
+        orphaned_files = check_files_on_disk(client, [])
+        replacement = tmp_path / "replacement.mkv"
+        replacement.write_text("replacement", encoding="utf-8")
+        os.replace(replacement, candidate)
+
+        with pytest.raises(SafetyCheckError, match="changed after discovery"):
+            build_orphan_file_plan(orphaned_files)
+
+        assert candidate.read_text(encoding="utf-8") == "replacement"
 
 
 class TestSetOperations:

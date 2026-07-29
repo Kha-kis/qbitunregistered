@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Unregistered preview and execution now tolerate a tracker-metadata failure
+  only when a fresh validated torrent snapshot confirms that exact hash was
+  removed during the scan. Preview-confirmed absences suppress same-hash re-adds
+  for the rest of that execution, and execution-time removals that conflict
+  with a supplied deletion plan abort before mutation. Active, malformed, or
+  uncertain state still fails closed.
+- Orphan candidates removed after discovery but before plan capture
+  are logged and omitted from the immutable plan. Inaccessible, replaced,
+  non-regular, or otherwise uncertain paths still abort cleanup, and
+  discovery-time identity evidence prevents a stable pre-plan replacement from
+  becoming authorized.
+
 ## [2.2.0] - 2026-07-25
 
 ### Added
