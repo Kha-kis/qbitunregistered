@@ -130,6 +130,7 @@ def _exact_torrent_owned_paths(  # noqa: C901
     client: QBittorrentClient,
     torrent: Any,
     resolved_save_paths: dict[str, Path],
+    candidate_paths: set[Path],
     *,
     context: str,
     refresh_file_metadata: bool = False,
@@ -180,10 +181,20 @@ def _exact_torrent_owned_paths(  # noqa: C901
         if not isinstance(name, str) or not name:
             raise SafetyCheckError(f"Torrent {torrent_hash} returned malformed file metadata {context}")
         try:
-            owned_path = (save_path / name).resolve()
+            metadata_path = Path(name)
+            lexical_path = save_path / metadata_path
+            if (
+                not metadata_path.anchor
+                and ".." not in metadata_path.parts
+                and lexical_path != save_path
+                and lexical_path in candidate_paths
+            ):
+                owned_paths.add(lexical_path)
+                continue
+            owned_path = lexical_path.resolve()
         except (OSError, RuntimeError, ValueError) as error:
             raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path {context}") from error
-        if not owned_path.is_relative_to(save_path):
+        if owned_path == save_path or not owned_path.is_relative_to(save_path):
             raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path {context}")
         owned_paths.add(owned_path)
     return owned_paths
@@ -191,9 +202,17 @@ def _exact_torrent_owned_paths(  # noqa: C901
 
 def _candidate_parent_paths(candidate_paths: set[Path]) -> set[Path]:
     """Return candidate paths and ancestors for constant-time boundary checks."""
-    parents = set(candidate_paths)
+    parents: set[Path] = set()
+    expanded_paths: set[Path] = set()
     for candidate_path in candidate_paths:
-        parents.update(candidate_path.parents)
+        current_path = candidate_path
+        while current_path not in expanded_paths:
+            parents.add(current_path)
+            expanded_paths.add(current_path)
+            parent_path = current_path.parent
+            if parent_path == current_path:
+                break
+            current_path = parent_path
     return parents
 
 
@@ -274,6 +293,7 @@ def _build_torrent_ownership(
                 client,
                 torrent,
                 resolved_save_paths,
+                candidate_paths,
                 context=context,
                 refresh_file_metadata=refresh_file_metadata,
                 tolerate_confirmed_removal=tolerate_confirmed_removal,
@@ -402,6 +422,7 @@ def check_files_on_disk(  # noqa: C901
     files_excluded_by_pattern = 0
     files_excluded_by_dir = 0
     files_excluded_by_age = 0
+    canonical_directory_exclusions = bool(exclude_dir_paths or compiled_dir_patterns)
 
     # Scan managed roots recursively.
     for save_path in sorted(filtered_scan_roots, key=lambda path: len(path.parts)):
@@ -412,11 +433,10 @@ def check_files_on_disk(  # noqa: C901
                 files_excluded_by_dir += 1
                 continue
 
-            # Resolve path once at the start of the loop for performance
-            entry_resolved = entry.resolve()
-
             # Check if entry is in an excluded directory (early exit for better performance)
-            if exclude_dir_paths or compiled_dir_patterns:
+            entry_resolved: Path | None = None
+            if canonical_directory_exclusions:
+                entry_resolved = entry.resolve()
                 entry_str = str(entry_resolved)
 
                 # Check direct match first (O(1) lookup)
@@ -448,7 +468,7 @@ def check_files_on_disk(  # noqa: C901
 
                 if minimum_age_ns:
                     try:
-                        modified_ns = entry_resolved.stat().st_mtime_ns
+                        modified_ns = (entry_resolved if entry_resolved is not None else entry).stat().st_mtime_ns
                     except OSError as error:
                         raise SafetyCheckError(f"Could not verify orphan candidate age safely: {entry}") from error
                     if scan_started_ns - modified_ns < minimum_age_ns:
@@ -456,8 +476,9 @@ def check_files_on_disk(  # noqa: C901
                         continue
 
                 candidate_identity = _capture_current_orphan_identity(
-                    entry_resolved,
+                    entry_resolved if entry_resolved is not None else entry,
                     missing_log_message="Orphan candidate disappeared during discovery; omitting path: %s",
+                    canonicalize_symlink=True,
                 )
                 if candidate_identity is not None:
                     candidate_files.append((candidate_identity, str(entry)))
@@ -509,14 +530,24 @@ def check_files_on_disk(  # noqa: C901
     )
 
 
-def _capture_current_orphan_identity(path: Path, *, missing_log_message: str) -> FileIdentity | None:
+def _capture_current_orphan_identity(
+    path: Path,
+    *,
+    missing_log_message: str,
+    canonicalize_symlink: bool = False,
+) -> FileIdentity | None:
     """Capture one unchanged regular file, or return ``None`` if it is absent."""
     try:
         discovered_stat = path.lstat()
+        if canonicalize_symlink and stat.S_ISLNK(discovered_stat.st_mode):
+            # Filesystem discovery historically reconciles canonical
+            # pathnames. Direct plan callers retain strict symlink rejection.
+            path = path.resolve()
+            discovered_stat = path.lstat()
     except FileNotFoundError:
         logging.info(missing_log_message, path)
         return None
-    except OSError as error:
+    except (OSError, RuntimeError) as error:
         raise SafetyCheckError(f"Could not inspect orphan candidate safely: {path}") from error
     identity = capture_file_identity(path)
     if not identity.matches(discovered_stat):
@@ -648,6 +679,28 @@ def _raise_incomplete_orphan_cleanup(
     )
 
 
+def _potential_empty_directories(
+    candidate_paths: set[Path],
+    *,
+    authorized_roots: set[Path],
+    active_save_paths: set[Path],
+) -> set[Path]:
+    """Return candidate parents strictly below active authorized roots."""
+    potential_empty_dirs: set[Path] = set()
+    for candidate_path in candidate_paths:
+        containing_roots = [root for root in authorized_roots if candidate_path.is_relative_to(root)]
+        if not containing_roots:
+            continue
+        authorized_root = max(containing_roots, key=lambda root: len(root.parts))
+        parent_dir = candidate_path.parent
+        while parent_dir != authorized_root and parent_dir not in active_save_paths:
+            if parent_dir in potential_empty_dirs:
+                break
+            potential_empty_dirs.add(parent_dir)
+            parent_dir = parent_dir.parent
+    return potential_empty_dirs
+
+
 def delete_orphaned_files(  # noqa: C901
     orphaned_files: list[str],
     dry_run: bool,
@@ -731,16 +784,6 @@ def delete_orphaned_files(  # noqa: C901
             )
     active_save_paths = set(managed_scan_roots)
 
-    # Track directories that will become empty
-    potential_empty_dirs = set()
-
-    # Collect all parent directories for later cleanup
-    for file_path in orphaned_files_set:
-        parent_dir = file_path.parent
-        while parent_dir != parent_dir.parent:  # Add parent and all ancestor directories
-            potential_empty_dirs.add(parent_dir)
-            parent_dir = parent_dir.parent
-
     if dry_run:
         if torrents is None:
             try:
@@ -762,6 +805,12 @@ def delete_orphaned_files(  # noqa: C901
             )
     else:
         active_save_paths.update(_revalidate_orphan_ownership(client, resolved_plan))
+
+    potential_empty_dirs = _potential_empty_directories(
+        orphaned_files_set,
+        authorized_roots=managed_scan_roots,
+        active_save_paths=active_save_paths,
+    )
 
     if not dry_run:
         identity_failures: list[tuple[Path, str]] = []
