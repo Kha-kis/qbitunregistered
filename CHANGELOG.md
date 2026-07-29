@@ -7,14 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-07-29
+
 ### Fixed
 
-- Unregistered preview and execution now tolerate a tracker-metadata failure
-  only when a fresh validated torrent snapshot confirms that exact hash was
-  removed during the scan. Preview-confirmed absences suppress same-hash re-adds
-  for the rest of that execution, and execution-time removals that conflict
-  with a supplied deletion plan abort before mutation. Active, malformed, or
-  uncertain state still fails closed.
+- Supplied unregistered deletion plans now receive a fresh, uncached
+  qBittorrent snapshot immediately before tag mutation. Every planned torrent
+  must still exist and retain its confirmed delete tag; uncertainty aborts
+  before any tag or deletion mutation.
+- Preview and direct execution now batch failed per-torrent tracker requests
+  and validate them against one fresh torrent snapshot per scan phase instead
+  of downloading the full torrent list for every failure. Hashes confirmed
+  absent are carried in the immutable preview plan and remain suppressed for
+  the rest of the execution, including same-hash re-adds. Active, malformed,
+  or uncertain state still fails closed.
 - Orphan candidates removed after discovery but before plan capture
   are logged and omitted from the immutable plan. Inaccessible, replaced,
   non-regular, or otherwise uncertain paths still abort cleanup, and
@@ -379,7 +385,8 @@ This release represents a comprehensive overhaul focused on performance, securit
 
 *Note: This is the first release with a formal changelog. Previous versions are not documented here.*
 
-[Unreleased]: https://github.com/Kha-kis/qbitunregistered/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/Kha-kis/qbitunregistered/compare/v2.2.1...HEAD
+[2.2.1]: https://github.com/Kha-kis/qbitunregistered/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/Kha-kis/qbitunregistered/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/Kha-kis/qbitunregistered/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/Kha-kis/qbitunregistered/compare/v2.0.0...v2.1.0
