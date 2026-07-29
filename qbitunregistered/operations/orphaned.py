@@ -216,7 +216,9 @@ def _candidate_parent_paths(candidate_paths: set[Path]) -> set[Path]:
     return parents
 
 
-def _validated_content_boundary(torrent: Any, save_path: Path) -> tuple[Path, int] | None:
+def _validated_content_boundary(
+    torrent: Any, save_path: Path
+) -> tuple[Path, int] | None:
     """Return a trustworthy bulk content path and mode, or request exact fallback."""
     content_path_value = getattr(torrent, "content_path", None)
     if not isinstance(content_path_value, str) or not content_path_value:
@@ -241,9 +243,12 @@ def _validated_content_boundary(torrent: Any, save_path: Path) -> tuple[Path, in
                 getattr(content_stat, "st_reparse_tag", 0)
             ):
                 return None
+        resolved_content_path = content_path.resolve()
+        if not resolved_content_path.is_relative_to(save_path):
+            return None
     except (OSError, RuntimeError, ValueError):
         return None
-    return inspected_path, content_stat.st_mode
+    return resolved_content_path, content_stat.st_mode
 
 
 def _build_torrent_ownership(

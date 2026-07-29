@@ -708,7 +708,7 @@ class TestValidatedContentBoundary:
     """Exercise lexical and filesystem safety checks for bulk ownership."""
 
     @pytest.mark.parametrize("content_kind", ["file", "directory"])
-    def test_returns_inspected_regular_boundary_without_final_resolution(
+    def test_returns_canonical_regular_boundary_after_final_resolution(
         self, tmp_path, content_kind
     ):
         save_root = tmp_path.resolve()
@@ -718,22 +718,30 @@ class TestValidatedContentBoundary:
         else:
             content_path.mkdir()
         torrent = SimpleNamespace(content_path=str(content_path))
+        real_resolve = Path.resolve
+        resolved_paths: list[Path] = []
 
-        with patch.object(Path, "resolve", autospec=True) as resolve:
+        def track_resolve(path: Path, strict: bool = False) -> Path:
+            resolved_paths.append(path)
+            return real_resolve(path, strict=strict)
+
+        with patch.object(Path, "resolve", autospec=True, side_effect=track_resolve):
             boundary = _validated_content_boundary(torrent, save_root)
 
         assert boundary is not None
-        inspected_path, content_mode = boundary
-        assert inspected_path == content_path
+        canonical_path, content_mode = boundary
+        assert canonical_path == content_path
         assert (
             stat.S_ISREG(content_mode)
             if content_kind == "file"
             else stat.S_ISDIR(content_mode)
         )
-        resolve.assert_not_called()
+        assert resolved_paths == [content_path]
 
     @pytest.mark.parametrize("symlink_kind", ["root", "component"])
-    def test_symlink_boundary_falls_back_to_exact_metadata(self, tmp_path, symlink_kind):
+    def test_symlink_boundary_falls_back_to_exact_metadata(
+        self, tmp_path, symlink_kind
+    ):
         real_root = tmp_path / "real"
         real_root.mkdir()
         owned = real_root / "owned.mkv"
@@ -773,9 +781,7 @@ class TestValidatedContentBoundary:
             st_reparse_tag=1,
         )
         lstat_results = (
-            [reparse_stat]
-            if reparse_location == "root"
-            else [root_stat, reparse_stat]
+            [reparse_stat] if reparse_location == "root" else [root_stat, reparse_stat]
         )
 
         with (
@@ -788,6 +794,43 @@ class TestValidatedContentBoundary:
 
         assert boundary is None
         resolve.assert_not_called()
+
+    def test_parent_swap_after_lstat_returns_canonical_boundary(self, tmp_path):
+        save_root = tmp_path.resolve()
+        inspected_parent = save_root / "inspected"
+        inspected_content = inspected_parent / "content"
+        inspected_content.mkdir(parents=True)
+        canonical_parent = save_root / "canonical"
+        canonical_content = canonical_parent / "content"
+        canonical_content.mkdir(parents=True)
+        candidate = canonical_content / "owned.mkv"
+        candidate.write_text("owned", encoding="utf-8")
+        displaced_parent = save_root / "displaced"
+        real_lstat = Path.lstat
+        swapped = False
+
+        def swap_parent_after_lstat(path: Path) -> os.stat_result:
+            nonlocal swapped
+            inspected_stat = real_lstat(path)
+            if path == inspected_content and not swapped:
+                inspected_parent.rename(displaced_parent)
+                inspected_parent.symlink_to(canonical_parent, target_is_directory=True)
+                swapped = True
+            return inspected_stat
+
+        with patch.object(
+            Path, "lstat", autospec=True, side_effect=swap_parent_after_lstat
+        ):
+            boundary = _validated_content_boundary(
+                SimpleNamespace(content_path=str(inspected_content)), save_root
+            )
+
+        assert swapped
+        assert boundary is not None
+        canonical_boundary, content_mode = boundary
+        assert canonical_boundary == canonical_content
+        assert stat.S_ISDIR(content_mode)
+        assert canonical_boundary in _candidate_parent_paths({candidate})
 
     def test_outside_boundary_falls_back_before_filesystem_inspection(self, tmp_path):
         save_root = (tmp_path / "save").resolve()
@@ -815,7 +858,9 @@ class TestValidatedContentBoundary:
         )
 
     @pytest.mark.parametrize("failure", ["missing", "os-error"])
-    def test_uninspectable_boundary_falls_back_to_exact_metadata(self, tmp_path, failure):
+    def test_uninspectable_boundary_falls_back_to_exact_metadata(
+        self, tmp_path, failure
+    ):
         save_root = tmp_path.resolve()
         content_path = save_root / "owned.mkv"
         if failure == "os-error":
@@ -1022,6 +1067,62 @@ class TestOrphanOwnershipFastPath:
         assert candidate.read_text(encoding="utf-8") == "preserve"
         client.torrents_files.assert_called_once_with(
             "symlink-final", SIMPLE_RESPONSES=True
+        )
+        client.torrents_delete.assert_not_called()
+
+    def test_parent_swap_final_validation_preserves_exact_owner(self, tmp_path):
+        save_root = tmp_path.resolve()
+        inspected_parent = save_root / "inspected"
+        inspected_content = inspected_parent / "content"
+        inspected_content.mkdir(parents=True)
+        canonical_parent = save_root / "canonical"
+        canonical_content = canonical_parent / "content"
+        canonical_content.mkdir(parents=True)
+        candidate = canonical_content / "candidate.mkv"
+        candidate.write_text("preserve", encoding="utf-8")
+        displaced_parent = save_root / "displaced"
+        torrent = SimpleNamespace(
+            hash="parent-swap-final",
+            save_path=str(save_root),
+            content_path=str(inspected_content),
+        )
+        client = self._client(save_root, [torrent])
+        client.torrents_files.return_value = [
+            {"name": candidate.relative_to(save_root).as_posix()}
+        ]
+        plan = build_orphan_file_plan([str(candidate)])
+        real_lstat = Path.lstat
+        swapped = False
+
+        def swap_parent_after_lstat(path: Path) -> os.stat_result:
+            nonlocal swapped
+            inspected_stat = real_lstat(path)
+            if path == inspected_content and not swapped:
+                inspected_parent.rename(displaced_parent)
+                inspected_parent.symlink_to(canonical_parent, target_is_directory=True)
+                swapped = True
+            return inspected_stat
+
+        with (
+            patch.object(
+                Path,
+                "lstat",
+                autospec=True,
+                side_effect=swap_parent_after_lstat,
+            ),
+            pytest.raises(SafetyCheckError, match="now owned by qBittorrent"),
+        ):
+            delete_orphaned_files(
+                [str(candidate)],
+                dry_run=False,
+                client=client,
+                plan=plan,
+            )
+
+        assert swapped
+        assert candidate.read_text(encoding="utf-8") == "preserve"
+        client.torrents_files.assert_called_once_with(
+            "parent-swap-final", SIMPLE_RESPONSES=True
         )
         client.torrents_delete.assert_not_called()
 
