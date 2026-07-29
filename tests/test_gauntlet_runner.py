@@ -139,6 +139,31 @@ def test_locked_profiles_match_live_reference_shape() -> None:
     assert QUICK_PROFILE.configured_root_count == FULL_PROFILE.configured_root_count == 3
 
 
+def test_fixture_canonicalizes_fake_api_paths_before_bulk_ownership(
+    tmp_path: Path,
+) -> None:
+    canonical_parent = tmp_path / "canonical"
+    canonical_parent.mkdir()
+    aliased_parent = tmp_path / "alias"
+    try:
+        aliased_parent.symlink_to(canonical_parent, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a directory symbolic link: {error}")
+
+    fixture = build_fixture(aliased_parent / "fixture", TINY_PROFILE, seed=17)
+
+    assert fixture.root == (canonical_parent / "fixture").resolve()
+    for torrent in fixture.initial_torrents:
+        save_path = Path(torrent.save_path)
+        content_path = Path(torrent.content_path)
+        assert save_path == save_path.resolve()
+        assert content_path == content_path.resolve()
+
+    result = evaluate_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+    assert result["candidate_counts"] == {"orphan_files": 1}
+
+
 @pytest.mark.parametrize("profile_name", ["quick", "full"])
 def test_versioned_quality_bar_locks_known_fixture_oracle(profile_name: str) -> None:
     profile = PROFILES[profile_name]

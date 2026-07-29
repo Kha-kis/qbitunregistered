@@ -657,6 +657,7 @@ def build_fixture(root: Path, profile: GauntletProfile, seed: int) -> GauntletFi
     """Materialize a stable, sanitized qBittorrent and filesystem workload."""
     blueprint = build_blueprint(profile, seed)
     root.mkdir(parents=True, exist_ok=True)
+    root = root.resolve()
     root_paths = {root_name: root / root_name for root_name in ROOT_NAMES}
     for root_path in root_paths.values():
         root_path.mkdir()
