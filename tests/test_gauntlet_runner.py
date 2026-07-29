@@ -466,6 +466,28 @@ def test_variance_gate_rejects_bad_samples_or_statistics(
     assert report["gates"]["variance"]["status"] == expected
 
 
+def test_variance_gate_reports_normalized_evidence_for_mad_only_failure() -> None:
+    result = _valid_quick_result()
+    samples = [0.84, 0.84, 1.0, 1.16, 1.16]
+    result["sample_runtime_seconds"] = samples
+    result["median_runtime_seconds"] = 1.0
+    result["minimum_runtime_seconds"] = 0.84
+    result["maximum_runtime_seconds"] = 1.16
+    result["median_absolute_deviation_seconds"] = 0.16
+
+    report = compare_result(result, load_quality_bar(QUALITY_BAR_PATH))
+
+    variance_gate = report["gates"]["variance"]
+    assert variance_gate["status"] == "fail"
+    actual = variance_gate["actual"]
+    target = variance_gate["target"]
+    assert actual is not None
+    assert target is not None
+    assert actual == pytest.approx(0.16 / 0.15)
+    assert target == 1.0
+    assert actual > target
+
+
 def test_cli_comparison_mode_exits_nonzero_and_writes_gate_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

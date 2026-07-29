@@ -608,18 +608,22 @@ def _variance_gate(
         return _gate("fail", "reported runtime statistics are malformed or inconsistent")
     relative_mad = mad / median
     relative_range = (maximum - minimum) / median
-    if relative_mad > profile.relative_mad_max or relative_range > profile.relative_range_max:
+    maximum_normalized_variance = max(
+        relative_mad / profile.relative_mad_max,
+        relative_range / profile.relative_range_max,
+    )
+    if maximum_normalized_variance > 1.0:
         return _gate(
             "fail",
             "runtime sample variance exceeds the locked limits",
-            actual=max(relative_mad, relative_range),
-            target=max(profile.relative_mad_max, profile.relative_range_max),
+            actual=maximum_normalized_variance,
+            target=1.0,
         )
     return _gate(
         "pass",
         "runtime sample variance remains within the locked limits",
-        actual=max(relative_mad, relative_range),
-        target=max(profile.relative_mad_max, profile.relative_range_max),
+        actual=maximum_normalized_variance,
+        target=1.0,
     )
 
 

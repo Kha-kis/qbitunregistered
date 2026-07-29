@@ -1,0 +1,2 @@
+recursive-include benchmarks *.py *.toml
+include tests/__init__.py
