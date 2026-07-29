@@ -85,7 +85,7 @@ exclude = [
 ]
 
 [tool.basedpyright]
-include = ["qbitunregistered", "tests"]
+include = ["qbitunregistered", "benchmarks", "tests"]
 exclude = [
     "build",
     "dist",
@@ -101,9 +101,10 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "-v --strict-markers --tb=short --disable-warnings"
+addopts = "-v --strict-markers --tb=short --disable-warnings -m \"not gauntlet_full\""
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gauntlet_full: runs the 12,000-torrent/94,000-file evaluator profile explicitly",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
     "smoke: marks tests as smoke tests",

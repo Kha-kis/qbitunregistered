@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A deterministic, repository-local performance and safety gauntlet for the
+  orphan discovery, immutable planning, and dry-run reconciliation pipeline,
+  with sanitized live-shaped quick/full workloads, versioned fixture and action
+  oracles, per-pass API and mutation counters, untraced timing statistics,
+  separately traced peak memory, stable candidate identity, TOML quality-bar
+  comparison, and explicit fail-closed regression coverage.
+
 ## [2.2.1] - 2026-07-29
 
 ### Fixed
