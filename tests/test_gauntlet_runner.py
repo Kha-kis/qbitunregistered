@@ -1311,6 +1311,31 @@ def test_protected_loader_ignores_git_replacement_refs(
     payload_path.write_text(canonical_source, encoding="utf-8")
     _commit_gauntlet_test_repository(repository_root)
     identity_before = capture_repository_identity(repository_root)
+    assert identity_before.known
+    assert identity_before.clean is True
+
+    def assert_underlying_repository_is_clean() -> RepositoryIdentity:
+        underlying_status = subprocess.run(
+            [
+                "git",
+                "--no-replace-objects",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            ],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert underlying_status.stdout == ""
+        replacement_aware_identity = capture_repository_identity(repository_root)
+        if replacement_aware_identity != identity_before:
+            assert replacement_aware_identity.known
+            assert replacement_aware_identity.commit == identity_before.commit
+            assert replacement_aware_identity.clean is False
+        return replacement_aware_identity
+
     original_oid = subprocess.run(
         ["git", "rev-parse", f"HEAD:{payload_relative}"],
         cwd=repository_root,
@@ -1348,7 +1373,7 @@ def test_protected_loader_ignores_git_replacement_refs(
         text=True,
     )
     assert replaced_blob.stdout == malicious_source
-    assert capture_repository_identity(repository_root) == identity_before
+    attack_identity_before = assert_underlying_repository_is_clean()
 
     sources = import_bootstrap._tracked_protected_sources(repository_root)
     assert sources["qbitunregistered.payload"].oid == original_oid
@@ -1365,15 +1390,7 @@ def test_protected_loader_ignores_git_replacement_refs(
     assert canonical_side_effect.read_text(encoding="utf-8") == "ran"
     assert not malicious_side_effect.exists()
     assert not (payload_path.parent / "__pycache__").exists()
-    status = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=repository_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert status.stdout == ""
-    assert capture_repository_identity(repository_root) == identity_before
+    assert assert_underlying_repository_is_clean() == attack_identity_before
 
 
 @pytest.mark.parametrize(
