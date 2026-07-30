@@ -27,6 +27,7 @@ from benchmarks.gauntlet import paired
 from benchmarks.gauntlet import runner
 from benchmarks.gauntlet.baseline import (
     BaselineMeasurement,
+    QualityBar,
     QualityBarError,
     compare_result,
     load_quality_bar,
@@ -540,6 +541,22 @@ def test_paired_runner_rejects_dependency_environment_tampering_between_children
     monkeypatch.setattr(paired, "_evaluator_digest", lambda _root: "d" * 64)
     monkeypatch.setattr(paired, "_named_files_digest", lambda *_args: "f" * 64)
     monkeypatch.setattr(paired, "_dependency_import_paths", lambda: (str(dependency_root),))
+    real_load_quality_bar = paired._load_canonical_quality_bar
+    loaded_quality_bars: list[Path] = []
+    digested_quality_bars: list[Path] = []
+
+    def load_canonical_quality_bar(path: Path) -> QualityBar:
+        loaded_quality_bars.append(path)
+        return real_load_quality_bar(path)
+
+    def digest_canonical_quality_bar(path: Path, description: str) -> str:
+        assert description == "canonical quality bar"
+        digested_quality_bars.append(path)
+        return "b" * 64
+
+    monkeypatch.setattr(paired, "_load_canonical_quality_bar", load_canonical_quality_bar)
+    monkeypatch.setattr(paired, "_file_digest", digest_canonical_quality_bar)
+    monkeypatch.delattr(paired.os, "O_NOFOLLOW", raising=False)
 
     def tamper_after_first_child(root: Path, **_kwargs) -> dict[str, object]:
         calls.append(root)
@@ -562,6 +579,8 @@ def test_paired_runner_rejects_dependency_environment_tampering_between_children
         )
 
     assert calls == [control_root]
+    assert loaded_quality_bars == [QUALITY_BAR_PATH]
+    assert digested_quality_bars == [QUALITY_BAR_PATH]
 
 
 @requires_descriptor_no_follow
