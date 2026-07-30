@@ -681,6 +681,53 @@ def test_paired_cli_resolves_relative_worktrees_before_output_containment(
     assert run_calls == []
 
 
+def test_paired_cli_rejects_retargeted_output_ancestor_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    output_root = tmp_path / "output"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    output_root.mkdir()
+    symlink_probe = output_root / "symlink-probe"
+    try:
+        symlink_probe.symlink_to(control_root, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a directory symbolic link: {error}")
+    symlink_probe.unlink()
+    output_parent = output_root / "future-parent"
+    output_path = output_parent / "result.json"
+    write_calls: list[Path | None] = []
+
+    def retarget_output_ancestor(*_args, **_kwargs):
+        output_parent.symlink_to(control_root, target_is_directory=True)
+        return {"comparison": {"overall": "fail"}}
+
+    def record_write(_serialized_result: str, output: Path | None = None) -> Path:
+        write_calls.append(output)
+        return output_path
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", retarget_output_ancestor)
+    monkeypatch.setattr(runner, "write_serialized_result", record_write)
+
+    with pytest.raises(SystemExit, match="changed or became unsafe"):
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--output",
+                str(output_path),
+            ]
+        )
+
+    assert write_calls == []
+    assert not (control_root / "result.json").exists()
+
+
 def test_locked_profiles_match_live_reference_shape() -> None:
     assert (
         QUICK_PROFILE.torrent_count,

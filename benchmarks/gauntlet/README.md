@@ -29,7 +29,9 @@ records the three clean identities plus evaluator, quality-bar, and dependency
 digests, and the orchestrator rechecks all identities and digests after the
 run. Contemporaneous paired execution requires the platform to expose
 `O_NOFOLLOW` (or equivalent descriptor no-follow support); it fails closed when
-that capability is unavailable.
+that capability is unavailable. An explicit output destination must also
+resolve to the same path outside all three repositories before and after the
+crossover.
 
 The orchestrator uses two symmetric crossover blocks: `control, candidate,
 candidate, control`, then `candidate, control, control, candidate`

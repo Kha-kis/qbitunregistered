@@ -66,6 +66,13 @@ def _outside_repository(path: Path, repository_root: Path) -> bool:
         return False
 
 
+def _resolve_paired_output(path: Path) -> Path:
+    try:
+        return path.expanduser().resolve()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SystemExit("paired gauntlet output path could not be resolved") from error
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one evaluator profile, optionally compare it, and write JSON."""
     repository_root = Path(__file__).resolve().parents[2]
@@ -78,6 +85,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("gauntlet output must be outside the repository")
     paired_control: Path | None = arguments.paired_control
     paired_candidate: Path | None = arguments.paired_candidate
+    paired_output: Path | None = None
     paired_requested = paired_control is not None or paired_candidate is not None
     if paired_requested and (paired_control is None or paired_candidate is None):
         raise SystemExit("--paired-control and --paired-candidate must be supplied together")
@@ -91,11 +99,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SystemExit("paired gauntlet worktree paths could not be resolved") from error
         if arguments.compare is not None and arguments.compare.expanduser().resolve() != DEFAULT_QUALITY_BAR.resolve():
             raise SystemExit("paired gauntlet requires the invoking checkout's canonical quality bar")
-        if arguments.output is not None and (
-            not _outside_repository(arguments.output, paired_control)
-            or not _outside_repository(arguments.output, paired_candidate)
-        ):
-            raise SystemExit("paired gauntlet output must be outside both evaluated repositories")
+        if arguments.output is not None:
+            paired_output = _resolve_paired_output(arguments.output)
+            if not _outside_repository(paired_output, paired_control) or not _outside_repository(
+                paired_output,
+                paired_candidate,
+            ):
+                raise SystemExit("paired gauntlet output must be outside both evaluated repositories")
 
     from benchmarks.gauntlet.baseline import compare_result, load_quality_bar
     from benchmarks.gauntlet.runner import (
@@ -122,7 +132,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             identity_before_imports,
             capture_repository_identity(repository_root),
         )
-        output_path = write_serialized_result(serialized_result, arguments.output)
+        if paired_output is not None:
+            assert arguments.output is not None
+            revalidated_output = _resolve_paired_output(arguments.output)
+            if revalidated_output != paired_output or any(
+                not _outside_repository(revalidated_output, root)
+                for root in (repository_root, paired_control, paired_candidate)
+            ):
+                raise SystemExit("paired gauntlet output destination changed or became unsafe during execution")
+            paired_output = revalidated_output
+        output_path = write_serialized_result(serialized_result, paired_output)
         print(output_path)
         return 0 if paired_result["comparison"]["overall"] == "pass" else COMPARISON_FAILED_EXIT
 
