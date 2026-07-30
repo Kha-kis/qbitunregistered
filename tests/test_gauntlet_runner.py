@@ -785,6 +785,92 @@ def test_paired_cli_resolves_relative_worktrees_before_output_containment(
     assert run_calls == []
 
 
+def test_paired_cli_atomically_replaces_external_output_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    output_root = tmp_path / "output"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    output_root.mkdir()
+    protected_path = output_root / "protected.json"
+    protected_content = "protected external content\n"
+    protected_path.write_text(protected_content, encoding="utf-8")
+    output_path = output_root / "result.json"
+    try:
+        output_path.symlink_to(protected_path)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a file symbolic link: {error}")
+    run_calls: list[tuple[object, ...]] = []
+
+    def record_paired_run(*args, **_kwargs):
+        run_calls.append(args)
+        return {"comparison": {"overall": "fail"}}
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", record_paired_run)
+
+    exit_code = gauntlet_cli.main(
+        [
+            "--paired-control",
+            str(control_root),
+            "--paired-candidate",
+            str(candidate_root),
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == gauntlet_cli.COMPARISON_FAILED_EXIT
+    assert len(run_calls) == 1
+    assert protected_path.read_text(encoding="utf-8") == protected_content
+    assert not output_path.is_symlink()
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {"comparison": {"overall": "fail"}}
+
+
+def test_paired_cli_rejects_output_symlink_into_evaluated_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    output_root = tmp_path / "output"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    output_root.mkdir()
+    protected_path = candidate_root / "protected.json"
+    protected_path.write_text("protected candidate content\n", encoding="utf-8")
+    output_path = output_root / "result.json"
+    try:
+        output_path.symlink_to(protected_path)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a file symbolic link: {error}")
+    run_calls: list[tuple[object, ...]] = []
+
+    def record_paired_run(*args, **_kwargs):
+        run_calls.append(args)
+        return {"comparison": {"overall": "fail"}}
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", record_paired_run)
+
+    with pytest.raises(SystemExit, match="outside both evaluated repositories"):
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--output",
+                str(output_path),
+            ]
+        )
+
+    assert run_calls == []
+    assert output_path.is_symlink()
+    assert protected_path.read_text(encoding="utf-8") == "protected candidate content\n"
+
+
 def test_paired_cli_rejects_retargeted_output_ancestor_before_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -795,18 +881,26 @@ def test_paired_cli_rejects_retargeted_output_ancestor_before_write(
     control_root.mkdir()
     candidate_root.mkdir()
     output_root.mkdir()
-    symlink_probe = output_root / "symlink-probe"
+    first_parent = output_root / "first"
+    second_parent = output_root / "second"
+    first_parent.mkdir()
+    second_parent.mkdir()
+    protected_path = output_root / "protected.json"
+    protected_content = "protected external content\n"
+    protected_path.write_text(protected_content, encoding="utf-8")
+    output_parent = output_root / "current"
     try:
-        symlink_probe.symlink_to(control_root, target_is_directory=True)
+        (first_parent / "result.json").symlink_to(protected_path)
+        (second_parent / "result.json").symlink_to(protected_path)
+        output_parent.symlink_to(first_parent, target_is_directory=True)
     except (NotImplementedError, OSError) as error:
         pytest.skip(f"platform cannot create a directory symbolic link: {error}")
-    symlink_probe.unlink()
-    output_parent = output_root / "future-parent"
     output_path = output_parent / "result.json"
     write_calls: list[Path | None] = []
 
     def retarget_output_ancestor(*_args, **_kwargs):
-        output_parent.symlink_to(control_root, target_is_directory=True)
+        output_parent.unlink()
+        output_parent.symlink_to(second_parent, target_is_directory=True)
         return {"comparison": {"overall": "fail"}}
 
     def record_write(_serialized_result: str, output: Path | None = None) -> Path:
@@ -829,7 +923,9 @@ def test_paired_cli_rejects_retargeted_output_ancestor_before_write(
         )
 
     assert write_calls == []
-    assert not (control_root / "result.json").exists()
+    assert protected_path.read_text(encoding="utf-8") == protected_content
+    assert (first_parent / "result.json").is_symlink()
+    assert (second_parent / "result.json").is_symlink()
 
 
 def test_locked_profiles_match_live_reference_shape() -> None:
@@ -1279,6 +1375,92 @@ def test_omitted_output_uses_a_unique_system_temporary_file(
     assert output.parent == tmp_path
     assert output.name.startswith("qbitunregistered-gauntlet-")
     assert json.loads(output.read_text(encoding="utf-8")) == {"schema_version": SCHEMA_VERSION}
+
+
+def test_explicit_output_replaces_hard_link_without_mutating_protected_file(
+    tmp_path: Path,
+) -> None:
+    protected_path = tmp_path / "protected.json"
+    protected_content = "protected repository content\n"
+    protected_path.write_text(protected_content, encoding="utf-8")
+    protected_identity = protected_path.stat()
+    output = tmp_path / "result.json"
+    try:
+        output.hardlink_to(protected_path)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a file hard link: {error}")
+    assert output.samefile(protected_path)
+    serialized_result = runner.serialize_result({"schema_version": SCHEMA_VERSION})
+
+    written_path = runner.write_serialized_result(serialized_result, output)
+
+    assert written_path == output.resolve()
+    assert protected_path.read_text(encoding="utf-8") == protected_content
+    assert (protected_path.stat().st_dev, protected_path.stat().st_ino) == (
+        protected_identity.st_dev,
+        protected_identity.st_ino,
+    )
+    assert output.read_text(encoding="utf-8") == serialized_result
+    assert not output.samefile(protected_path)
+
+
+def test_explicit_output_replaces_symlink_without_mutating_target(
+    tmp_path: Path,
+) -> None:
+    protected_path = tmp_path / "protected.json"
+    protected_content = "protected repository content\n"
+    protected_path.write_text(protected_content, encoding="utf-8")
+    output = tmp_path / "result.json"
+    try:
+        output.symlink_to(protected_path)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a file symbolic link: {error}")
+    serialized_result = runner.serialize_result({"schema_version": SCHEMA_VERSION})
+
+    written_path = runner.write_serialized_result(serialized_result, output)
+
+    assert written_path == output.resolve()
+    assert not output.is_symlink()
+    assert protected_path.read_text(encoding="utf-8") == protected_content
+    assert output.read_text(encoding="utf-8") == serialized_result
+
+
+def test_explicit_output_cleans_staging_file_when_publication_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "result.json"
+    output.write_text("previous artifact\n", encoding="utf-8")
+
+    def fail_replace(_source: Path, _destination: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(runner.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        runner.write_serialized_result("replacement artifact\n", output)
+
+    assert output.read_text(encoding="utf-8") == "previous artifact\n"
+    assert list(tmp_path.iterdir()) == [output]
+
+
+def test_explicit_output_cleans_staging_file_when_fsync_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "result.json"
+    output.write_text("previous artifact\n", encoding="utf-8")
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(runner.os, "fsync", fail_fsync)
+
+    with pytest.raises(OSError, match="fsync failed"):
+        runner.write_serialized_result("replacement artifact\n", output)
+
+    assert output.read_text(encoding="utf-8") == "previous artifact\n"
+    assert list(tmp_path.iterdir()) == [output]
 
 
 @pytest.mark.gauntlet_full

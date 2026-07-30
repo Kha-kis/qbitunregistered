@@ -628,6 +628,7 @@ def serialize_result(result: Mapping[str, object]) -> str:
 
 def write_serialized_result(serialized_result: str, output: Path | None = None) -> Path:
     """Write prepared JSON to an explicit path or unique system temporary file."""
+    remove_output_on_failure = output is None
     if output is None:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix="qbitunregistered-gauntlet-",
@@ -636,13 +637,38 @@ def write_serialized_result(serialized_result: str, output: Path | None = None) 
         output_path = Path(temporary_name)
         try:
             os.close(descriptor)
-        except OSError:
+        except BaseException:
             output_path.unlink(missing_ok=True)
             raise
     else:
-        output_path = output.expanduser().resolve()
+        expanded_output = output.expanduser()
+        output_path = expanded_output.parent.resolve() / expanded_output.name
         output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(serialized_result, encoding="utf-8")
+
+    temporary_path: Path | None = None
+    published = False
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            dir=output_path.parent,
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(serialized_result)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, output_path)
+        published = True
+    finally:
+        try:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        finally:
+            if remove_output_on_failure and not published:
+                output_path.unlink(missing_ok=True)
     return output_path
 
 
