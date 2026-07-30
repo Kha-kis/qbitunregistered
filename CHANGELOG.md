@@ -36,9 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserves its established canonical-path behavior.
 - Windows rooted-relative metadata and normalized-key collisions now use the
   canonical fallback instead of bypassing save-root containment.
-- Bulk content validation retains a final canonical check after component
-  inspection, preventing a parent-directory replacement race from skipping
-  exact ownership metadata.
+- Bulk content validation retains final canonical containment and type checks
+  after component inspection, preventing parent-directory or boundary-type
+  replacement races from skipping exact ownership metadata.
 - Paired gauntlet runs now report malformed canonical quality bars without
   tracebacks or private paths, reject directory and special-file output targets
   before evaluation, fail closed when a bound output directory moves after

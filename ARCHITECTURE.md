@@ -228,8 +228,9 @@ changes during capture still fails the complete plan closed.
 Bulk boundary trust requires an absolute canonical path beneath the torrent
 save path, an accessible regular file or directory, no symlink or Windows
 reparse point in any component below the canonical save root, and a final
-canonical containment check after component inspection. Missing, malformed,
-inaccessible, aliased, or uncertain boundaries use live exact file metadata.
+canonical containment and type inspection after component checks. Missing,
+malformed, inaccessible, aliased, or uncertain boundaries use live exact file
+metadata.
 Directory boundaries never protect a whole tree in exact mode. Final real-run
 validation uses the same builder, limited to boundaries that can overlap the
 immutable candidate plan.

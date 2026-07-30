@@ -254,6 +254,9 @@ def _validated_content_boundary(torrent: Any, save_path: Path) -> tuple[Path, in
         resolved_content_path = content_path.resolve()
         if not resolved_content_path.is_relative_to(save_path):
             return None
+        content_stat = resolved_content_path.lstat()
+        if stat.S_ISLNK(content_stat.st_mode) or bool(getattr(content_stat, "st_reparse_tag", 0)):
+            return None
     except (OSError, RuntimeError, ValueError):
         return None
     return resolved_content_path, content_stat.st_mode

@@ -813,7 +813,7 @@ class TestValidatedContentBoundary:
 
         assert _validated_content_boundary(SimpleNamespace(content_path=str(content_path)), save_root) is None
 
-    @pytest.mark.parametrize("reparse_location", ["root", "component"])
+    @pytest.mark.parametrize("reparse_location", ["root", "component", "final"])
     def test_reparse_boundary_falls_back_to_exact_metadata(self, tmp_path, reparse_location):
         save_root = tmp_path.resolve()
         content_path = save_root / "owned.mkv"
@@ -824,16 +824,26 @@ class TestValidatedContentBoundary:
             st_mode=(root_stat.st_mode if reparse_location == "root" else component_stat.st_mode),
             st_reparse_tag=1,
         )
-        lstat_results = [reparse_stat] if reparse_location == "root" else [root_stat, reparse_stat]
+        if reparse_location == "root":
+            lstat_results = [reparse_stat]
+        elif reparse_location == "component":
+            lstat_results = [root_stat, reparse_stat]
+        else:
+            lstat_results = [root_stat, component_stat, reparse_stat]
 
         with (
             patch.object(Path, "lstat", autospec=True, side_effect=lstat_results),
             patch.object(Path, "resolve", autospec=True) as resolve,
         ):
+            if reparse_location == "final":
+                resolve.return_value = content_path
             boundary = _validated_content_boundary(SimpleNamespace(content_path=str(content_path)), save_root)
 
         assert boundary is None
-        resolve.assert_not_called()
+        if reparse_location == "final":
+            resolve.assert_called_once_with(content_path)
+        else:
+            resolve.assert_not_called()
 
     def test_parent_swap_after_lstat_returns_canonical_boundary(self, tmp_path):
         save_root = tmp_path.resolve()
@@ -1154,6 +1164,95 @@ class TestOrphanOwnershipFastPath:
         assert swapped
         assert candidate.read_text(encoding="utf-8") == "preserve"
         client.torrents_files.assert_called_once_with("parent-swap-final", SIMPLE_RESPONSES=True)
+        client.torrents_delete.assert_not_called()
+
+    def test_directory_to_file_swap_final_validation_preserves_bulk_owner(self, tmp_path):
+        candidate = tmp_path / "candidate.mkv"
+        candidate.write_text("preserve", encoding="utf-8")
+        stale_directory_stat = tmp_path.stat()
+        torrent = SimpleNamespace(
+            hash="directory-to-file",
+            save_path=str(tmp_path),
+            content_path=str(candidate),
+        )
+        client = self._client(tmp_path, [torrent])
+        plan = build_orphan_file_plan([str(candidate)])
+        real_lstat = Path.lstat
+        candidate_inspections = 0
+
+        def report_stale_directory_once(path: Path) -> os.stat_result:
+            nonlocal candidate_inspections
+            if path == candidate:
+                candidate_inspections += 1
+                if candidate_inspections == 1:
+                    return stale_directory_stat
+            return real_lstat(path)
+
+        with (
+            patch.object(
+                Path,
+                "lstat",
+                autospec=True,
+                side_effect=report_stale_directory_once,
+            ),
+            pytest.raises(SafetyCheckError, match="now owned by qBittorrent"),
+        ):
+            delete_orphaned_files(
+                [str(candidate)],
+                dry_run=False,
+                client=client,
+                plan=plan,
+            )
+
+        assert candidate_inspections == 2
+        assert candidate.read_text(encoding="utf-8") == "preserve"
+        client.torrents_files.assert_not_called()
+        client.torrents_delete.assert_not_called()
+
+    def test_file_to_directory_swap_final_validation_uses_exact_metadata(self, tmp_path):
+        content_dir = tmp_path / "bundle"
+        content_dir.mkdir()
+        candidate = content_dir / "candidate.mkv"
+        candidate.write_text("preserve", encoding="utf-8")
+        stale_regular_file_stat = candidate.stat()
+        torrent = SimpleNamespace(
+            hash="file-to-directory",
+            save_path=str(tmp_path),
+            content_path=str(content_dir),
+        )
+        client = self._client(tmp_path, [torrent])
+        client.torrents_files.return_value = [{"name": "bundle/candidate.mkv"}]
+        plan = build_orphan_file_plan([str(candidate)])
+        real_lstat = Path.lstat
+        boundary_inspections = 0
+
+        def report_stale_regular_file_once(path: Path) -> os.stat_result:
+            nonlocal boundary_inspections
+            if path == content_dir:
+                boundary_inspections += 1
+                if boundary_inspections == 1:
+                    return stale_regular_file_stat
+            return real_lstat(path)
+
+        with (
+            patch.object(
+                Path,
+                "lstat",
+                autospec=True,
+                side_effect=report_stale_regular_file_once,
+            ),
+            pytest.raises(SafetyCheckError, match="now owned by qBittorrent"),
+        ):
+            delete_orphaned_files(
+                [str(candidate)],
+                dry_run=False,
+                client=client,
+                plan=plan,
+            )
+
+        assert boundary_inspections == 2
+        assert candidate.read_text(encoding="utf-8") == "preserve"
+        client.torrents_files.assert_called_once_with("file-to-directory", SIMPLE_RESPONSES=True)
         client.torrents_delete.assert_not_called()
 
     def test_final_validation_only_fetches_overlapping_multi_file_boundary(self, tmp_path):
