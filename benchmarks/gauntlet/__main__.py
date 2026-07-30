@@ -218,7 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     if paired_requested:
-        from benchmarks.gauntlet.paired import run_paired_gauntlet
+        from benchmarks.gauntlet.paired import PairedGauntletError, run_paired_gauntlet
 
         assert paired_control is not None
         assert paired_candidate is not None
@@ -267,8 +267,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         default_directory=default_output_directory,
                         bound_directory=bound_directory,
                     )
-        except GauntletSafetyError as error:
-            raise SystemExit(str(error)) from error
+        except (GauntletSafetyError, PairedGauntletError) as error:
+            raise SystemExit(str(error)) from None
         print(output_path)
         return 0 if paired_result["comparison"]["overall"] == "pass" else COMPARISON_FAILED_EXIT
 

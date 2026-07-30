@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import tracemalloc
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -986,6 +987,33 @@ def test_source_launcher_requires_isolated_interpreter() -> None:
         launcher._require_isolated_startup()
 
 
+@requires_bound_publication
+def test_source_launcher_reports_paired_failure_without_traceback_or_paths() -> None:
+    assert launcher.__file__ is not None
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(Path(launcher.__file__)),
+            "--paired-control",
+            str(REPOSITORY_ROOT),
+            "--paired-candidate",
+            str(REPOSITORY_ROOT),
+        ],
+        cwd=REPOSITORY_ROOT.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == "paired control and candidate must be isolated worktrees"
+    assert "Traceback" not in completed.stderr
+    assert str(REPOSITORY_ROOT) not in completed.stderr
+
+
 def test_paired_cli_rejects_unisolated_or_mismatched_parent_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1021,6 +1049,90 @@ def test_paired_cli_rejects_unisolated_or_mismatched_parent_cache(
         )
 
     assert run_calls == []
+
+
+def test_paired_cli_translates_sanitized_child_failure_without_chaining(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    sensitive_path = tmp_path / "private" / "child.py"
+    sanitized_message = "paired child evaluation failed with exit code 9: token=<redacted> failed at <path>"
+    monkeypatch.setattr(
+        runner,
+        "bind_output_directory",
+        lambda *_args, **_kwargs: nullcontext(None),
+    )
+
+    def fail_paired_run(*_args, **_kwargs):
+        try:
+            raise OSError(f"child failed at {sensitive_path}")
+        except OSError as error:
+            raise PairedGauntletError(sanitized_message) from error
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", fail_paired_run)
+
+    with pytest.raises(SystemExit) as error_info:
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+            ]
+        )
+
+    assert str(error_info.value) == sanitized_message
+    assert error_info.value.__cause__ is None
+    assert error_info.value.__suppress_context__ is True
+    assert str(sensitive_path) not in str(error_info.value)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_type"),
+    [
+        (KeyboardInterrupt(), KeyboardInterrupt),
+        (SystemExit(17), SystemExit),
+        (RuntimeError("unexpected evaluator error"), RuntimeError),
+    ],
+)
+def test_paired_cli_does_not_swallow_unexpected_or_control_flow_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
+    error: BaseException,
+    expected_type: type[BaseException],
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    monkeypatch.setattr(
+        runner,
+        "bind_output_directory",
+        lambda *_args, **_kwargs: nullcontext(None),
+    )
+
+    def fail_paired_run(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", fail_paired_run)
+
+    with pytest.raises(expected_type) as error_info:
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+            ]
+        )
+
+    assert error_info.value is error
 
 
 def test_cli_rejects_output_symlink_entry_inside_invoking_repository(
