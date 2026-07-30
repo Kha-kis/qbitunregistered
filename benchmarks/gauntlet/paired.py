@@ -7,6 +7,7 @@ import json
 import math
 import os
 import statistics
+import stat
 import subprocess
 import sys
 import tempfile
@@ -20,22 +21,33 @@ from benchmarks.gauntlet.baseline import (
     ProfileQualityBar,
     QualityBar,
     compare_result,
+    load_quality_bar,
 )
 from benchmarks.gauntlet.identity import (
     RepositoryIdentity,
     capture_repository_identity,
     require_same_identity,
 )
+from benchmarks.gauntlet.paired_evidence import (
+    PairedEvidenceError,
+    sanitize_child_result,
+)
 
 PAIRED_SCHEMA_NAME = "qbitunregistered.gauntlet.paired-result"
-PAIRED_SCHEMA_VERSION = 1
-PAIRING_VERSION = "1.0.0"
+PAIRED_SCHEMA_VERSION = 2
+PAIRING_VERSION = "2.0.0"
 PAIRED_ORDER: tuple[Literal["control", "candidate"], ...] = (
     "control",
     "candidate",
     "candidate",
     "control",
+    "candidate",
+    "control",
+    "control",
+    "candidate",
 )
+PAIRED_BLOCKS = ((0, 1, 2, 3), (4, 5, 6, 7))
+ADJACENT_PAIRS = ((0, 1), (3, 2), (5, 4), (6, 7))
 REQUIRED_CHILD_GATES = {
     "identity",
     "measurement_policy",
@@ -46,6 +58,7 @@ REQUIRED_CHILD_GATES = {
 }
 MAX_CHILD_ARTIFACT_BYTES = 8 * 1024 * 1024
 CHILD_TIMEOUT_SECONDS = 3_600
+DEPENDENCY_FILES = ("pyproject.toml", "uv.lock")
 
 
 class PairedGauntletError(RuntimeError):
@@ -62,6 +75,9 @@ class PairingComparison(TypedDict):
     runtime_control_fraction: float | None
     memory_control_fraction: float | None
     role_runtime_relative_ranges: dict[str, float]
+    block_runtime_control_fractions: list[float]
+    block_memory_control_fractions: list[float]
+    role_memory_relative_ranges: dict[str, float]
 
 
 class PairedRun(TypedDict):
@@ -79,6 +95,8 @@ class PairedResult(TypedDict):
     schema_version: int
     pairing_version: str
     evaluator_digest: str
+    quality_bar_digest: str
+    dependency_digest: str
     order: list[str]
     profile: str
     seed: int
@@ -116,6 +134,7 @@ def _failed_comparison(detail: str) -> PairingComparison:
             "oracles",
             "child_gates",
             "paired_drift",
+            "memory_drift",
             "runtime",
             "memory",
         )
@@ -128,6 +147,9 @@ def _failed_comparison(detail: str) -> PairingComparison:
         "runtime_control_fraction": None,
         "memory_control_fraction": None,
         "role_runtime_relative_ranges": {},
+        "block_runtime_control_fractions": [],
+        "block_memory_control_fractions": [],
+        "role_memory_relative_ranges": {},
     }
 
 
@@ -200,19 +222,19 @@ def compare_paired_results(  # noqa: C901
     runs: Sequence[Mapping[str, object]],
     quality_bar: QualityBar,
 ) -> PairingComparison:
-    """Compare an ABBA result set, rejecting incomplete or inconsistent evidence."""
+    """Compare a symmetric crossover, rejecting incomplete or inconsistent evidence."""
     if len(runs) != len(PAIRED_ORDER):
-        return _failed_comparison("paired evidence must contain exactly four ABBA runs")
+        return _failed_comparison("paired evidence must contain exactly eight crossover runs")
     roles = [run.get("role") for run in runs]
     positions = [run.get("position") for run in runs]
     if roles != list(PAIRED_ORDER) or positions != list(range(len(PAIRED_ORDER))):
-        return _failed_comparison("paired evidence order is not the locked ABBA sequence")
+        return _failed_comparison("paired evidence order is not the locked ABBA+BAAB sequence")
     results: list[dict[str, object]] = []
     for run in runs:
-        result = run.get("result")
-        if not isinstance(result, dict):
-            return _failed_comparison("paired evidence contains a malformed child result")
-        results.append(cast(dict[str, object], result))
+        try:
+            results.append(sanitize_child_result(run.get("result"), quality_bar))
+        except PairedEvidenceError as error:
+            return _failed_comparison(str(error))
 
     reference = results[0]
     profile = _profile_quality_bar(quality_bar, reference.get("profile"))
@@ -223,7 +245,10 @@ def compare_paired_results(  # noqa: C901
         return _failed_comparison("quality bar timed sample count is malformed")
 
     gates: dict[str, GateResult] = {
-        "structure": _gate("pass", "four ordered ABBA runs retain every child artifact"),
+        "structure": _gate(
+            "pass",
+            "eight ordered ABBA+BAAB runs retain every child artifact",
+        ),
     }
     evaluator_fields = ("schema", "schema_version", "evaluator_version", "scope")
     expected_evaluator = (
@@ -239,11 +264,16 @@ def compare_paired_results(  # noqa: C901
         gates["evaluator"] = _gate("pass", "child evaluator schema, version, and scope are identical")
 
     identities = [_complete_clean_identity(result) for result in results]
-    role_identities_stable = identities[0] == identities[3] and identities[1] == identities[2]
+    control_identities = [identity for role, identity in zip(PAIRED_ORDER, identities, strict=True) if role == "control"]
+    candidate_identities = [identity for role, identity in zip(PAIRED_ORDER, identities, strict=True) if role == "candidate"]
+    role_identities_stable = len(set(control_identities)) == 1 and len(set(candidate_identities)) == 1
     if any(identity is None for identity in identities) or not role_identities_stable:
         gates["identity"] = _gate("non_comparable", "control or candidate identity is dirty, incomplete, or unstable")
     else:
-        gates["identity"] = _gate("pass", "both clean repository identities remain stable across ABBA")
+        gates["identity"] = _gate(
+            "pass",
+            "both clean repository identities remain stable across the crossover",
+        )
 
     environments = [result.get("environment") for result in results]
     environment = environments[0]
@@ -289,20 +319,36 @@ def compare_paired_results(  # noqa: C901
         return invalid
     resolved = cast(list[tuple[list[float], float, int]], measurements)
     runtime_pair_ratios = [
-        resolved[1][1] / resolved[0][1],
-        resolved[2][1] / resolved[3][1],
+        resolved[candidate_index][1] / resolved[control_index][1] for control_index, candidate_index in ADJACENT_PAIRS
     ]
     memory_pair_ratios = [
-        resolved[1][2] / resolved[0][2],
-        resolved[2][2] / resolved[3][2],
+        resolved[candidate_index][2] / resolved[control_index][2] for control_index, candidate_index in ADJACENT_PAIRS
     ]
-    control_samples = [*resolved[0][0], *resolved[3][0]]
-    candidate_samples = [*resolved[1][0], *resolved[2][0]]
+    control_indexes = [index for index, role in enumerate(PAIRED_ORDER) if role == "control"]
+    candidate_indexes = [index for index, role in enumerate(PAIRED_ORDER) if role == "candidate"]
+    control_samples = [sample for index in control_indexes for sample in resolved[index][0]]
+    candidate_samples = [sample for index in candidate_indexes for sample in resolved[index][0]]
     runtime_ratio = statistics.median(candidate_samples) / statistics.median(control_samples)
-    memory_ratio = statistics.median([resolved[1][2], resolved[2][2]]) / statistics.median([resolved[0][2], resolved[3][2]])
+    memory_ratio = statistics.median([resolved[index][2] for index in candidate_indexes]) / statistics.median(
+        [resolved[index][2] for index in control_indexes]
+    )
+    block_runtime_control_fractions: list[float] = []
+    block_memory_control_fractions: list[float] = []
+    for block in PAIRED_BLOCKS:
+        block_control_indexes = [index for index in block if PAIRED_ORDER[index] == "control"]
+        block_candidate_indexes = [index for index in block if PAIRED_ORDER[index] == "candidate"]
+        block_control_samples = [sample for index in block_control_indexes for sample in resolved[index][0]]
+        block_candidate_samples = [sample for index in block_candidate_indexes for sample in resolved[index][0]]
+        block_runtime_control_fractions.append(
+            statistics.median(block_candidate_samples) / statistics.median(block_control_samples)
+        )
+        block_memory_control_fractions.append(
+            statistics.median([resolved[index][2] for index in block_candidate_indexes])
+            / statistics.median([resolved[index][2] for index in block_control_indexes])
+        )
     role_runtime_relative_ranges = {
-        "control": _relative_range([resolved[0][1], resolved[3][1]]),
-        "candidate": _relative_range([resolved[1][1], resolved[2][1]]),
+        "control": _relative_range([resolved[index][1] for index in control_indexes]),
+        "candidate": _relative_range([resolved[index][1] for index in candidate_indexes]),
     }
     runtime_drift = max(role_runtime_relative_ranges.values())
     if runtime_drift <= profile.relative_range_max:
@@ -319,25 +365,46 @@ def compare_paired_results(  # noqa: C901
             actual=runtime_drift,
             target=profile.relative_range_max,
         )
-    gates["runtime"] = _gate(
-        "pass" if runtime_ratio <= profile.runtime_baseline_fraction_max else "fail",
+    role_memory_relative_ranges = {
+        "control": _relative_range([float(resolved[index][2]) for index in control_indexes]),
+        "candidate": _relative_range([float(resolved[index][2]) for index in candidate_indexes]),
+    }
+    memory_drift = max(role_memory_relative_ranges.values())
+    gates["memory_drift"] = _gate(
+        "pass" if memory_drift <= profile.relative_range_max else "fail",
         (
-            "paired runtime meets the independent target"
-            if runtime_ratio <= profile.runtime_baseline_fraction_max
-            else "paired runtime exceeds the independent target"
+            "both roles meet the locked memory-peak relative-range limit"
+            if memory_drift <= profile.relative_range_max
+            else "a role exceeds the locked memory-peak relative-range limit"
         ),
-        actual=runtime_ratio,
+        actual=memory_drift,
+        target=profile.relative_range_max,
+    )
+    runtime_passes = runtime_ratio <= profile.runtime_baseline_fraction_max and all(
+        ratio <= profile.runtime_baseline_fraction_max for ratio in block_runtime_control_fractions
+    )
+    gates["runtime"] = _gate(
+        "pass" if runtime_passes else "fail",
+        (
+            "pooled and per-block runtime meet the independent target"
+            if runtime_passes
+            else "pooled or per-block runtime exceeds the independent target"
+        ),
+        actual=max(runtime_ratio, *block_runtime_control_fractions),
         baseline=1.0,
         target=profile.runtime_baseline_fraction_max,
     )
+    memory_passes = memory_ratio <= profile.peak_memory_baseline_fraction_max and all(
+        ratio <= profile.peak_memory_baseline_fraction_max for ratio in block_memory_control_fractions
+    )
     gates["memory"] = _gate(
-        "pass" if memory_ratio <= profile.peak_memory_baseline_fraction_max else "fail",
+        "pass" if memory_passes else "fail",
         (
-            "paired memory meets the independent target"
-            if memory_ratio <= profile.peak_memory_baseline_fraction_max
-            else "paired memory exceeds the independent target"
+            "pooled and per-block memory meet the independent target"
+            if memory_passes
+            else "pooled or per-block memory exceeds the independent target"
         ),
-        actual=memory_ratio,
+        actual=max(memory_ratio, *block_memory_control_fractions),
         baseline=1.0,
         target=profile.peak_memory_baseline_fraction_max,
     )
@@ -350,7 +417,83 @@ def compare_paired_results(  # noqa: C901
         "runtime_control_fraction": runtime_ratio,
         "memory_control_fraction": memory_ratio,
         "role_runtime_relative_ranges": role_runtime_relative_ranges,
+        "block_runtime_control_fractions": block_runtime_control_fractions,
+        "block_memory_control_fractions": block_memory_control_fractions,
+        "role_memory_relative_ranges": role_memory_relative_ranges,
     }
+
+
+def _read_regular_file(
+    path: Path,
+    *,
+    maximum_bytes: int,
+    description: str,
+) -> bytes:
+    """Read one bounded regular file without following a final symlink."""
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if not isinstance(nofollow, int) or not nofollow:
+        raise PairedGauntletError(f"cannot read {description} without no-follow support")
+    flags |= nofollow
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise PairedGauntletError(f"could not open {description} safely") from error
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size < 1 or before.st_size > maximum_bytes:
+            raise PairedGauntletError(f"{description} is not a bounded regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as file_handle:
+            payload = file_handle.read(maximum_bytes + 1)
+        after = os.fstat(descriptor)
+    except OSError as error:
+        raise PairedGauntletError(f"could not read {description} safely") from error
+    finally:
+        os.close(descriptor)
+    stable_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    ) == (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if not stable_identity or len(payload) != before.st_size or len(payload) > maximum_bytes:
+        raise PairedGauntletError(f"{description} changed or exceeded its size limit")
+    return payload
+
+
+def _file_digest(path: Path, description: str) -> str:
+    return hashlib.sha256(
+        _read_regular_file(
+            path,
+            maximum_bytes=MAX_CHILD_ARTIFACT_BYTES,
+            description=description,
+        )
+    ).hexdigest()
+
+
+def _named_files_digest(repository_root: Path, names: Sequence[str]) -> str:
+    digest = hashlib.sha256()
+    for name in names:
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(
+            _read_regular_file(
+                repository_root / name,
+                maximum_bytes=MAX_CHILD_ARTIFACT_BYTES,
+                description="repository identity input",
+            )
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def _evaluator_digest(repository_root: Path) -> str:
@@ -368,10 +511,13 @@ def _evaluator_digest(repository_root: Path) -> str:
         relative = path.relative_to(repository_root).as_posix()
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        try:
-            digest.update(path.read_bytes())
-        except OSError as error:
-            raise PairedGauntletError("could not read evaluator sources") from error
+        digest.update(
+            _read_regular_file(
+                path,
+                maximum_bytes=MAX_CHILD_ARTIFACT_BYTES,
+                description="evaluator source",
+            )
+        )
         digest.update(b"\n")
     return digest.hexdigest()
 
@@ -391,12 +537,12 @@ def _run_child(
     samples: int,
     output: Path,
 ) -> dict[str, object]:
-    environment = os.environ.copy()
-    environment.pop("PYTHONHOME", None)
-    environment.pop("PYTHONPATH", None)
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("PYTHON")}
     environment["PYTHONHASHSEED"] = "0"
+    environment["PYTHONNOUSERSITE"] = "1"
     command = [
         sys.executable,
+        "-s",
         "-m",
         "benchmarks.gauntlet",
         "--profile",
@@ -423,10 +569,14 @@ def _run_child(
     if completed.returncode != 0:
         raise PairedGauntletError("paired child evaluation failed")
     try:
-        if output.stat().st_size > MAX_CHILD_ARTIFACT_BYTES:
-            raise PairedGauntletError("paired child artifact exceeds the size limit")
-        result = json.loads(output.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        result = json.loads(
+            _read_regular_file(
+                output,
+                maximum_bytes=MAX_CHILD_ARTIFACT_BYTES,
+                description="paired child artifact",
+            )
+        )
+    except json.JSONDecodeError as error:
         raise PairedGauntletError("paired child artifact could not be read") from error
     if not isinstance(result, dict):
         raise PairedGauntletError("paired child artifact is malformed")
@@ -450,23 +600,49 @@ def _identity_tuple(identity: RepositoryIdentity) -> tuple[str, bool, str]:
 def run_paired_gauntlet(
     control_root: Path,
     candidate_root: Path,
-    quality_bar: QualityBar,
     *,
+    orchestrator_root: Path,
     profile: str,
     seed: int,
     samples: int,
 ) -> PairedResult:
-    """Run clean control/candidate worktrees in the locked ABBA order."""
+    """Run clean worktrees under the invoking checkout's canonical evaluator."""
+    orchestrator_root = orchestrator_root.expanduser().resolve()
     control_root = control_root.expanduser().resolve()
     candidate_root = candidate_root.expanduser().resolve()
     if control_root == candidate_root:
         raise PairedGauntletError("paired control and candidate must be isolated worktrees")
+    orchestrator_identity = _require_clean_identity(orchestrator_root)
     control_identity = _require_clean_identity(control_root)
     candidate_identity = _require_clean_identity(candidate_root)
+    canonical_quality_bar = orchestrator_root / "benchmarks" / "gauntlet" / "quality-bar.toml"
+    quality_bar = load_quality_bar(canonical_quality_bar)
+    quality_bar_digest = _file_digest(
+        canonical_quality_bar,
+        "canonical quality bar",
+    )
+    orchestrator_digest = _evaluator_digest(orchestrator_root)
     control_digest = _evaluator_digest(control_root)
     candidate_digest = _evaluator_digest(candidate_root)
-    if control_digest != candidate_digest:
-        raise PairedGauntletError("paired worktrees do not contain the identical evaluator")
+    if len({orchestrator_digest, control_digest, candidate_digest}) != 1:
+        raise PairedGauntletError("orchestrator and paired worktrees do not contain the identical evaluator")
+    orchestrator_dependency_digest = _named_files_digest(
+        orchestrator_root,
+        DEPENDENCY_FILES,
+    )
+    control_dependency_digest = _named_files_digest(control_root, DEPENDENCY_FILES)
+    candidate_dependency_digest = _named_files_digest(candidate_root, DEPENDENCY_FILES)
+    if (
+        len(
+            {
+                orchestrator_dependency_digest,
+                control_dependency_digest,
+                candidate_dependency_digest,
+            }
+        )
+        != 1
+    ):
+        raise PairedGauntletError("orchestrator and paired worktrees do not have identical dependency locks")
     if profile not in quality_bar.profiles:
         raise PairedGauntletError("paired profile is not present in the quality bar")
 
@@ -475,13 +651,19 @@ def run_paired_gauntlet(
     with tempfile.TemporaryDirectory(prefix="qbitunregistered-gauntlet-paired-") as temporary_root:
         for position, role in enumerate(PAIRED_ORDER):
             output = Path(temporary_root) / f"run-{position}.json"
-            result = _run_child(
-                roots[role],
-                profile=profile,
-                seed=seed,
-                samples=samples,
-                output=output,
-            )
+            try:
+                result = sanitize_child_result(
+                    _run_child(
+                        roots[role],
+                        profile=profile,
+                        seed=seed,
+                        samples=samples,
+                        output=output,
+                    ),
+                    quality_bar,
+                )
+            except PairedEvidenceError as error:
+                raise PairedGauntletError("paired child evidence failed strict validation") from error
             paired_runs.append(
                 {
                     "position": position,
@@ -495,19 +677,36 @@ def run_paired_gauntlet(
     }
     if any(_complete_clean_identity(run["result"]) != expected_identities[run["role"]] for run in paired_runs):
         raise PairedGauntletError("paired child identity does not match its requested worktree")
+    require_same_identity(
+        orchestrator_identity,
+        capture_repository_identity(orchestrator_root),
+    )
     require_same_identity(control_identity, capture_repository_identity(control_root))
     require_same_identity(candidate_identity, capture_repository_identity(candidate_root))
+    if (
+        _evaluator_digest(orchestrator_root) != orchestrator_digest
+        or _evaluator_digest(control_root) != control_digest
+        or _evaluator_digest(candidate_root) != candidate_digest
+        or _named_files_digest(orchestrator_root, DEPENDENCY_FILES) != orchestrator_dependency_digest
+        or _named_files_digest(control_root, DEPENDENCY_FILES) != control_dependency_digest
+        or _named_files_digest(candidate_root, DEPENDENCY_FILES) != candidate_dependency_digest
+        or _file_digest(canonical_quality_bar, "canonical quality bar") != quality_bar_digest
+    ):
+        raise PairedGauntletError("evaluator, quality bar, or dependency identity changed during execution")
     comparison = compare_paired_results(paired_runs, quality_bar)
     profile_bar = quality_bar.profiles[profile]
     return {
         "schema": PAIRED_SCHEMA_NAME,
         "schema_version": PAIRED_SCHEMA_VERSION,
         "pairing_version": PAIRING_VERSION,
-        "evaluator_digest": control_digest,
+        "evaluator_digest": orchestrator_digest,
+        "quality_bar_digest": quality_bar_digest,
+        "dependency_digest": orchestrator_dependency_digest,
         "order": list(PAIRED_ORDER),
         "profile": profile,
         "seed": seed,
         "identities": {
+            "orchestrator": _identity_payload(orchestrator_identity),
             "control": _identity_payload(control_identity),
             "candidate": _identity_payload(candidate_identity),
         },
@@ -515,6 +714,7 @@ def run_paired_gauntlet(
             "runtime_control_fraction_max": profile_bar.runtime_baseline_fraction_max,
             "memory_control_fraction_max": profile_bar.peak_memory_baseline_fraction_max,
             "paired_runtime_relative_range_max": profile_bar.relative_range_max,
+            "paired_memory_relative_range_max": profile_bar.relative_range_max,
         },
         "runs": paired_runs,
         "comparison": comparison,

@@ -35,6 +35,11 @@ class _Digest(Protocol):
     def update(self, data: bytes, /) -> object: ...
 
 
+def _fresh_decoded_payload(value: object) -> object:
+    """Model a fresh HTTP JSON response rather than sharing fixture objects."""
+    return json.loads(json.dumps(value, separators=(",", ":")))
+
+
 @dataclass(frozen=True, slots=True)
 class EndpointBudget:
     """Inclusive read-count limits for one qBittorrent API boundary."""
@@ -184,23 +189,14 @@ class FakeTorrent:
 class FakeBulkTorrent(dict[str, object]):
     """Mapping-shaped qBittorrent torrent response with attribute access."""
 
-    def __init__(self, torrent: FakeTorrent, files: object = None, *, include_files: bool = True) -> None:
-        super().__init__(
-            hash=torrent.hash,
-            name=torrent.name,
-            save_path=torrent.save_path,
-            content_path=torrent.content_path,
-            category=torrent.category,
-            tags=torrent.tags,
-        )
-        self.hash = torrent.hash
-        self.name = torrent.name
-        self.save_path = torrent.save_path
-        self.content_path = torrent.content_path
-        self.category = torrent.category
-        self.tags = torrent.tags
-        if include_files:
-            self["files"] = files
+    def __init__(self, payload: Mapping[str, object]) -> None:
+        super().__init__(payload)
+        self.hash = cast(str, payload["hash"])
+        self.name = cast(str, payload["name"])
+        self.save_path = cast(str, payload["save_path"])
+        self.content_path = cast(str, payload["content_path"])
+        self.category = cast(str, payload["category"])
+        self.tags = cast(str, payload["tags"])
 
 
 class _FakeApplication:
@@ -285,30 +281,31 @@ class FakeQBittorrentClient:
             raise TypeError("include_files is unsupported")
         if not isinstance(snapshot, Sequence) or isinstance(snapshot, (str, bytes, bytearray)):
             return snapshot
-        bulk_snapshot: list[object] = []
+        response_payload: list[object] = []
         malformed_emitted = False
         for torrent in snapshot:
             if not isinstance(torrent, FakeTorrent):
-                bulk_snapshot.append(torrent)
+                response_payload.append(torrent)
                 continue
-            include_files = self._bulk_files_mode != "legacy_missing"
             raw_files = self._files_by_hash.get(torrent.hash, [])
-            files: object = (
-                list(raw_files)
-                if isinstance(raw_files, Sequence) and not isinstance(raw_files, (str, bytes, bytearray))
-                else raw_files
-            )
-            if self._bulk_files_mode == "malformed" and files and not malformed_emitted:
-                files = {"malformed": True}
+            torrent_payload: dict[str, object] = {
+                "hash": torrent.hash,
+                "name": torrent.name,
+                "save_path": torrent.save_path,
+                "content_path": torrent.content_path,
+                "category": torrent.category,
+                "tags": torrent.tags,
+            }
+            if self._bulk_files_mode != "legacy_missing":
+                torrent_payload["files"] = raw_files
+            if self._bulk_files_mode == "malformed" and raw_files and not malformed_emitted:
+                torrent_payload["files"] = {"malformed": True}
                 malformed_emitted = True
-            bulk_snapshot.append(
-                FakeBulkTorrent(
-                    torrent,
-                    files,
-                    include_files=include_files,
-                )
-            )
-        return bulk_snapshot
+            response_payload.append(torrent_payload)
+        decoded_payload = _fresh_decoded_payload(response_payload)
+        if not isinstance(decoded_payload, list):
+            raise TypeError("bulk torrent payload did not decode to a list")
+        return [FakeBulkTorrent(item) if isinstance(item, Mapping) else item for item in decoded_payload]
 
     def reset_read_counts(self) -> None:
         """Clear reads while retaining mutation evidence."""
@@ -329,7 +326,7 @@ class FakeQBittorrentClient:
         value = self._files_by_hash.get(torrent_hash or "", [])
         if isinstance(value, BaseException):
             raise value
-        return cast(list[Any], value)
+        return cast(list[Any], _fresh_decoded_payload(value))
 
     def app_default_save_path(self) -> str:
         """Expose the direct API shape required by the project protocol."""

@@ -42,7 +42,7 @@ from qbitunregistered.operations.orphaned import (
 
 SCHEMA_NAME = "qbitunregistered.gauntlet.result"
 SCHEMA_VERSION = 3
-EVALUATOR_VERSION = "1.2.0"
+EVALUATOR_VERSION = "1.3.0"
 DEFAULT_SEED = 20_260_729
 DEFAULT_SAMPLES = 5
 

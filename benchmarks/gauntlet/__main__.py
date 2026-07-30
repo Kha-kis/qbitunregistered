@@ -49,12 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--paired-control",
         type=Path,
-        help="Clean control worktree for a contemporaneous ABBA comparison.",
+        help="Clean control worktree for a contemporaneous ABBA+BAAB crossover.",
     )
     parser.add_argument(
         "--paired-candidate",
         type=Path,
-        help="Clean candidate worktree for a contemporaneous ABBA comparison.",
+        help="Clean candidate worktree for a contemporaneous ABBA+BAAB crossover.",
     )
     return parser
 
@@ -84,6 +84,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if paired_requested:
         assert paired_control is not None
         assert paired_candidate is not None
+        if arguments.compare is not None and arguments.compare.expanduser().resolve() != DEFAULT_QUALITY_BAR.resolve():
+            raise SystemExit("paired gauntlet requires the invoking checkout's canonical quality bar")
         if arguments.output is not None and (
             not _outside_repository(arguments.output, paired_control)
             or not _outside_repository(arguments.output, paired_candidate)
@@ -102,11 +104,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         assert paired_control is not None
         assert paired_candidate is not None
-        quality_bar_path = arguments.compare if arguments.compare is not None else DEFAULT_QUALITY_BAR
         paired_result = run_paired_gauntlet(
             paired_control,
             paired_candidate,
-            load_quality_bar(quality_bar_path),
+            orchestrator_root=repository_root,
             profile=arguments.profile,
             seed=arguments.seed,
             samples=arguments.samples,

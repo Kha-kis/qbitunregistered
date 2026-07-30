@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from benchmarks.gauntlet import __main__ as gauntlet_cli
+from benchmarks.gauntlet import paired
 from benchmarks.gauntlet import runner
 from benchmarks.gauntlet.baseline import (
     BaselineMeasurement,
@@ -50,6 +51,7 @@ from benchmarks.gauntlet.runner import (
 )
 
 QUALITY_BAR_PATH = Path(__file__).parents[1] / "benchmarks" / "gauntlet" / "quality-bar.toml"
+REPOSITORY_ROOT = QUALITY_BAR_PATH.parents[2]
 TINY_PROFILE = GauntletProfile(
     name="tiny",
     torrent_count=6,
@@ -111,6 +113,7 @@ def _valid_quick_result() -> dict[str, Any]:
         "identity_verified": True,
         "environment": _test_environment(),
         "profile": "quick",
+        "tier": "round",
         "seed": profile.seed,
         "fixture_manifest_digest": profile.fixture_manifest_digest,
         "intended_action_digest": profile.intended_action_digest,
@@ -133,16 +136,20 @@ def _valid_quick_result() -> dict[str, Any]:
 
 def _paired_runs(
     *,
-    control_runtimes: tuple[float, float] = (2.0, 2.0),
-    candidate_runtimes: tuple[float, float] = (0.8, 0.8),
-    control_memory: tuple[int, int] = (1_000, 1_000),
-    candidate_memory: tuple[int, int] = (1_100, 1_100),
+    control_runtimes: tuple[float, float, float, float] = (2.0, 2.0, 2.0, 2.0),
+    candidate_runtimes: tuple[float, float, float, float] = (0.8, 0.8, 0.8, 0.8),
+    control_memory: tuple[int, int, int, int] = (1_000, 1_000, 1_000, 1_000),
+    candidate_memory: tuple[int, int, int, int] = (1_100, 1_100, 1_100, 1_100),
 ) -> list[dict[str, Any]]:
     values = (
         ("control", control_runtimes[0], control_memory[0], "a"),
         ("candidate", candidate_runtimes[0], candidate_memory[0], "c"),
         ("candidate", candidate_runtimes[1], candidate_memory[1], "c"),
         ("control", control_runtimes[1], control_memory[1], "a"),
+        ("candidate", candidate_runtimes[2], candidate_memory[2], "c"),
+        ("control", control_runtimes[2], control_memory[2], "a"),
+        ("control", control_runtimes[3], control_memory[3], "a"),
+        ("candidate", candidate_runtimes[3], candidate_memory[3], "c"),
     )
     runs: list[dict[str, Any]] = []
     for position, (role, runtime, memory, commit_character) in enumerate(values):
@@ -176,7 +183,30 @@ def test_fake_qbittorrent_bulk_response_embeds_exact_files_without_endpoint_call
     assert all(isinstance(torrent, FakeBulkTorrent) for torrent in snapshot)
     exact_torrent = next(torrent for torrent in snapshot if torrent.hash == source_torrent.hash)
     assert exact_torrent["files"] == expected_files
-    assert fixture.client.read_counts == {"torrents.info": 1}
+    assert exact_torrent["files"] is not expected_files
+    second_snapshot = fixture.client.torrents.info(include_files=True)
+    assert isinstance(second_snapshot, list)
+    second_exact = next(
+        torrent for torrent in second_snapshot if isinstance(torrent, FakeBulkTorrent) and torrent.hash == source_torrent.hash
+    )
+    assert second_exact is not exact_torrent
+    assert second_exact["files"] == exact_torrent["files"]
+    assert second_exact["files"] is not exact_torrent["files"]
+    assert fixture.client.read_counts == {"torrents.info": 2}
+
+
+def test_fake_exact_metadata_allocates_fresh_decoded_responses(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path / "fixture", TINY_PROFILE, seed=108)
+    torrent_hash = fixture.initial_torrents[0].hash
+    fixture.client.reset_read_counts()
+
+    first = fixture.client.torrents_files(torrent_hash=torrent_hash)
+    second = fixture.client.torrents_files(torrent_hash=torrent_hash)
+
+    assert first == second
+    assert first is not second
+    assert first[0] is not second[0]
+    assert fixture.client.read_counts == {"torrents_files": 2}
 
 
 def test_fake_qbittorrent_legacy_and_unsupported_bulk_modes_preserve_fallback(tmp_path: Path) -> None:
@@ -228,15 +258,24 @@ def test_paired_comparison_passes_supported_api_reduction_and_retains_all_sample
     comparison = compare_paired_results(runs, quality_bar)
 
     assert comparison["overall"] == "pass"
-    assert comparison["runtime_pair_ratios"] == pytest.approx([0.4, 0.4])
-    assert comparison["memory_pair_ratios"] == pytest.approx([1.1, 1.1])
+    assert comparison["runtime_pair_ratios"] == pytest.approx([0.4] * 4)
+    assert comparison["memory_pair_ratios"] == pytest.approx([1.1] * 4)
     assert comparison["runtime_control_fraction"] == pytest.approx(0.4)
     assert comparison["memory_control_fraction"] == pytest.approx(1.1)
+    assert comparison["block_runtime_control_fractions"] == pytest.approx([0.4, 0.4])
+    assert comparison["block_memory_control_fractions"] == pytest.approx([1.1, 1.1])
     assert comparison["role_runtime_relative_ranges"] == {
         "control": 0.0,
         "candidate": 0.0,
     }
-    assert [sample for run in runs for sample in run["result"]["sample_runtime_seconds"]] == [2.0] * 5 + [0.8] * 10 + [2.0] * 5
+    assert comparison["role_memory_relative_ranges"] == {
+        "control": 0.0,
+        "candidate": 0.0,
+    }
+    assert len([sample for run in runs for sample in run["result"]["sample_runtime_seconds"]]) == 40
+    control_positions = [run["position"] for run in runs if run["role"] == "control"]
+    candidate_positions = [run["position"] for run in runs if run["role"] == "candidate"]
+    assert sum(control_positions) == sum(candidate_positions) == 14
 
 
 @pytest.mark.parametrize(
@@ -247,6 +286,8 @@ def test_paired_comparison_passes_supported_api_reduction_and_retains_all_sample
         lambda runs: runs[2]["result"]["candidate_state"].update({"clean": False}),
         lambda runs: runs[1]["result"].update({"seed": 0}),
         lambda runs: runs[1]["result"].update({"sample_runtime_seconds": [math.nan] * 5}),
+        lambda runs: runs[1]["result"].update({"unknown": "ignored-secret"}),
+        lambda runs: runs[1]["result"]["environment"].update({"unknown": "ignored-secret"}),
     ],
 )
 def test_paired_comparison_fails_closed_on_order_identity_environment_or_parsing(mutate) -> None:
@@ -272,13 +313,37 @@ def test_paired_comparison_rejects_child_variance_and_cross_pair_drift() -> None
     )
     assert compare_paired_results(varying, quality_bar)["gates"]["child_gates"]["status"] == "fail"
 
-    drifting = _paired_runs(candidate_runtimes=(0.8, 1.6))
+    drifting = _paired_runs(candidate_runtimes=(0.8, 1.6, 0.8, 1.6))
     comparison = compare_paired_results(drifting, quality_bar)
     assert comparison["gates"]["paired_drift"]["status"] == "fail"
     assert comparison["overall"] == "fail"
 
 
-def test_paired_runner_uses_abba_isolated_worktrees_and_emits_both_identities(
+def test_paired_comparison_gates_each_block_and_memory_robustness() -> None:
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+    slow_second_block = _paired_runs(
+        candidate_runtimes=(0.8, 0.8, 1.2, 1.2),
+    )
+    comparison = compare_paired_results(slow_second_block, quality_bar)
+    assert comparison["runtime_control_fraction"] == pytest.approx(0.5)
+    assert comparison["block_runtime_control_fractions"] == pytest.approx([0.4, 0.6])
+    assert comparison["gates"]["runtime"]["status"] == "fail"
+
+    memory_block_failure = _paired_runs(
+        candidate_memory=(1_100, 1_100, 1_400, 1_400),
+    )
+    comparison = compare_paired_results(memory_block_failure, quality_bar)
+    assert comparison["block_memory_control_fractions"] == pytest.approx([1.1, 1.4])
+    assert comparison["gates"]["memory"]["status"] == "fail"
+
+    memory_drift_failure = _paired_runs(
+        candidate_memory=(500, 500, 1_500, 1_500),
+    )
+    comparison = compare_paired_results(memory_drift_failure, quality_bar)
+    assert comparison["gates"]["memory_drift"]["status"] == "fail"
+
+
+def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -289,6 +354,7 @@ def test_paired_runner_uses_abba_isolated_worktrees_and_emits_both_identities(
     expected_runs = _paired_runs()
     calls: list[str] = []
     identities = {
+        REPOSITORY_ROOT: RepositoryIdentity("e" * 40, True, "e" * 64),
         control_root: RepositoryIdentity("a" * 40, True, "a" * 64),
         candidate_root: RepositoryIdentity("c" * 40, True, "c" * 64),
     }
@@ -298,6 +364,7 @@ def test_paired_runner_uses_abba_isolated_worktrees_and_emits_both_identities(
         lambda root: identities[root],
     )
     monkeypatch.setattr("benchmarks.gauntlet.paired._evaluator_digest", lambda _root: "d" * 64)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "f" * 64)
 
     def fake_run_child(root: Path, **_kwargs):
         role = "control" if root == control_root else "candidate"
@@ -305,27 +372,29 @@ def test_paired_runner_uses_abba_isolated_worktrees_and_emits_both_identities(
         return copy.deepcopy(expected_runs[len(calls) - 1]["result"])
 
     monkeypatch.setattr("benchmarks.gauntlet.paired._run_child", fake_run_child)
-    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
-
     result = run_paired_gauntlet(
         control_root,
         candidate_root,
-        quality_bar,
+        orchestrator_root=REPOSITORY_ROOT,
         profile="quick",
-        seed=quality_bar.profiles["quick"].seed,
+        seed=load_quality_bar(QUALITY_BAR_PATH).profiles["quick"].seed,
         samples=DEFAULT_SAMPLES,
     )
 
     assert calls == list(PAIRED_ORDER)
+    assert result["identities"]["orchestrator"]["commit"] == "e" * 40
     assert result["identities"]["control"]["commit"] == "a" * 40
     assert result["identities"]["candidate"]["commit"] == "c" * 40
-    assert len(result["runs"]) == 4
+    assert result["dependency_digest"] == "f" * 64
+    assert len(result["quality_bar_digest"]) == 64
+    assert len(result["evaluator_digest"]) == 64
+    assert len(result["runs"]) == 8
     retained_sample_count = 0
     for run in result["runs"]:
         samples = run["result"]["sample_runtime_seconds"]
         assert isinstance(samples, list)
         retained_sample_count += len(samples)
-    assert retained_sample_count == 20
+    assert retained_sample_count == 40
 
 
 def test_paired_runner_rejects_same_or_different_evaluator_worktrees(
@@ -340,7 +409,7 @@ def test_paired_runner_rejects_same_or_different_evaluator_worktrees(
         run_paired_gauntlet(
             tmp_path,
             tmp_path,
-            quality_bar,
+            orchestrator_root=REPOSITORY_ROOT,
             profile="quick",
             seed=quality_bar.profiles["quick"].seed,
             samples=DEFAULT_SAMPLES,
@@ -352,17 +421,136 @@ def test_paired_runner_rejects_same_or_different_evaluator_worktrees(
     candidate_root.mkdir()
     monkeypatch.setattr(
         "benchmarks.gauntlet.paired._evaluator_digest",
-        lambda root: "a" * 64 if root == control_root else "c" * 64,
+        lambda root: "c" * 64 if root == candidate_root else "a" * 64,
     )
+    monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "d" * 64)
     with pytest.raises(PairedGauntletError, match="identical evaluator"):
         run_paired_gauntlet(
             control_root,
             candidate_root,
-            quality_bar,
+            orchestrator_root=REPOSITORY_ROOT,
             profile="quick",
             seed=quality_bar.profiles["quick"].seed,
             samples=DEFAULT_SAMPLES,
         )
+
+
+def test_paired_runner_rejects_dependency_and_orchestrator_identity_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    identity = RepositoryIdentity("a" * 40, True, "b" * 64)
+    monkeypatch.setattr(
+        "benchmarks.gauntlet.paired._require_clean_identity",
+        lambda _root: identity,
+    )
+    monkeypatch.setattr(
+        "benchmarks.gauntlet.paired._evaluator_digest",
+        lambda _root: "c" * 64,
+    )
+    monkeypatch.setattr(
+        "benchmarks.gauntlet.paired._named_files_digest",
+        lambda root, _names: "d" * 64 if root == candidate_root else "e" * 64,
+    )
+
+    with pytest.raises(PairedGauntletError, match="dependency locks"):
+        run_paired_gauntlet(
+            control_root,
+            candidate_root,
+            orchestrator_root=REPOSITORY_ROOT,
+            profile="quick",
+            seed=load_quality_bar(QUALITY_BAR_PATH).profiles["quick"].seed,
+            samples=DEFAULT_SAMPLES,
+        )
+
+    def reject_orchestrator(root: Path) -> RepositoryIdentity:
+        if root == REPOSITORY_ROOT:
+            raise PairedGauntletError("paired repositories must have clean identities")
+        return identity
+
+    monkeypatch.setattr(
+        "benchmarks.gauntlet.paired._require_clean_identity",
+        reject_orchestrator,
+    )
+    with pytest.raises(PairedGauntletError, match="clean identities"):
+        run_paired_gauntlet(
+            control_root,
+            candidate_root,
+            orchestrator_root=REPOSITORY_ROOT,
+            profile="quick",
+            seed=load_quality_bar(QUALITY_BAR_PATH).profiles["quick"].seed,
+            samples=DEFAULT_SAMPLES,
+        )
+
+
+def test_paired_bounded_reader_rejects_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    link = tmp_path / "artifact.json"
+    try:
+        link.symlink_to(target)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a symbolic link: {error}")
+    if not getattr(paired.os, "O_NOFOLLOW", 0):
+        pytest.skip("platform does not expose O_NOFOLLOW")
+
+    with pytest.raises(PairedGauntletError, match="open paired child artifact safely"):
+        paired._read_regular_file(
+            link,
+            maximum_bytes=1024,
+            description="paired child artifact",
+        )
+
+
+def test_paired_bounded_reader_fails_closed_without_no_follow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = tmp_path / "artifact.json"
+    artifact.write_text("{}", encoding="utf-8")
+    monkeypatch.delattr(paired.os, "O_NOFOLLOW", raising=False)
+
+    with pytest.raises(PairedGauntletError, match="without no-follow support"):
+        paired._read_regular_file(
+            artifact,
+            maximum_bytes=1024,
+            description="paired child artifact",
+        )
+
+
+def test_paired_child_uses_isolated_python_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "child.json"
+    monkeypatch.setenv("PYTHONSTARTUP", "/private/injection.py")
+    monkeypatch.setenv("PYTHONPATH", "/private/injection")
+
+    def fake_run(command, **kwargs):
+        assert command[1:3] == ["-s", "-m"]
+        environment = kwargs["env"]
+        assert environment["PYTHONNOUSERSITE"] == "1"
+        assert environment["PYTHONHASHSEED"] == "0"
+        assert "PYTHONSTARTUP" not in environment
+        assert "PYTHONPATH" not in environment
+        output.write_text(json.dumps(_valid_quick_result()), encoding="utf-8")
+        return paired.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(paired.subprocess, "run", fake_run)
+
+    result = paired._run_child(
+        tmp_path,
+        profile="quick",
+        seed=20_260_729,
+        samples=DEFAULT_SAMPLES,
+        output=output,
+    )
+
+    assert result["profile"] == "quick"
 
 
 def test_paired_cli_requires_both_worktrees_and_external_output(tmp_path: Path) -> None:
@@ -383,6 +571,23 @@ def test_paired_cli_requires_both_worktrees_and_external_output(tmp_path: Path) 
                 str(candidate_root),
                 "--output",
                 str(candidate_root / "result.json"),
+            ]
+        )
+
+    custom_quality_bar = tmp_path / "custom-quality-bar.toml"
+    custom_quality_bar.write_text(
+        QUALITY_BAR_PATH.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="canonical quality bar"):
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--compare",
+                str(custom_quality_bar),
             ]
         )
 
