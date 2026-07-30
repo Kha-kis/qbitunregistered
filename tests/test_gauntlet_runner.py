@@ -442,6 +442,47 @@ def test_paired_runner_rejects_same_or_different_evaluator_worktrees(
 
 
 @requires_descriptor_no_follow
+def test_paired_runner_rejects_different_parent_package_initializers_before_child_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roots = [tmp_path / name for name in ("orchestrator", "control", "candidate")]
+    for root in roots:
+        evaluator_root = root / "benchmarks" / "gauntlet"
+        evaluator_root.mkdir(parents=True)
+        (evaluator_root.parent / "__init__.py").write_text('"""Trusted benchmark package."""\n', encoding="utf-8")
+        (evaluator_root / "__init__.py").write_text('"""Trusted gauntlet package."""\n', encoding="utf-8")
+        (evaluator_root / "quality-bar.toml").write_bytes(QUALITY_BAR_PATH.read_bytes())
+    orchestrator_root, control_root, candidate_root = roots
+    (candidate_root / "benchmarks" / "__init__.py").write_text(
+        '"""Different executable parent initializer."""\n',
+        encoding="utf-8",
+    )
+    identity = RepositoryIdentity("a" * 40, True, "b" * 64)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._require_clean_identity", lambda _root: identity)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "d" * 64)
+    child_calls: list[Path] = []
+
+    def record_child(repository_root: Path, **_kwargs) -> dict[str, object]:
+        child_calls.append(repository_root)
+        return {}
+
+    monkeypatch.setattr("benchmarks.gauntlet.paired._run_child", record_child)
+
+    with pytest.raises(PairedGauntletError, match="identical evaluator"):
+        run_paired_gauntlet(
+            control_root,
+            candidate_root,
+            orchestrator_root=orchestrator_root,
+            profile="quick",
+            seed=load_quality_bar(QUALITY_BAR_PATH).profiles["quick"].seed,
+            samples=DEFAULT_SAMPLES,
+        )
+
+    assert child_calls == []
+
+
+@requires_descriptor_no_follow
 def test_paired_runner_rejects_dependency_and_orchestrator_identity_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

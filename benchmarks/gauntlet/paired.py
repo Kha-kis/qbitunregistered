@@ -499,13 +499,14 @@ def _named_files_digest(repository_root: Path, names: Sequence[str]) -> str:
 def _evaluator_digest(repository_root: Path) -> str:
     """Hash evaluator sources and its quality bar without recording host paths."""
     evaluator_root = repository_root / "benchmarks" / "gauntlet"
-    files = sorted(
+    evaluator_files = sorted(
         path
         for path in evaluator_root.rglob("*")
         if path.is_file() and (path.suffix == ".py" or path.name == "quality-bar.toml")
     )
-    if not files:
+    if not evaluator_files:
         raise PairedGauntletError("repository does not contain the gauntlet evaluator")
+    files = [evaluator_root.parent / "__init__.py", *evaluator_files]
     digest = hashlib.sha256()
     for path in files:
         relative = path.relative_to(repository_root).as_posix()

@@ -21,8 +21,9 @@ uv run python -m benchmarks.gauntlet \
 
 Both paths must be distinct, clean Git worktrees. The invoking checkout must
 also be clean. All three checkouts must have byte-identical evaluator sources,
-canonical quality-bar bytes, `pyproject.toml`, and `uv.lock`. Paired mode
-rejects a custom `--compare` path and always loads
+including the executable `benchmarks/__init__.py` parent package initializer,
+canonical quality-bar bytes, `pyproject.toml`, and `uv.lock`. Paired mode rejects
+a custom `--compare` path and always loads
 `benchmarks/gauntlet/quality-bar.toml` from the invoking checkout. The artifact
 records the three clean identities plus evaluator, quality-bar, and dependency
 digests, and the orchestrator rechecks all identities and digests after the
