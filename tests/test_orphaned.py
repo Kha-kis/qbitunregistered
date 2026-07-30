@@ -1,6 +1,7 @@
 """Tests for orphaned file checking functionality."""
 
 import logging
+import ntpath
 import os
 import stat
 from pathlib import Path, PureWindowsPath
@@ -20,6 +21,7 @@ from qbitunregistered.operations.orphaned import (
     _candidate_directory_boundaries,
     _capture_current_orphan_identity,
     _exact_torrent_owned_paths,
+    _index_candidate_paths,
     _potential_empty_directories,
     _validated_content_boundary,
     build_orphan_file_plan,
@@ -1199,11 +1201,12 @@ class TestExactOwnershipCandidateFastPath:
             client,
             torrent,
             {str(save_root): save_root},
-            candidate_paths,
+            _index_candidate_paths(candidate_paths),
+            {},
             context="in candidate fast-path test",
         )
 
-    def test_exact_relative_candidate_skips_resolution(self, tmp_path):
+    def test_exact_relative_candidate_skips_absolute_path_construction(self, tmp_path):
         save_root = tmp_path.resolve()
         owned = save_root / "bundle" / "owned.mkv"
         owned.parent.mkdir()
@@ -1211,16 +1214,111 @@ class TestExactOwnershipCandidateFastPath:
         torrent = SimpleNamespace(hash="exact-relative", save_path=str(save_root))
         client = MagicMock()
         client.torrents_files.return_value = [{"name": "bundle/owned.mkv"}]
+        candidate_paths = {owned}
+        real_hash = Path.__hash__
+        hashed_paths: list[Path] = []
+
+        def track_hash(path):
+            hashed_paths.append(path)
+            return real_hash(path)
 
         with (
+            patch.object(Path, "__truediv__", autospec=True) as absolute_path_join,
+            patch.object(Path, "__hash__", autospec=True, side_effect=track_hash),
             patch.object(Path, "resolve", autospec=True) as resolve,
             patch.object(Path, "is_relative_to", autospec=True) as is_relative_to,
         ):
-            owned_paths = self._owned_paths(client, torrent, save_root, {owned})
+            owned_paths = self._owned_paths(client, torrent, save_root, candidate_paths)
 
         assert owned_paths == {owned}
+        assert next(iter(owned_paths)) is owned
+        assert hashed_paths == [owned]
+        absolute_path_join.assert_not_called()
         resolve.assert_not_called()
         is_relative_to.assert_not_called()
+
+    def test_normalized_candidate_collision_uses_resolution_fallback(self, tmp_path):
+        save_root = tmp_path.resolve()
+        first = save_root / "first.mkv"
+        second = save_root / "second.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        torrent = SimpleNamespace(hash="collision", save_path=str(save_root))
+        client = MagicMock()
+        client.torrents_files.return_value = [{"name": first.name}]
+        real_resolve = Path.resolve
+        resolved_paths: list[Path] = []
+
+        def track_resolve(path, strict=False):
+            resolved_paths.append(path)
+            return real_resolve(path, strict=strict)
+
+        with (
+            patch(
+                "qbitunregistered.operations.orphaned.os.path.normcase",
+                return_value="forced-collision",
+            ),
+            patch.object(Path, "resolve", autospec=True, side_effect=track_resolve),
+        ):
+            owned_paths = self._owned_paths(
+                client,
+                torrent,
+                save_root,
+                {first, second},
+            )
+
+        assert owned_paths == {first}
+        assert first in resolved_paths
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX case semantics")
+    def test_posix_case_difference_cannot_claim_candidate(self, tmp_path):
+        save_root = tmp_path.resolve()
+        candidate = save_root / "Owned.mkv"
+        candidate.write_text("candidate", encoding="utf-8")
+        reported_path = save_root / "owned.mkv"
+        torrent = SimpleNamespace(hash="posix-case", save_path=str(save_root))
+        client = MagicMock()
+        client.torrents_files.return_value = [{"name": reported_path.name}]
+
+        owned_paths = self._owned_paths(client, torrent, save_root, {candidate})
+
+        assert owned_paths == {reported_path}
+        assert candidate not in owned_paths
+
+    @pytest.mark.parametrize(
+        "metadata_name",
+        [r"bundle\OWNED.MKV", "BUNDLE/owned.mkv"],
+    )
+    def test_windows_case_and_alternate_separators_match_unique_candidate(self, tmp_path, metadata_name):
+        save_root = tmp_path.resolve()
+        candidate = save_root / "Bundle" / "Owned.mkv"
+        candidate.parent.mkdir()
+        candidate.write_text("candidate", encoding="utf-8")
+        torrent = SimpleNamespace(hash="windows-normalized", save_path=str(save_root))
+        client = MagicMock()
+        client.torrents_files.return_value = [{"name": metadata_name}]
+
+        with (
+            patch(
+                "qbitunregistered.operations.orphaned.os.path.normcase",
+                side_effect=ntpath.normcase,
+            ),
+            patch(
+                "qbitunregistered.operations.orphaned.os.path.join",
+                side_effect=ntpath.join,
+            ),
+            patch.object(Path, "resolve", autospec=True) as resolve,
+        ):
+            owned_paths = self._owned_paths(
+                client,
+                torrent,
+                save_root,
+                {candidate},
+            )
+
+        assert owned_paths == {candidate}
+        assert next(iter(owned_paths)) is candidate
+        resolve.assert_not_called()
 
     def test_windows_rooted_relative_metadata_is_anchored(self):
         metadata_path = PureWindowsPath(r"\outside\owned.mkv")
@@ -1228,6 +1326,18 @@ class TestExactOwnershipCandidateFastPath:
         assert not metadata_path.is_absolute()
         assert metadata_path.anchor == "\\"
         assert PureWindowsPath("C:/save") / metadata_path == PureWindowsPath("C:/outside/owned.mkv")
+
+    @pytest.mark.parametrize(
+        "metadata_path",
+        [
+            PureWindowsPath("C:/absolute/owned.mkv"),
+            PureWindowsPath("C:drive-relative.mkv"),
+            PureWindowsPath(r"\\server\share\owned.mkv"),
+            PureWindowsPath(r"\rooted-relative.mkv"),
+        ],
+    )
+    def test_windows_drive_unc_and_rooted_paths_have_anchors(self, metadata_path):
+        assert metadata_path.anchor
 
     @pytest.mark.skipif(os.name != "nt", reason="requires native Windows path semantics")
     def test_windows_rooted_relative_metadata_cannot_claim_candidate_from_other_root(self, tmp_path):
@@ -1304,6 +1414,67 @@ class TestExactOwnershipCandidateFastPath:
         assert owned_paths == {owned}
         assert lexical_path in resolved_paths
 
+    def test_hardlink_alias_unique_hit_preserves_canonical_alias(self, tmp_path):
+        save_root = tmp_path.resolve()
+        original = save_root / "original.mkv"
+        alias = save_root / "alias.mkv"
+        original.write_text("owned", encoding="utf-8")
+        alias.hardlink_to(original)
+        torrent = SimpleNamespace(hash="hardlink-alias", save_path=str(save_root))
+        client = MagicMock()
+        client.torrents_files.return_value = [{"name": alias.name}]
+
+        with patch.object(Path, "resolve", autospec=True) as resolve:
+            owned_paths = self._owned_paths(client, torrent, save_root, {alias})
+
+        assert owned_paths == {alias}
+        assert next(iter(owned_paths)) is alias
+        assert alias.stat().st_ino == original.stat().st_ino
+        resolve.assert_not_called()
+
+    def test_candidate_lookup_and_save_strings_are_shared_across_roots(self, tmp_path):
+        first_root = (tmp_path / "first").resolve()
+        second_root = (tmp_path / "second").resolve()
+        first_root.mkdir()
+        second_root.mkdir()
+        first = first_root / "owned.mkv"
+        second = second_root / "owned.mkv"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        candidates = {first, second}
+        candidate_lookup = _index_candidate_paths(candidates)
+        resolved_save_paths = {
+            str(first_root): first_root,
+            str(second_root): second_root,
+        }
+        save_path_strings: dict[str, str] = {}
+        client = MagicMock()
+        client.torrents_files.return_value = [{"name": "owned.mkv"}]
+
+        first_owned = _exact_torrent_owned_paths(
+            client,
+            SimpleNamespace(hash="first-root", save_path=str(first_root)),
+            resolved_save_paths,
+            candidate_lookup,
+            save_path_strings,
+            context="in multi-root candidate test",
+        )
+        second_owned = _exact_torrent_owned_paths(
+            client,
+            SimpleNamespace(hash="second-root", save_path=str(second_root)),
+            resolved_save_paths,
+            candidate_lookup,
+            save_path_strings,
+            context="in multi-root candidate test",
+        )
+
+        assert first_owned == {first}
+        assert second_owned == {second}
+        assert save_path_strings == {
+            str(first_root): str(first_root),
+            str(second_root): str(second_root),
+        }
+
     def test_absolute_metadata_uses_resolution_fallback(self, tmp_path):
         save_root = tmp_path.resolve()
         owned = save_root / "owned.mkv"
@@ -1368,6 +1539,21 @@ class TestExactOwnershipCandidateFastPath:
 
         assert owned_paths == {owned}
         assert owned in resolved_paths
+
+    @pytest.mark.parametrize(
+        "file_info",
+        [{}, {"name": ""}, SimpleNamespace(name=None), object()],
+    )
+    def test_malformed_file_metadata_still_fails_closed(self, tmp_path, file_info):
+        save_root = tmp_path.resolve()
+        candidate = save_root / "candidate.mkv"
+        candidate.write_text("candidate", encoding="utf-8")
+        torrent = SimpleNamespace(hash="malformed", save_path=str(save_root))
+        client = MagicMock()
+        client.torrents_files.return_value = [file_info]
+
+        with pytest.raises(SafetyCheckError, match="malformed file metadata"):
+            self._owned_paths(client, torrent, save_root, {candidate})
 
     @pytest.mark.parametrize("metadata_name", [".", "foo/.."])
     def test_metadata_collapsing_to_save_root_fails_closed(self, tmp_path, metadata_name):

@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import stat
 import time
@@ -126,11 +127,24 @@ def _refresh_torrent_snapshot(client: QBittorrentClient, *, context: str) -> dic
     return _index_torrent_snapshot(torrents, context=context)
 
 
+def _index_candidate_paths(candidate_paths: set[Path]) -> dict[str, Path | None]:
+    """Index canonical candidates, marking native path-key collisions ambiguous."""
+    candidate_lookup: dict[str, Path | None] = {}
+    for candidate_path in candidate_paths:
+        candidate_key = os.path.normcase(str(candidate_path))
+        if candidate_key not in candidate_lookup:
+            candidate_lookup[candidate_key] = candidate_path
+        elif candidate_lookup[candidate_key] != candidate_path:
+            candidate_lookup[candidate_key] = None
+    return candidate_lookup
+
+
 def _exact_torrent_owned_paths(  # noqa: C901
     client: QBittorrentClient,
     torrent: Any,
     resolved_save_paths: dict[str, Path],
-    candidate_paths: set[Path],
+    candidate_lookup: Mapping[str, Path | None],
+    save_path_strings: dict[str, str],
     *,
     context: str,
     refresh_file_metadata: bool = False,
@@ -175,6 +189,9 @@ def _exact_torrent_owned_paths(  # noqa: C901
             description=f"Torrent {torrent_hash} save path",
         )
     save_path = resolved_save_paths[save_path_value]
+    if save_path_value not in save_path_strings:
+        save_path_strings[save_path_value] = str(save_path)
+    save_path_string = save_path_strings[save_path_value]
     owned_paths: set[Path] = set()
     for file_info in raw_files:
         name = file_info.get("name") if isinstance(file_info, Mapping) else getattr(file_info, "name", None)
@@ -182,15 +199,14 @@ def _exact_torrent_owned_paths(  # noqa: C901
             raise SafetyCheckError(f"Torrent {torrent_hash} returned malformed file metadata {context}")
         try:
             metadata_path = Path(name)
+            metadata_parts = metadata_path.parts
+            if metadata_parts and not metadata_path.anchor and ".." not in metadata_parts:
+                candidate_key = os.path.normcase(os.path.join(save_path_string, str(metadata_path)))
+                candidate_path = candidate_lookup.get(candidate_key)
+                if candidate_path is not None:
+                    owned_paths.add(candidate_path)
+                    continue
             lexical_path = save_path / metadata_path
-            if (
-                not metadata_path.anchor
-                and ".." not in metadata_path.parts
-                and lexical_path != save_path
-                and lexical_path in candidate_paths
-            ):
-                owned_paths.add(lexical_path)
-                continue
             owned_path = lexical_path.resolve()
         except (OSError, RuntimeError, ValueError) as error:
             raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path {context}") from error
@@ -254,7 +270,9 @@ def _build_torrent_ownership(
 ) -> _TorrentOwnership:
     """Build exact ownership, using bulk boundaries only when they are conclusive."""
     candidate_boundaries = _candidate_directory_boundaries(candidate_paths)
+    candidate_lookup = _index_candidate_paths(candidate_paths)
     resolved_save_paths: dict[str, Path] = {}
+    save_path_strings: dict[str, str] = {}
     owned_paths: set[Path] = set()
     active_save_paths: set[Path] = set()
     file_metadata_fetches = 0
@@ -291,7 +309,8 @@ def _build_torrent_ownership(
                 client,
                 torrent,
                 resolved_save_paths,
-                candidate_paths,
+                candidate_lookup,
+                save_path_strings,
                 context=context,
                 refresh_file_metadata=refresh_file_metadata,
                 tolerate_confirmed_removal=tolerate_confirmed_removal,
