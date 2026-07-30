@@ -409,6 +409,53 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
 
 
 @requires_descriptor_no_follow
+def test_paired_runner_rechecks_importable_extensions_after_crossover(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    expected_runs = _paired_runs()
+    calls: list[Path] = []
+    identities = {
+        REPOSITORY_ROOT: RepositoryIdentity("e" * 40, True, "e" * 64),
+        control_root: RepositoryIdentity("a" * 40, True, "a" * 64),
+        candidate_root: RepositoryIdentity("c" * 40, True, "c" * 64),
+    }
+
+    monkeypatch.setattr(
+        "benchmarks.gauntlet.paired.capture_repository_identity",
+        lambda root: identities[root],
+    )
+    monkeypatch.setattr("benchmarks.gauntlet.paired._evaluator_digest", lambda _root: "d" * 64)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "f" * 64)
+
+    def fake_run_child(root: Path, **_kwargs) -> dict[str, object]:
+        calls.append(root)
+        if len(calls) == len(PAIRED_ORDER):
+            extension_path = candidate_root / "benchmarks" / "gauntlet" / f"runner{paired.EXTENSION_SUFFIXES[0]}"
+            extension_path.parent.mkdir(parents=True)
+            extension_path.write_bytes(b"late native extension")
+        return copy.deepcopy(expected_runs[len(calls) - 1]["result"])
+
+    monkeypatch.setattr("benchmarks.gauntlet.paired._run_child", fake_run_child)
+
+    with pytest.raises(PairedGauntletError, match="importable native extension"):
+        run_paired_gauntlet(
+            control_root,
+            candidate_root,
+            orchestrator_root=REPOSITORY_ROOT,
+            profile="quick",
+            seed=load_quality_bar(QUALITY_BAR_PATH).profiles["quick"].seed,
+            samples=DEFAULT_SAMPLES,
+        )
+
+    assert len(calls) == len(PAIRED_ORDER)
+
+
+@requires_descriptor_no_follow
 def test_paired_runner_rejects_same_or_different_evaluator_worktrees(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -476,6 +523,50 @@ def test_paired_runner_rejects_different_parent_package_initializers_before_chil
     monkeypatch.setattr("benchmarks.gauntlet.paired._run_child", record_child)
 
     with pytest.raises(PairedGauntletError, match="identical evaluator"):
+        run_paired_gauntlet(
+            control_root,
+            candidate_root,
+            orchestrator_root=orchestrator_root,
+            profile="quick",
+            seed=load_quality_bar(QUALITY_BAR_PATH).profiles["quick"].seed,
+            samples=DEFAULT_SAMPLES,
+        )
+
+    assert child_calls == []
+
+
+@pytest.mark.parametrize(
+    "extension_path",
+    [
+        Path("benchmarks") / "gauntlet" / f"runner{paired.EXTENSION_SUFFIXES[0]}",
+        Path("benchmarks") / f"__init__{paired.EXTENSION_SUFFIXES[0]}",
+    ],
+)
+def test_paired_runner_rejects_importable_extensions_before_child_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extension_path: Path,
+) -> None:
+    roots = [tmp_path / name for name in ("orchestrator", "control", "candidate")]
+    for root in roots:
+        (root / "benchmarks" / "gauntlet").mkdir(parents=True)
+        (root / "qbitunregistered").mkdir()
+        paired._reject_importable_extensions(root)
+    orchestrator_root, control_root, candidate_root = roots
+    shadowing_extension = candidate_root / extension_path
+    shadowing_extension.parent.mkdir(parents=True, exist_ok=True)
+    shadowing_extension.write_bytes(b"ignored native extension")
+    identity = RepositoryIdentity("a" * 40, True, "b" * 64)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._require_clean_identity", lambda _root: identity)
+    child_calls: list[Path] = []
+
+    def record_child(repository_root: Path, **_kwargs) -> dict[str, object]:
+        child_calls.append(repository_root)
+        return {}
+
+    monkeypatch.setattr("benchmarks.gauntlet.paired._run_child", record_child)
+
+    with pytest.raises(PairedGauntletError, match="importable native extension"):
         run_paired_gauntlet(
             control_root,
             candidate_root,

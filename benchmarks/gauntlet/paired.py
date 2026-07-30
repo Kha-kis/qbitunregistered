@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
@@ -59,6 +60,8 @@ REQUIRED_CHILD_GATES = {
 MAX_CHILD_ARTIFACT_BYTES = 8 * 1024 * 1024
 CHILD_TIMEOUT_SECONDS = 3_600
 DEPENDENCY_FILES = ("pyproject.toml", "uv.lock")
+PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
+IMPORTABLE_EXTENSION_ERROR = "repository contains an importable native extension in a protected package tree"
 
 
 class PairedGauntletError(RuntimeError):
@@ -523,6 +526,39 @@ def _evaluator_digest(repository_root: Path) -> str:
     return digest.hexdigest()
 
 
+def _reject_importable_extensions(repository_root: Path) -> None:
+    """Reject native modules that can shadow repository package sources."""
+    extension_suffixes = tuple(EXTENSION_SUFFIXES)
+    if not extension_suffixes:
+        raise PairedGauntletError("Python does not expose native extension suffixes")
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    try:
+        for package_name in PROTECTED_PACKAGE_NAMES:
+            if any(os.path.lexists(repository_root / f"{package_name}{suffix}") for suffix in extension_suffixes):
+                raise PairedGauntletError(IMPORTABLE_EXTENSION_ERROR)
+            package_root = repository_root / package_name
+            if not package_root.is_dir():
+                continue
+            for _current_root, _directory_names, file_names in os.walk(
+                package_root,
+                topdown=True,
+                onerror=raise_walk_error,
+                followlinks=False,
+            ):
+                if any(file_name.endswith(extension_suffixes) for file_name in file_names):
+                    raise PairedGauntletError(IMPORTABLE_EXTENSION_ERROR)
+    except OSError as error:
+        raise PairedGauntletError("could not inspect repository package trees for native extensions") from error
+
+
+def _reject_importable_extensions_in_roots(repository_roots: Sequence[Path]) -> None:
+    for repository_root in repository_roots:
+        _reject_importable_extensions(repository_root)
+
+
 def _require_clean_identity(repository_root: Path) -> RepositoryIdentity:
     identity = capture_repository_identity(repository_root)
     if not identity.known or identity.clean is not True:
@@ -621,6 +657,8 @@ def run_paired_gauntlet(
     orchestrator_identity = _require_clean_identity(orchestrator_root)
     control_identity = _require_clean_identity(control_root)
     candidate_identity = _require_clean_identity(candidate_root)
+    repository_roots = (orchestrator_root, control_root, candidate_root)
+    _reject_importable_extensions_in_roots(repository_roots)
     canonical_quality_bar = orchestrator_root / "benchmarks" / "gauntlet" / "quality-bar.toml"
     quality_bar = load_quality_bar(canonical_quality_bar)
     quality_bar_digest = _file_digest(
@@ -689,6 +727,7 @@ def run_paired_gauntlet(
     )
     require_same_identity(control_identity, capture_repository_identity(control_root))
     require_same_identity(candidate_identity, capture_repository_identity(candidate_root))
+    _reject_importable_extensions_in_roots(repository_roots)
     if (
         _evaluator_digest(orchestrator_root) != orchestrator_digest
         or _evaluator_digest(control_root) != control_digest
