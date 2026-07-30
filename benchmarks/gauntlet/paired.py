@@ -23,6 +23,7 @@ from benchmarks.gauntlet.baseline import (
     GateResult,
     ProfileQualityBar,
     QualityBar,
+    QualityBarError,
     compare_result,
     load_quality_bar,
 )
@@ -829,6 +830,15 @@ def _identity_tuple(identity: RepositoryIdentity) -> tuple[str, bool, str]:
     return identity.commit, True, identity.diff_sha256
 
 
+def _load_canonical_quality_bar(path: Path) -> QualityBar:
+    try:
+        return load_quality_bar(path)
+    except QualityBarError as error:
+        raise PairedGauntletError(
+            "paired canonical quality bar is malformed or does not match the evaluator schema"
+        ) from error
+
+
 def run_paired_gauntlet(
     control_root: Path,
     candidate_root: Path,
@@ -850,7 +860,7 @@ def run_paired_gauntlet(
     repository_roots = (orchestrator_root, control_root, candidate_root)
     _reject_importable_extensions_in_roots(repository_roots)
     canonical_quality_bar = orchestrator_root / "benchmarks" / "gauntlet" / "quality-bar.toml"
-    quality_bar = load_quality_bar(canonical_quality_bar)
+    quality_bar = _load_canonical_quality_bar(canonical_quality_bar)
     quality_bar_digest = _file_digest(
         canonical_quality_bar,
         "canonical quality bar",

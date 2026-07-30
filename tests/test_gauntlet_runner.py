@@ -24,6 +24,7 @@ from benchmarks.gauntlet import paired
 from benchmarks.gauntlet import runner
 from benchmarks.gauntlet.baseline import (
     BaselineMeasurement,
+    QualityBarError,
     compare_result,
     load_quality_bar,
 )
@@ -1268,6 +1269,79 @@ def test_paired_cli_translates_sanitized_child_failure_without_chaining(
     assert str(sensitive_path) not in str(error_info.value)
 
 
+@pytest.mark.parametrize(
+    "quality_bar_text",
+    [
+        "schema_version = [\n",
+        "schema_version = 0\n",
+    ],
+    ids=["malformed-toml", "invalid-schema"],
+)
+def test_paired_cli_translates_invalid_canonical_quality_bar_without_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
+    quality_bar_text: str,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    quality_bar_path = tmp_path / "private" / "quality-bar.toml"
+    quality_bar_path.parent.mkdir()
+    quality_bar_path.write_text(quality_bar_text, encoding="utf-8")
+
+    with pytest.raises(PairedGauntletError) as domain_error_info:
+        paired._load_canonical_quality_bar(quality_bar_path)
+
+    assert isinstance(domain_error_info.value.__cause__, QualityBarError)
+
+    def load_invalid_quality_bar(*_args, **_kwargs):
+        paired._load_canonical_quality_bar(quality_bar_path)
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", load_invalid_quality_bar)
+
+    with pytest.raises(SystemExit) as error_info:
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+            ]
+        )
+
+    assert str(error_info.value) == ("paired canonical quality bar is malformed or does not match the evaluator schema")
+    assert error_info.value.__cause__ is None
+    assert error_info.value.__suppress_context__ is True
+    assert str(quality_bar_path) not in str(error_info.value)
+
+
+@pytest.mark.parametrize(
+    ("unexpected_error", "expected_type"),
+    [
+        (KeyboardInterrupt(), KeyboardInterrupt),
+        (SystemExit(23), SystemExit),
+        (RuntimeError("unexpected quality-bar failure"), RuntimeError),
+    ],
+)
+def test_paired_quality_bar_boundary_preserves_unexpected_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unexpected_error: BaseException,
+    expected_type: type[BaseException],
+) -> None:
+    def fail_unexpectedly(_path: Path):
+        raise unexpected_error
+
+    monkeypatch.setattr(paired, "load_quality_bar", fail_unexpectedly)
+
+    with pytest.raises(expected_type) as error_info:
+        paired._load_canonical_quality_bar(tmp_path / "quality-bar.toml")
+
+    assert error_info.value is unexpected_error
+
+
 def test_paired_cli_translates_changed_repository_identity_without_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1571,6 +1645,97 @@ def test_paired_cli_atomically_replaces_external_output_symlink(
     assert protected_path.read_text(encoding="utf-8") == protected_content
     assert not output_path.is_symlink()
     assert json.loads(output_path.read_text(encoding="utf-8")) == {"comparison": {"overall": "fail"}}
+
+
+@requires_bound_publication
+def test_paired_cli_rejects_directory_output_before_evaluation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    output_root = tmp_path / "output"
+    output_path = output_root / "result.json"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    output_path.mkdir(parents=True)
+    run_calls: list[tuple[object, ...]] = []
+
+    def record_paired_run(*args, **_kwargs):
+        run_calls.append(args)
+        return {"comparison": {"overall": "fail"}}
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", record_paired_run)
+
+    with pytest.raises(SystemExit) as error_info:
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--output",
+                str(output_path),
+            ]
+        )
+
+    assert str(error_info.value) == ("result output must be missing, a regular file, or a symbolic link")
+    assert error_info.value.__cause__ is None
+    assert error_info.value.__suppress_context__ is True
+    assert str(output_path) not in str(error_info.value)
+    assert run_calls == []
+    assert output_path.is_dir()
+    assert list(output_path.iterdir()) == []
+    assert list(output_root.iterdir()) == [output_path]
+
+
+@requires_bound_publication
+def test_paired_cli_translates_publication_race_and_cleans_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    output_root = tmp_path / "output"
+    output_path = output_root / "result.json"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    output_root.mkdir()
+    run_calls: list[tuple[object, ...]] = []
+
+    def record_paired_run(*args, **_kwargs):
+        run_calls.append(args)
+        return {"comparison": {"overall": "fail"}}
+
+    def substitute_directory_then_fail(*_args, **_kwargs):
+        output_path.mkdir()
+        raise IsADirectoryError("publication target became a directory")
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", record_paired_run)
+    monkeypatch.setattr(runner.os, "rename", substitute_directory_then_fail)
+
+    with pytest.raises(SystemExit) as error_info:
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--output",
+                str(output_path),
+            ]
+        )
+
+    assert str(error_info.value) == "could not publish the bound result safely"
+    assert error_info.value.__cause__ is None
+    assert error_info.value.__suppress_context__ is True
+    assert str(output_path) not in str(error_info.value)
+    assert len(run_calls) == 1
+    assert output_path.is_dir()
+    assert list(output_path.iterdir()) == []
+    assert list(output_root.iterdir()) == [output_path]
 
 
 def test_paired_cli_rejects_output_symlink_entry_inside_evaluated_repository(
@@ -2265,6 +2430,114 @@ def test_bound_omitted_output_uses_unique_file_in_validated_directory(
     assert output.parent == tmp_path
     assert output.name.startswith("qbitunregistered-gauntlet-")
     assert output.read_text(encoding="utf-8") == "bound artifact\n"
+
+
+@requires_bound_publication
+def test_bound_output_leaf_validation_allows_replaceable_entry_types(
+    tmp_path: Path,
+) -> None:
+    regular = tmp_path / "regular.json"
+    regular.write_text("regular\n", encoding="utf-8")
+    hard_link = tmp_path / "hard-link.json"
+    try:
+        hard_link.hardlink_to(regular)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a file hard link: {error}")
+    directory_target = tmp_path / "directory-target"
+    directory_target.mkdir()
+    directory_symlink = tmp_path / "directory-symlink.json"
+    dangling_symlink = tmp_path / "dangling-symlink.json"
+    try:
+        directory_symlink.symlink_to(directory_target, target_is_directory=True)
+        dangling_symlink.symlink_to(tmp_path / "missing-target")
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a symbolic link: {error}")
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        for output_name in (
+            "missing.json",
+            regular.name,
+            hard_link.name,
+            directory_symlink.name,
+            dangling_symlink.name,
+        ):
+            runner.validate_bound_output_leaf(bound_directory, output_name)
+        runner.write_serialized_result(
+            "replacement artifact\n",
+            hard_link,
+            bound_directory=bound_directory,
+        )
+
+    assert regular.read_text(encoding="utf-8") == "regular\n"
+    assert hard_link.read_text(encoding="utf-8") == "replacement artifact\n"
+    assert not hard_link.samefile(regular)
+
+
+@requires_bound_publication
+@pytest.mark.parametrize("entry_kind", ["directory", "fifo"])
+def test_bound_output_leaf_validation_rejects_nonreplaceable_entries(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    output = tmp_path / "result.json"
+    if entry_kind == "directory":
+        output.mkdir()
+    else:
+        make_fifo = getattr(os, "mkfifo", None)
+        if make_fifo is None:
+            pytest.skip("platform cannot create a FIFO")
+        try:
+            make_fifo(output)
+        except OSError as error:
+            pytest.skip(f"platform cannot create a FIFO: {error}")
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        with pytest.raises(
+            GauntletSafetyError,
+            match=r"^result output must be missing, a regular file, or a symbolic link$",
+        ):
+            runner.validate_bound_output_leaf(bound_directory, output.name)
+
+    assert output.exists()
+    assert not output.is_symlink()
+    assert list(tmp_path.iterdir()) == [output]
+
+
+@requires_bound_publication
+@pytest.mark.parametrize("target_kind", ["directory", "dangling"])
+def test_bound_publication_replaces_symlink_without_following_target(
+    tmp_path: Path,
+    target_kind: str,
+) -> None:
+    output = tmp_path / "result.json"
+    if target_kind == "directory":
+        target = tmp_path / "target"
+        target.mkdir()
+        target_is_directory = True
+    else:
+        target = tmp_path / "missing-target"
+        target_is_directory = False
+    try:
+        output.symlink_to(target, target_is_directory=target_is_directory)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a symbolic link: {error}")
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        runner.validate_bound_output_leaf(bound_directory, output.name)
+        written_path = runner.write_serialized_result(
+            "replacement artifact\n",
+            output,
+            bound_directory=bound_directory,
+        )
+
+    assert written_path == output
+    assert not output.is_symlink()
+    assert output.read_text(encoding="utf-8") == "replacement artifact\n"
+    if target_kind == "directory":
+        assert target.is_dir()
+        assert list(target.iterdir()) == []
+    else:
+        assert not target.exists()
 
 
 def test_explicit_output_replaces_hard_link_without_mutating_protected_file(

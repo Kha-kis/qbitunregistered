@@ -643,6 +643,7 @@ _BOUND_PUBLICATION_SUPPORTED = (
     and os.open in os.supports_dir_fd
     and os.rename in os.supports_dir_fd
     and os.stat in os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks
     and os.unlink in os.supports_dir_fd
     and Path("/proc/self/fd").is_dir()
 )
@@ -722,11 +723,36 @@ def _open_unique_bound_file(
     raise GauntletSafetyError("could not allocate a unique bound result file")
 
 
+def validate_bound_output_leaf(
+    bound_directory: BoundOutputDirectory,
+    output_name: str,
+) -> None:
+    """Require a safely replaceable output leaf without following symlinks."""
+    if not output_name or output_name != Path(output_name).name:
+        raise GauntletSafetyError("bound result output name is invalid")
+    if not _bound_directory_is_safe(bound_directory):
+        raise GauntletSafetyError("validated result directory changed before evaluation")
+    try:
+        output_stat = os.stat(
+            output_name,
+            dir_fd=bound_directory.descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise GauntletSafetyError("could not validate the result output safely") from error
+    if not (stat.S_ISREG(output_stat.st_mode) or stat.S_ISLNK(output_stat.st_mode)):
+        raise GauntletSafetyError("result output must be missing, a regular file, or a symbolic link")
+
+
 def _unlink_bound_file(bound_directory: BoundOutputDirectory, name: str) -> None:
     try:
         os.unlink(name, dir_fd=bound_directory.descriptor)
     except FileNotFoundError:
         pass
+    except OSError as error:
+        raise GauntletSafetyError("could not clean up a bound result file") from error
 
 
 def _write_bound_result(
@@ -762,12 +788,15 @@ def _write_bound_result(
             os.fsync(temporary_file.fileno())
         if not _bound_directory_is_safe(bound_directory):
             raise GauntletSafetyError("validated result directory changed during publication")
-        os.rename(
-            temporary_name,
-            output_name,
-            src_dir_fd=bound_directory.descriptor,
-            dst_dir_fd=bound_directory.descriptor,
-        )
+        try:
+            os.rename(
+                temporary_name,
+                output_name,
+                src_dir_fd=bound_directory.descriptor,
+                dst_dir_fd=bound_directory.descriptor,
+            )
+        except OSError as error:
+            raise GauntletSafetyError("could not publish the bound result safely") from error
         published = True
     finally:
         try:

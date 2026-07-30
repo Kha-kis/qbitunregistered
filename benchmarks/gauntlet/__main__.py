@@ -215,6 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         bind_output_directory,
         run_gauntlet,
         serialize_result,
+        validate_bound_output_leaf,
         write_serialized_result,
     )
 
@@ -230,6 +231,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 publication_directory,
                 protected_roots=(repository_root, paired_control, paired_candidate),
             ) as bound_directory:
+                if paired_output is not None:
+                    validate_bound_output_leaf(bound_directory, paired_output.name)
                 paired_result = run_paired_gauntlet(
                     paired_control,
                     paired_candidate,

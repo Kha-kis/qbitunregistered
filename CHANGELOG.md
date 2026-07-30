@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   separately traced peak memory, stable candidate identity, TOML quality-bar
   comparison, and explicit fail-closed regression coverage.
 
+### Fixed
+
+- Paired gauntlet runs now report malformed canonical quality bars without
+  tracebacks or private paths, reject directory and special-file output targets
+  before evaluation, and cleanly report publication races.
+
 ## [2.2.1] - 2026-07-29
 
 ### Fixed

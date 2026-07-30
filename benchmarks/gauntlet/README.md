@@ -37,7 +37,9 @@ ancestor symlink retarget cannot redirect the artifact. Paired execution fails
 closed before staging when the platform lacks the required descriptor-relative
 filesystem operations or trustworthy kernel descriptor-path introspection. The
 parent directory for an explicit paired `--output` must already exist so it can
-be safely bound; ordinary non-paired output retains automatic parent creation.
+be safely bound. The output leaf must be missing, a regular file, or a symbolic
+link; directories and special files are rejected before evaluation. Ordinary
+non-paired output retains automatic parent creation.
 
 Paired mode must start through the source-only launcher shown above. The
 launcher removes inherited Python injection variables and starts the
