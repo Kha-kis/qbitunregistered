@@ -1017,28 +1017,29 @@ def run_paired_gauntlet(
         for position, role in enumerate(PAIRED_ORDER):
             output = Path(temporary_root) / f"run-{position}.json"
             child_root = roots[role]
+            _reject_unsafe_package_entries_in_roots((child_root,))
             _reject_ignored_python_sources(child_root)
             try:
-                result = sanitize_child_result(
-                    _run_child(
-                        child_root,
-                        profile=profile,
-                        seed=seed,
-                        samples=samples,
-                        output=output,
-                        dependency_paths=dependency_paths,
-                        dependency_environment_digest=dependency_environment_identity,
-                    ),
-                    quality_bar,
+                child_result = _run_child(
+                    child_root,
+                    profile=profile,
+                    seed=seed,
+                    samples=samples,
+                    output=output,
+                    dependency_paths=dependency_paths,
+                    dependency_environment_digest=dependency_environment_identity,
                 )
-            except PairedEvidenceError as error:
-                raise PairedGauntletError("paired child evidence failed strict validation") from error
             finally:
+                _reject_unsafe_package_entries_in_roots((child_root,))
                 _require_dependency_environment(
                     dependency_paths,
                     dependency_environment_identity,
                 )
                 _reject_ignored_python_sources(child_root)
+            try:
+                result = sanitize_child_result(child_result, quality_bar)
+            except PairedEvidenceError as error:
+                raise PairedGauntletError("paired child evidence failed strict validation") from error
             paired_runs.append(
                 {
                     "position": position,

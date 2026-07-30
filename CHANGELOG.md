@@ -21,9 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Paired gauntlet runs now report malformed canonical quality bars without
   tracebacks or private paths, reject directory and special-file output targets
   before evaluation, cleanly report publication races, reject protected-package
-  import redirects and ignored Python sources, suppress contextless overflowed
-  child diagnostics, and bind installed dependency contents across every
-  crossover child.
+  imports not backed by regular Git-tracked Python sources, suppress contextless
+  overflowed child diagnostics, and bind installed dependency contents across
+  every crossover child.
 
 ## [2.2.1] - 2026-07-29
 

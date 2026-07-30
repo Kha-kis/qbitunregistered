@@ -10,16 +10,20 @@ import json
 import os
 import runpy
 import stat
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Protocol
 
 PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
 SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 DEPENDENCY_DIGEST_ARGUMENT = "--dependency-environment-digest"
+PROTECTED_IMPORT_ERROR = "gauntlet protected imports could not be verified"
 _DIGEST_CHUNK_BYTES = 1024 * 1024
+_GIT_TIMEOUT_SECONDS = 10
 
 
 class DependencyEnvironmentError(RuntimeError):
@@ -28,6 +32,15 @@ class DependencyEnvironmentError(RuntimeError):
 
 class ProtectedPackageTreeError(RuntimeError):
     """Raised when protected source packages cannot be imported safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ProtectedSource:
+    """One Git-tracked source bound to its canonical import name."""
+
+    fullname: str
+    path: Path
+    is_package: bool
 
 
 class _Digest(Protocol):
@@ -206,11 +219,113 @@ def _require_safe_package_trees(repository_root: Path) -> None:
         raise SystemExit(str(error)) from error
 
 
-class _WorktreePackageFinder(importlib.abc.MetaPathFinder):
-    """Resolve protected top-level packages only from the selected worktree."""
+def _validate_protected_source(
+    repository_root: Path,
+    source: _ProtectedSource,
+) -> None:
+    """Require every source component to remain local and non-redirecting."""
+    try:
+        relative_source = source.path.relative_to(repository_root)
+    except ValueError as error:
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR) from error
+    current = repository_root
+    try:
+        for component in relative_source.parts[:-1]:
+            current /= component
+            component_stat = os.lstat(current)
+            if _entry_is_redirecting(component_stat) or not stat.S_ISDIR(component_stat.st_mode):
+                raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        source_stat = os.lstat(source.path)
+    except OSError as error:
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR) from error
+    if _entry_is_redirecting(source_stat) or not stat.S_ISREG(source_stat.st_mode):
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
 
-    def __init__(self, package_roots: Mapping[str, Path]) -> None:
-        self._package_roots = dict(package_roots)
+
+def _tracked_protected_sources(repository_root: Path) -> dict[str, _ProtectedSource]:
+    """Build the canonical protected-source map from Git's tracked files."""
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--cached",
+                "-z",
+                "--",
+                *PROTECTED_PACKAGE_NAMES,
+            ],
+            cwd=repository_root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR) from error
+    if completed.returncode != 0:
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+
+    sources: dict[str, _ProtectedSource] = {}
+    casefold_names: dict[str, str] = {}
+    for encoded_path in completed.stdout.split(b"\0"):
+        if not encoded_path:
+            continue
+        relative_value = os.fsdecode(encoded_path)
+        relative_path = PurePosixPath(relative_value)
+        if (
+            relative_path.is_absolute()
+            or "\\" in relative_value
+            or not relative_path.parts
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+            or relative_path.parts[0] not in PROTECTED_PACKAGE_NAMES
+        ):
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        if relative_path.suffix != ".py":
+            continue
+        module_parts = list(relative_path.with_suffix("").parts)
+        is_package = module_parts[-1] == "__init__"
+        if is_package:
+            module_parts.pop()
+        if not module_parts or any(not part.isidentifier() for part in module_parts):
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        fullname = ".".join(module_parts)
+        folded_name = fullname.casefold()
+        if fullname in sources or folded_name in casefold_names:
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        source = _ProtectedSource(
+            fullname=fullname,
+            path=repository_root.joinpath(*relative_path.parts),
+            is_package=is_package,
+        )
+        _validate_protected_source(repository_root, source)
+        sources[fullname] = source
+        casefold_names[folded_name] = fullname
+
+    for package_name in PROTECTED_PACKAGE_NAMES:
+        package = sources.get(package_name)
+        if package is None or not package.is_package:
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+    for source in sources.values():
+        parent_name = source.fullname.rpartition(".")[0]
+        while parent_name:
+            parent = sources.get(parent_name)
+            if parent is None or not parent.is_package:
+                raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+            parent_name = parent_name.rpartition(".")[0]
+    return sources
+
+
+class _WorktreePackageFinder(importlib.abc.MetaPathFinder):
+    """Resolve every protected import only from tracked worktree sources."""
+
+    def __init__(
+        self,
+        repository_root: Path,
+        sources: Mapping[str, _ProtectedSource],
+    ) -> None:
+        self._repository_root = repository_root
+        self._sources = dict(sources)
+        self._protected_names = frozenset(name.casefold() for name in PROTECTED_PACKAGE_NAMES)
 
     def find_spec(
         self,
@@ -219,17 +334,27 @@ class _WorktreePackageFinder(importlib.abc.MetaPathFinder):
         target: ModuleType | None = None,
     ) -> importlib.machinery.ModuleSpec | None:
         del target
-        if path is not None:
+        del path
+        if fullname.partition(".")[0].casefold() not in self._protected_names:
             return None
-        package_root = self._package_roots.get(fullname)
-        if package_root is None:
-            return None
-        initializer = package_root / "__init__.py"
-        return importlib.util.spec_from_file_location(
+        source = self._sources.get(fullname)
+        if source is None:
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        _validate_protected_source(self._repository_root, source)
+        search_locations = [str(source.path.parent)] if source.is_package else None
+        spec = importlib.util.spec_from_file_location(
             fullname,
-            initializer,
-            submodule_search_locations=[str(package_root)],
+            source.path,
+            submodule_search_locations=search_locations,
         )
+        if spec is None or spec.loader is None:
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        return spec
+
+    def validate_sources(self) -> None:
+        """Revalidate every tracked protected source after evaluation."""
+        for source in self._sources.values():
+            _validate_protected_source(self._repository_root, source)
 
 
 def _resolved_dependency_paths(raw_value: str, repository_root: Path) -> list[str]:
@@ -305,19 +430,28 @@ def main(arguments: Sequence[str] | None = None) -> None:
             raise SystemExit("gauntlet dependency environment changed before evaluation")
     interpreter_paths = _validate_interpreter_paths(repository_root)
     _require_safe_package_trees(repository_root)
-    package_roots = {name: repository_root / name for name in PROTECTED_PACKAGE_NAMES}
-    if any(not (package_root / "__init__.py").is_file() for package_root in package_roots.values()):
-        raise SystemExit("gauntlet worktree does not contain protected source packages")
+    try:
+        protected_sources = _tracked_protected_sources(repository_root)
+    except ProtectedPackageTreeError:
+        raise SystemExit(PROTECTED_IMPORT_ERROR) from None
+    protected_finder = _WorktreePackageFinder(repository_root, protected_sources)
 
     # The worktree root is deliberately absent: only its protected first-party
     # packages outrank ordinary installed dependencies.
     sys.path[:] = [*interpreter_paths, *dependency_paths]
-    sys.meta_path.insert(0, _WorktreePackageFinder(package_roots))
+    sys.meta_path.insert(0, protected_finder)
     sys.argv[:] = ["benchmarks.gauntlet", *resolved_arguments]
     try:
-        runpy.run_module("benchmarks.gauntlet", run_name="__main__", alter_sys=True)
+        try:
+            runpy.run_module("benchmarks.gauntlet", run_name="__main__", alter_sys=True)
+        except ProtectedPackageTreeError:
+            raise SystemExit(PROTECTED_IMPORT_ERROR) from None
     finally:
         _require_safe_package_trees(repository_root)
+        try:
+            protected_finder.validate_sources()
+        except ProtectedPackageTreeError:
+            raise SystemExit(PROTECTED_IMPORT_ERROR) from None
         if (
             expected_dependency_digest is not None
             and _current_dependency_digest(dependency_paths) != expected_dependency_digest

@@ -30,10 +30,14 @@ digests, and the orchestrator rechecks all identities and digests after the
 run. Protected package trees may not contain ignored Python sources, symbolic
 links, Windows junctions, or other reparse points that can redirect imports.
 Ignored-source detection honors repository, worktree, and configured global Git
-excludes. The coordinator checks ignored sources before and after each child
-crossover and rechecks all package-tree protections after the run. Every
-isolated child checks redirecting entries again immediately before imports and
-after evaluation. Contemporaneous paired
+excludes. The coordinator checks ignored sources, redirects, and native
+extensions before and after each child crossover and rechecks all package-tree
+protections after the run. Every isolated child checks redirecting entries again
+immediately before imports and after evaluation. Its bootstrap binds protected
+root and descendant imports to regular Git-tracked Python sources; missing,
+ignored, native-only, namespace, redirected, or case-ambiguous protected
+imports fail closed without falling through to installed import finders.
+Contemporaneous paired
 execution requires the platform to expose
 `O_NOFOLLOW` (or equivalent descriptor no-follow support); it fails closed when
 that capability is unavailable. An explicit output destination must also

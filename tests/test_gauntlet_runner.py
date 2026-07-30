@@ -119,8 +119,18 @@ def _initialize_gauntlet_test_repository(repository_root: Path) -> None:
     (repository_root / "qbitunregistered").mkdir()
     (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
     (repository_root / "qbitunregistered" / "__init__.py").write_text("", encoding="utf-8")
+
+    _commit_gauntlet_test_repository(repository_root)
+
+
+def _commit_gauntlet_test_repository(repository_root: Path) -> None:
+    """Initialize Git and commit the protected Python source trees."""
     subprocess.run(["git", "init", "-q", str(repository_root)], check=True)
-    subprocess.run(["git", "add", "."], cwd=repository_root, check=True)
+    subprocess.run(
+        ["git", "add", *import_bootstrap.PROTECTED_PACKAGE_NAMES],
+        cwd=repository_root,
+        check=True,
+    )
     subprocess.run(
         [
             "git",
@@ -134,6 +144,54 @@ def _initialize_gauntlet_test_repository(repository_root: Path) -> None:
         ],
         cwd=repository_root,
         check=True,
+    )
+
+
+def _write_import_bootstrap_fixture(
+    repository_root: Path,
+    main_source: str,
+) -> None:
+    """Create protected package sources for an isolated bootstrap subprocess."""
+    gauntlet_root = repository_root / "benchmarks" / "gauntlet"
+    qbitunregistered_root = repository_root / "qbitunregistered"
+    gauntlet_root.mkdir(parents=True)
+    qbitunregistered_root.mkdir()
+    (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
+    (gauntlet_root / "__init__.py").write_text("", encoding="utf-8")
+    (qbitunregistered_root / "__init__.py").write_text("", encoding="utf-8")
+    assert import_bootstrap.__file__ is not None
+    (gauntlet_root / "import_bootstrap.py").write_bytes(Path(import_bootstrap.__file__).read_bytes())
+    (gauntlet_root / "__main__.py").write_text(main_source, encoding="utf-8")
+
+
+def _run_import_bootstrap_fixture(
+    repository_root: Path,
+    dependency_root: Path,
+) -> subprocess.CompletedProcess[str]:
+    """Run one tracked bootstrap fixture without inherited Python injection."""
+    dependency_paths = (str(dependency_root.resolve()),)
+    dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    return subprocess.run(
+        [
+            sys.executable,
+            "-s",
+            "-S",
+            "-P",
+            str(repository_root / "benchmarks" / "gauntlet" / "import_bootstrap.py"),
+            str(repository_root),
+            json.dumps(dependency_paths),
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            dependency_digest,
+        ],
+        cwd=repository_root.parent,
+        env={
+            **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
 
 
@@ -597,9 +655,11 @@ def test_paired_runner_rejects_ignored_python_sources_before_child(
 
 
 @requires_descriptor_no_follow
-def test_paired_runner_rechecks_importable_extensions_after_crossover(
+@pytest.mark.parametrize("child_fails", [False, True])
+def test_paired_runner_rechecks_importable_extensions_after_each_child(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    child_fails: bool,
 ) -> None:
     control_root = tmp_path / "control"
     candidate_root = tmp_path / "candidate"
@@ -625,14 +685,17 @@ def test_paired_runner_rechecks_importable_extensions_after_crossover(
         "benchmarks.gauntlet.paired._current_dependency_environment_digest",
         lambda _paths: "a" * 64,
     )
+    sanitize_result = Mock(side_effect=AssertionError("unsafe child evidence was accepted"))
+    monkeypatch.setattr("benchmarks.gauntlet.paired.sanitize_child_result", sanitize_result)
 
     def fake_run_child(root: Path, **_kwargs) -> dict[str, object]:
         calls.append(root)
-        if len(calls) == len(PAIRED_ORDER):
-            extension_path = candidate_root / "benchmarks" / "gauntlet" / f"runner{paired.EXTENSION_SUFFIXES[0]}"
-            extension_path.parent.mkdir(parents=True)
-            extension_path.write_bytes(b"late native extension")
-        return copy.deepcopy(expected_runs[len(calls) - 1]["result"])
+        extension_path = root / "benchmarks" / "gauntlet" / f"runner{paired.EXTENSION_SUFFIXES[0]}"
+        extension_path.parent.mkdir(parents=True)
+        extension_path.write_bytes(b"late native extension")
+        if child_fails:
+            raise PairedGauntletError("simulated child failure")
+        return copy.deepcopy(expected_runs[0]["result"])
 
     monkeypatch.setattr("benchmarks.gauntlet.paired._run_child", fake_run_child)
 
@@ -646,7 +709,8 @@ def test_paired_runner_rechecks_importable_extensions_after_crossover(
             samples=DEFAULT_SAMPLES,
         )
 
-    assert len(calls) == len(PAIRED_ORDER)
+    assert calls == [control_root]
+    sanitize_result.assert_not_called()
 
 
 def test_paired_runner_rejects_dependency_environment_tampering_between_children(
@@ -1088,6 +1152,158 @@ def test_dependency_environment_digest_rejects_windows_reparse_root(
         import_bootstrap.dependency_environment_digest((str(dependency_root),))
 
 
+def test_import_bootstrap_maps_valid_tracked_packages_and_modules(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    _write_import_bootstrap_fixture(repository_root, "")
+    operations_root = repository_root / "qbitunregistered" / "operations"
+    operations_root.mkdir()
+    (operations_root / "__init__.py").write_text("", encoding="utf-8")
+    (operations_root / "nested.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _commit_gauntlet_test_repository(repository_root)
+
+    sources = import_bootstrap._tracked_protected_sources(repository_root)
+    finder = import_bootstrap._WorktreePackageFinder(repository_root, sources)
+
+    expected = {
+        "benchmarks": True,
+        "benchmarks.gauntlet": True,
+        "benchmarks.gauntlet.__main__": False,
+        "qbitunregistered.operations": True,
+        "qbitunregistered.operations.nested": False,
+    }
+    for fullname, is_package in expected.items():
+        spec = finder.find_spec(fullname, [] if "." in fullname else None)
+        assert spec is not None
+        assert spec.origin == str(sources[fullname].path)
+        assert (spec.submodule_search_locations is not None) is is_package
+    with pytest.raises(
+        import_bootstrap.ProtectedPackageTreeError,
+        match=f"^{import_bootstrap.PROTECTED_IMPORT_ERROR}$",
+    ):
+        finder.find_spec("Qbitunregistered.operations.nested", [])
+
+
+def test_import_bootstrap_uses_tracked_source_after_native_injection(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    result_marker = tmp_path / "selected-source"
+    native_path = repository_root / "qbitunregistered" / f"payload{paired.EXTENSION_SUFFIXES[0]}"
+    dependency_root.mkdir(parents=True)
+    _write_import_bootstrap_fixture(
+        repository_root,
+        "\n".join(
+            (
+                "from pathlib import Path",
+                f"Path({str(native_path)!r}).write_bytes(b'untrusted native payload')",
+                "from qbitunregistered import payload",
+                f"Path({str(result_marker)!r}).write_text(payload.ORIGIN, encoding='utf-8')",
+            )
+        )
+        + "\n",
+    )
+    (repository_root / "qbitunregistered" / "payload.py").write_text(
+        "ORIGIN = 'tracked-source'\n",
+        encoding="utf-8",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+
+    completed = _run_import_bootstrap_fixture(repository_root, dependency_root)
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    assert result_marker.read_text(encoding="utf-8") == "tracked-source"
+    with pytest.raises(PairedGauntletError, match="importable native extension"):
+        paired._reject_importable_extensions(repository_root)
+
+
+@pytest.mark.parametrize(
+    "injection_kind",
+    ("native", "windows_pyd", "ignored_python"),
+)
+def test_import_bootstrap_rejects_untracked_protected_fullnames_without_side_effect(
+    tmp_path: Path,
+    injection_kind: str,
+) -> None:
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    side_effect = tmp_path / "untrusted-side-effect"
+    dependency_root.mkdir(parents=True)
+    _write_import_bootstrap_fixture(
+        repository_root,
+        "\n".join(
+            (
+                "import qbitunregistered.payload",
+                "from pathlib import Path",
+                f"Path({str(side_effect)!r}).write_text('ran', encoding='utf-8')",
+            )
+        )
+        + "\n",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+    if injection_kind == "ignored_python":
+        (repository_root / ".git" / "info" / "exclude").write_text(
+            "/qbitunregistered/payload.py\n",
+            encoding="utf-8",
+        )
+        (repository_root / "qbitunregistered" / "payload.py").write_text(
+            f"from pathlib import Path\nPath({str(side_effect)!r}).write_text('ran', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+    else:
+        suffix = paired.EXTENSION_SUFFIXES[0] if injection_kind == "native" else ".pyd"
+        (repository_root / "qbitunregistered" / f"payload{suffix}").write_bytes(
+            b"untrusted native payload",
+        )
+
+    completed = _run_import_bootstrap_fixture(repository_root, dependency_root)
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == import_bootstrap.PROTECTED_IMPORT_ERROR
+    assert "Traceback" not in completed.stderr
+    assert str(tmp_path) not in completed.stderr
+    assert not side_effect.exists()
+
+
+def test_import_bootstrap_rejects_casefold_module_collisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracked_paths = b"\0".join(
+        (
+            b"benchmarks/__init__.py",
+            b"qbitunregistered/__init__.py",
+            b"qbitunregistered/Collision.py",
+            b"qbitunregistered/collision.py",
+            b"",
+        )
+    )
+    monkeypatch.setattr(
+        import_bootstrap.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["git", "ls-files"],
+            0,
+            stdout=tracked_paths,
+        ),
+    )
+    monkeypatch.setattr(
+        import_bootstrap,
+        "_validate_protected_source",
+        lambda *_args: None,
+    )
+
+    with pytest.raises(
+        import_bootstrap.ProtectedPackageTreeError,
+        match=f"^{import_bootstrap.PROTECTED_IMPORT_ERROR}$",
+    ):
+        import_bootstrap._tracked_protected_sources(tmp_path)
+
+
 @pytest.mark.parametrize("redirect_stage", ["before", "during"])
 def test_import_bootstrap_rejects_package_redirects_inside_each_child(
     tmp_path: Path,
@@ -1128,6 +1344,7 @@ def test_import_bootstrap_rejects_package_redirects_inside_each_child(
             ]
         )
     (gauntlet_root / "__main__.py").write_text("\n".join(main_lines) + "\n", encoding="utf-8")
+    _commit_gauntlet_test_repository(repository_root)
     dependency_paths = (str(dependency_root.resolve()),)
     expected_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
 
@@ -1209,6 +1426,7 @@ def test_import_bootstrap_rejects_dependency_tampering_without_traceback(
             ]
         )
     (gauntlet_root / "__main__.py").write_text("\n".join(main_lines) + "\n", encoding="utf-8")
+    _commit_gauntlet_test_repository(repository_root)
     dependency_paths = (str(dependency_root.resolve()),)
     expected_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
     if tamper_stage == "before":
@@ -1362,6 +1580,7 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
     )
     shadow_source.write_text(fresh_shadow, encoding="utf-8")
     os.utime(shadow_source, (source_timestamp, source_timestamp))
+    _commit_gauntlet_test_repository(repository_root)
 
     clean_environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
     clean_environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -1659,6 +1878,7 @@ def test_source_launcher_ignores_timestamp_valid_parent_bytecode(
     qbitunregistered_root = repository_root / "qbitunregistered"
     qbitunregistered_root.mkdir()
     (qbitunregistered_root / "__init__.py").write_text("", encoding="utf-8")
+    _commit_gauntlet_test_repository(repository_root)
     cache_parent = tmp_path / "cache-parent"
     cache_parent.mkdir()
     invocation_root = tmp_path / "invocation"
