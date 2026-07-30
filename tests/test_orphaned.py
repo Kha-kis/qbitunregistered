@@ -30,6 +30,16 @@ from qbitunregistered.operations.orphaned import (
 )
 
 
+class _IncludedTorrent(dict[str, object]):
+    """Mapping-shaped torrent response with attribute-compatible core fields."""
+
+    def __getattr__(self, name: str) -> object:
+        try:
+            return self[name]
+        except KeyError as error:
+            raise AttributeError(name) from error
+
+
 def _expected_recycled_path(recycle_bin: Path, source: Path) -> Path:
     """Return the documented recycle destination for a source path."""
     resolved_source = source.resolve()
@@ -602,12 +612,21 @@ class TestOrphanScanReconciliation:
         client.torrent_categories.categories = {}
         return client
 
-    def test_scan_refreshes_canonical_file_metadata_instead_of_using_embedded_metadata(self, tmp_path):
-        """Each scan refreshes the shared metadata and ignores embedded files."""
+    def test_scan_never_reads_non_mapping_files_property(self, tmp_path):
+        """Only an embedded response key can bypass the exact endpoint."""
         tracked = tmp_path / "tracked.mkv"
         tracked.write_text("tracked", encoding="utf-8")
         client = self._client(tmp_path)
-        torrent = MagicMock(hash="existing", save_path=str(tmp_path), files=[])
+
+        class TorrentWithFilesProperty:
+            hash = "existing"
+            save_path = str(tmp_path)
+
+            @property
+            def files(self):
+                raise AssertionError("the files property would make a per-torrent API request")
+
+        torrent = TorrentWithFilesProperty()
         client.torrents.info.return_value = [torrent]
         client.torrents_files.return_value = [{"name": tracked.name}]
 
@@ -616,6 +635,119 @@ class TestOrphanScanReconciliation:
 
         assert client.torrents_files.call_count == 2
         client.torrents_files.assert_called_with("existing", SIMPLE_RESPONSES=True)
+
+    def test_bulk_snapshot_uses_and_caches_included_file_metadata(self, tmp_path):
+        """A supported snapshot avoids and replaces exact endpoint metadata."""
+        owned = tmp_path / "owned.mkv"
+        orphan = tmp_path / "orphan.mkv"
+        owned.write_text("owned", encoding="utf-8")
+        orphan.write_text("orphan", encoding="utf-8")
+        client = self._client(tmp_path)
+        current = _IncludedTorrent(
+            hash="bulk-owner",
+            save_path=str(tmp_path),
+            content_path=str(tmp_path),
+            files=[{"name": owned.name}],
+        )
+        client.torrents.info.return_value = [current]
+
+        assert check_files_on_disk(client, []) == [str(orphan)]
+        assert fetch_torrent_files(client, "bulk-owner", cache_scope=id(client)) == [{"name": owned.name}]
+
+        client.torrents.info.assert_called_once_with(include_files=True)
+        client.torrents_files.assert_not_called()
+
+    def test_bulk_snapshot_falls_back_only_for_missing_file_metadata(self, tmp_path):
+        """A mixed response uses one legacy request for the omitted field."""
+        included_owned = tmp_path / "included.mkv"
+        fallback_owned = tmp_path / "fallback.mkv"
+        included_owned.write_text("included", encoding="utf-8")
+        fallback_owned.write_text("fallback", encoding="utf-8")
+        client = self._client(tmp_path)
+        included = _IncludedTorrent(
+            hash="included-owner",
+            save_path=str(tmp_path),
+            content_path=str(tmp_path),
+            files=[{"name": included_owned.name}],
+        )
+        missing = SimpleNamespace(
+            hash="fallback-owner",
+            save_path=str(tmp_path),
+            content_path=str(tmp_path),
+        )
+        client.torrents.info.return_value = [included, missing]
+        client.torrents_files.return_value = [{"name": fallback_owned.name}]
+
+        assert check_files_on_disk(client, []) == []
+
+        client.torrents_files.assert_called_once_with("fallback-owner", SIMPLE_RESPONSES=True)
+
+    def test_rejected_bulk_parameter_retries_compatible_snapshot(self, tmp_path):
+        """A server rejecting includeFiles retains the legacy exact path."""
+        owned = tmp_path / "owned.mkv"
+        owned.write_text("owned", encoding="utf-8")
+        client = self._client(tmp_path)
+        current = SimpleNamespace(
+            hash="legacy-owner",
+            save_path=str(tmp_path),
+            content_path=str(tmp_path),
+        )
+        client.torrents.info.side_effect = [RuntimeError("unsupported parameter"), [current]]
+        client.torrents_files.return_value = [{"name": owned.name}]
+
+        assert check_files_on_disk(client, []) == []
+
+        assert client.torrents.info.call_args_list == [call(include_files=True), call()]
+        client.torrents_files.assert_called_once_with("legacy-owner", SIMPLE_RESPONSES=True)
+
+    @pytest.mark.parametrize(
+        ("included_files", "message"),
+        [
+            (None, "returned no file metadata"),
+            ({}, "returned malformed file metadata"),
+            ("not-a-list", "returned malformed file metadata"),
+            ([{}], "returned malformed file metadata"),
+        ],
+    )
+    def test_malformed_included_file_metadata_fails_closed(self, tmp_path, included_files, message):
+        """Present but malformed bulk metadata never becomes a fallback."""
+        candidate = tmp_path / "candidate.mkv"
+        candidate.write_text("preserve", encoding="utf-8")
+        client = self._client(tmp_path)
+        current = _IncludedTorrent(
+            hash="malformed-bulk",
+            save_path=str(tmp_path),
+            content_path=str(tmp_path),
+            files=included_files,
+        )
+        client.torrents.info.return_value = [current]
+
+        with pytest.raises(SafetyCheckError, match=message):
+            check_files_on_disk(client, [])
+
+        assert candidate.read_text(encoding="utf-8") == "preserve"
+        client.torrents_files.assert_not_called()
+
+    def test_refreshed_bulk_metadata_replaces_pre_scan_cached_rename(self, tmp_path):
+        """Current included metadata replaces a stale same-hash cache entry."""
+        original = tmp_path / "original.mkv"
+        renamed = tmp_path / "renamed.mkv"
+        renamed.write_text("renamed", encoding="utf-8")
+        client = self._client(tmp_path)
+        client.torrents_files.return_value = [{"name": original.name}]
+        assert fetch_torrent_files(client, "same-hash", cache_scope=id(client)) == [{"name": original.name}]
+        current = _IncludedTorrent(
+            hash="same-hash",
+            save_path=str(tmp_path),
+            content_path=str(tmp_path),
+            files=[{"name": renamed.name}],
+        )
+        client.torrents.info.return_value = [current]
+
+        assert check_files_on_disk(client, []) == []
+        assert fetch_torrent_files(client, "same-hash", cache_scope=id(client)) == [{"name": renamed.name}]
+
+        client.torrents_files.assert_called_once_with("same-hash", SIMPLE_RESPONSES=True)
 
     def test_torrent_added_during_scan_removes_its_files_from_candidates(self, tmp_path):
         """A newly added owner is reconciled before an orphan plan is returned."""
@@ -1700,6 +1832,68 @@ class TestExactOwnershipCandidateFastPath:
 
         assert candidate.read_text(encoding="utf-8") == "preserve"
 
+    def test_final_validation_uses_included_metadata_before_mutation(self, tmp_path):
+        """A bulk owner discovered at preflight blocks every mutation."""
+        candidate = tmp_path / "candidate.mkv"
+        candidate.write_text("preserve", encoding="utf-8")
+        current = _IncludedTorrent(
+            hash="bulk-final-owner",
+            save_path=str(tmp_path),
+            content_path=str(tmp_path),
+            files=[{"name": candidate.name}],
+        )
+        client = MagicMock()
+        client.application.default_save_path = str(tmp_path)
+        client.torrent_categories.categories = {}
+        client.torrents.info.return_value = [current]
+        plan = build_orphan_file_plan([str(candidate)])
+
+        with pytest.raises(SafetyCheckError, match="now owned by qBittorrent"):
+            delete_orphaned_files(
+                [str(candidate)],
+                dry_run=False,
+                client=client,
+                plan=plan,
+            )
+
+        assert candidate.read_text(encoding="utf-8") == "preserve"
+        client.torrents.info.assert_called_once_with(include_files=True)
+        client.torrents_files.assert_not_called()
+        client.torrents_delete.assert_not_called()
+
+    def test_bulk_metadata_dry_run_performs_no_mutations(self, tmp_path):
+        """Bulk ownership changes only reads during a complete dry-run."""
+        owned = tmp_path / "owned.mkv"
+        orphan = tmp_path / "orphan.mkv"
+        owned.write_text("owned", encoding="utf-8")
+        orphan.write_text("orphan", encoding="utf-8")
+        current = _IncludedTorrent(
+            hash="bulk-dry-run-owner",
+            save_path=str(tmp_path),
+            content_path=str(tmp_path),
+            files=[{"name": owned.name}],
+        )
+        client = MagicMock()
+        client.application.default_save_path = str(tmp_path)
+        client.torrent_categories.categories = {}
+        client.torrents.info.return_value = [current]
+
+        orphaned_files = check_files_on_disk(client, [])
+        plan = build_orphan_file_plan(orphaned_files)
+        delete_orphaned_files(
+            orphaned_files,
+            dry_run=True,
+            client=client,
+            torrents=[current],
+            plan=plan,
+        )
+
+        assert plan.paths == (orphan.resolve(),)
+        assert owned.read_text(encoding="utf-8") == "owned"
+        assert orphan.read_text(encoding="utf-8") == "orphan"
+        client.torrents_files.assert_not_called()
+        client.torrents_delete.assert_not_called()
+
     @pytest.mark.parametrize("metadata_name", [".", "foo/.."])
     def test_final_validation_rejects_root_collapsing_metadata_before_delete(self, tmp_path, metadata_name):
         candidate = tmp_path / "candidate.mkv"
@@ -2330,7 +2524,7 @@ class TestRecycleBin:
         assert not orphan.exists()
         assert real_torrent_root.is_dir()
         assert configured_torrent_root.resolve(strict=True) == real_torrent_root
-        mock_client.torrents.info.assert_called_once_with()
+        mock_client.torrents.info.assert_called_once_with(include_files=True)
 
     @pytest.mark.parametrize("root_source", ["default", "category"])
     def test_execute_refreshes_configured_save_roots_without_cache(self, mock_client, tmp_path, root_source):

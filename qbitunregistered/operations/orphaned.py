@@ -14,6 +14,7 @@ from qbitunregistered.cache import cached
 from qbitunregistered.file_operations import (
     FileIdentity,
     SafetyCheckError,
+    cache_torrent_files,
     capture_file_identity,
     fetch_torrent_files,
     invalidate_torrent_files,
@@ -22,6 +23,8 @@ from qbitunregistered.file_operations import (
     verify_file_identity,
 )
 from qbitunregistered.types import QBittorrentClient
+
+_INCLUDED_FILES_MISSING = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,15 +119,38 @@ def _index_torrent_snapshot(torrents: object, *, context: str) -> dict[str, Any]
     return indexed
 
 
-def _refresh_torrent_snapshot(client: QBittorrentClient, *, context: str) -> dict[str, Any]:
+def _refresh_torrent_snapshot(
+    client: QBittorrentClient,
+    *,
+    context: str,
+    include_files: bool = False,
+) -> dict[str, Any]:
     """Return one validated current torrent snapshot, failing closed."""
     try:
-        torrents = client.torrents.info()
+        torrents = client.torrents.info(include_files=True) if include_files else client.torrents.info()
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as error:
-        raise SafetyCheckError(f"Could not refresh qBittorrent state {context}") from error
+        if not include_files:
+            raise SafetyCheckError(f"Could not refresh qBittorrent state {context}") from error
+        logging.warning(
+            "qBittorrent rejected the bulk file-metadata snapshot %s; retrying with the compatible torrent list.",
+            context,
+        )
+        try:
+            torrents = client.torrents.info()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as fallback_error:
+            raise SafetyCheckError(f"Could not refresh qBittorrent state {context}") from fallback_error
     return _index_torrent_snapshot(torrents, context=context)
+
+
+def _included_torrent_files(torrent: Any) -> object:
+    """Return embedded file metadata only when it is a response mapping key."""
+    if isinstance(torrent, Mapping) and "files" in torrent:
+        return torrent["files"]
+    return _INCLUDED_FILES_MISSING
 
 
 def _index_candidate_paths(candidate_paths: set[Path]) -> dict[str, Path | None]:
@@ -149,6 +175,7 @@ def _exact_torrent_owned_paths(  # noqa: C901
     context: str,
     refresh_file_metadata: bool = False,
     tolerate_confirmed_removal: bool = False,
+    included_files: object = _INCLUDED_FILES_MISSING,
 ) -> set[Path]:
     """Return canonical owned paths or confirm that a failed torrent is gone."""
     torrent_hash = getattr(torrent, "hash", None)
@@ -158,25 +185,33 @@ def _exact_torrent_owned_paths(  # noqa: C901
     if not isinstance(save_path_value, str) or not save_path_value:
         raise SafetyCheckError(f"Torrent {torrent_hash} has no valid save path {context}")
 
-    try:
-        raw_files = fetch_torrent_files(
-            client,
-            torrent_hash,
-            cache_scope=id(client),
-            refresh=refresh_file_metadata,
-        )
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception as error:
-        if tolerate_confirmed_removal:
-            refreshed = _refresh_torrent_snapshot(
+    fetched_separately = included_files is _INCLUDED_FILES_MISSING
+    raw_files: object
+    if fetched_separately:
+        try:
+            raw_files = fetch_torrent_files(
                 client,
-                context=f"after file metadata failed for torrent {torrent_hash}",
+                torrent_hash,
+                cache_scope=id(client),
+                refresh=refresh_file_metadata,
             )
-            if torrent_hash not in refreshed:
-                logging.info("Torrent %s disappeared during orphan scanning; ignoring its unavailable metadata.", torrent_hash)
-                return set()
-        raise SafetyCheckError(f"Could not read file metadata for active torrent {torrent_hash} {context}") from error
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as error:
+            if tolerate_confirmed_removal:
+                refreshed = _refresh_torrent_snapshot(
+                    client,
+                    context=f"after file metadata failed for torrent {torrent_hash}",
+                )
+                if torrent_hash not in refreshed:
+                    logging.info(
+                        "Torrent %s disappeared during orphan scanning; ignoring its unavailable metadata.",
+                        torrent_hash,
+                    )
+                    return set()
+            raise SafetyCheckError(f"Could not read file metadata for active torrent {torrent_hash} {context}") from error
+    else:
+        raw_files = included_files
 
     if raw_files is None:
         raise SafetyCheckError(f"Torrent {torrent_hash} returned no file metadata {context}")
@@ -213,6 +248,8 @@ def _exact_torrent_owned_paths(  # noqa: C901
         if owned_path == save_path or not owned_path.is_relative_to(save_path):
             raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path {context}")
         owned_paths.add(owned_path)
+    if not fetched_separately:
+        cache_torrent_files(torrent_hash, list(raw_files), cache_scope=id(client))
     return owned_paths
 
 
@@ -306,7 +343,9 @@ def _build_torrent_ownership(
             if stat.S_ISDIR(content_mode) and content_path not in candidate_boundaries:
                 continue
 
-        file_metadata_fetches += 1
+        included_files = _included_torrent_files(torrent)
+        if included_files is _INCLUDED_FILES_MISSING:
+            file_metadata_fetches += 1
         owned_paths.update(
             _exact_torrent_owned_paths(
                 client,
@@ -317,6 +356,7 @@ def _build_torrent_ownership(
                 context=context,
                 refresh_file_metadata=refresh_file_metadata,
                 tolerate_confirmed_removal=tolerate_confirmed_removal,
+                included_files=included_files,
             )
         )
 
@@ -514,7 +554,11 @@ def check_files_on_disk(  # noqa: C901
     # A long filesystem walk can overlap additions, re-additions, file renames,
     # and save-path changes. Refresh ownership only after the walk, replacing
     # any metadata cached by an earlier operation in this execution.
-    current_torrents = _refresh_torrent_snapshot(client, context="after the orphan filesystem scan")
+    current_torrents = _refresh_torrent_snapshot(
+        client,
+        context="after the orphan filesystem scan",
+        include_files=True,
+    )
     ownership = _build_torrent_ownership(
         client,
         current_torrents,
@@ -659,7 +703,11 @@ def _get_active_configured_save_roots(client: QBittorrentClient, *, use_cache: b
 
 def _revalidate_orphan_ownership(client: QBittorrentClient, plan: OrphanFilePlan) -> set[Path]:
     """Fail closed on new owners and return current canonical save roots."""
-    current_torrents = _refresh_torrent_snapshot(client, context="before orphan cleanup")
+    current_torrents = _refresh_torrent_snapshot(
+        client,
+        context="before orphan cleanup",
+        include_files=True,
+    )
     ownership = _build_torrent_ownership(
         client,
         current_torrents,

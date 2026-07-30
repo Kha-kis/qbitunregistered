@@ -189,6 +189,9 @@ tagging.
 - Fetch the bulk torrent snapshot once
 - Treat a validated existing regular single-file `content_path` as its exact
   owned pathname without a per-torrent file-list request
+- Request optional file metadata in refreshed bulk torrent snapshots and use
+  it only when the response mapping contains a valid `files` value. Servers
+  that omit or reject the optional field retain the per-torrent fallback
 - Fetch exact file lists for multi-file boundaries only when they can overlap
   filesystem candidates; uncertain bulk metadata falls back to exact metadata
 - Index candidate parent directories separately from regular candidate paths

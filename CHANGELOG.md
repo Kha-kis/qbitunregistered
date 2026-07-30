@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Orphan ownership reconciliation now requests qBittorrent's optional bulk file
+  metadata in refreshed torrent snapshots. Supported servers avoid thousands of
+  sequential file-list requests; older servers retain the exact per-torrent
+  fallback without changing the compatibility requirement.
 - Orphan ownership reconciliation now indexes candidate directories separately
   from regular files and uses a collision-safe, execution-local lookup for
   exact qBittorrent file metadata. Ambiguous, anchored, traversing, aliased, or
