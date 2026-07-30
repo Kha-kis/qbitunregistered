@@ -198,6 +198,24 @@ def _paired_runs(
     return runs
 
 
+def _installed_dependency_index(
+    import_paths: list[Path],
+    imported_path: Path,
+) -> int:
+    matching_paths: list[tuple[int, int]] = []
+    for index, import_path in enumerate(import_paths):
+        resolved_path = import_path.resolve()
+        if imported_path.is_relative_to(resolved_path) and paired.SITE_DIRECTORY_NAMES.intersection(
+            part.casefold() for part in resolved_path.parts
+        ):
+            matching_paths.append((len(resolved_path.parts), index))
+    assert matching_paths
+    greatest_depth = max(depth for depth, _index in matching_paths)
+    most_specific_indexes = [index for depth, index in matching_paths if depth == greatest_depth]
+    assert len(most_specific_indexes) == 1
+    return most_specific_indexes[0]
+
+
 def test_fake_qbittorrent_bulk_response_embeds_exact_files_without_endpoint_calls(tmp_path: Path) -> None:
     fixture = build_fixture(tmp_path / "fixture", TINY_PROFILE, seed=107)
     source_torrent = fixture.initial_torrents[0]
@@ -861,8 +879,7 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
         import_paths = [Path(value) for value in result["path"]]
         assert repository_root not in import_paths
         third_party_path = Path(result["third_party_file"]).resolve()
-        dependency_path = next(path for path in import_paths if third_party_path.is_relative_to(path.resolve()))
-        dependency_index = import_paths.index(dependency_path)
+        dependency_index = _installed_dependency_index(import_paths, third_party_path)
         stdlib_zip_indexes = [index for index, path in enumerate(import_paths) if path.suffix.casefold() == ".zip"]
         dynamic_library_indexes = [
             index for index, path in enumerate(import_paths) if path.name.casefold() in {"lib-dynload", "dlls"}
@@ -870,6 +887,26 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
         assert stdlib_zip_indexes
         assert dynamic_library_indexes
         assert max(*stdlib_zip_indexes, *dynamic_library_indexes) < dependency_index
+
+
+def test_installed_dependency_index_prefers_nested_site_packages(
+    tmp_path: Path,
+) -> None:
+    stdlib_path = tmp_path / "hostedtoolcache" / "Python" / "3.14" / "lib" / "python3.14"
+    dependency_path = stdlib_path / "site-packages"
+    import_paths = [
+        stdlib_path.parent / "python314.zip",
+        stdlib_path,
+        stdlib_path / "lib-dynload",
+        dependency_path,
+    ]
+    imported_path = dependency_path / "schedule" / "__init__.py"
+
+    dependency_index = _installed_dependency_index(import_paths, imported_path)
+
+    assert dependency_index == 3
+    assert import_paths[dependency_index] == dependency_path
+    assert max(0, 2) < dependency_index
 
 
 def test_paired_child_stderr_capture_is_memory_bounded(
