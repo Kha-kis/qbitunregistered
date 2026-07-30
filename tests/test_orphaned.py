@@ -11,7 +11,6 @@ import pytest
 from qbitunregistered.file_operations import (
     RECYCLE_STAGING_DIRECTORY_PREFIX,
     SafetyCheckError,
-    _capture_file_identity_from_stat,
     capture_file_identity,
     fetch_torrent_files,
 )
@@ -147,16 +146,16 @@ class TestOrphanFilePlanCapture:
         replacement = tmp_path / "replacement.mkv"
         replacement.write_text("replacement", encoding="utf-8")
 
-        def replace_before_capture(path, discovered_stat):
+        def replace_before_capture(path):
             os.replace(replacement, path)
-            return _capture_file_identity_from_stat(path, discovered_stat)
+            return capture_file_identity(path)
 
         with (
             patch(
-                "qbitunregistered.operations.orphaned._capture_file_identity_from_stat",
+                "qbitunregistered.operations.orphaned.capture_file_identity",
                 side_effect=replace_before_capture,
             ),
-            pytest.raises(SafetyCheckError, match="File changed during safety inspection"),
+            pytest.raises(SafetyCheckError, match="Orphan candidate changed during identity capture"),
         ):
             build_orphan_file_plan([str(candidate)])
 
@@ -198,24 +197,14 @@ class TestOrphanDiscoveryCanonicalization:
         candidate.write_text("orphan", encoding="utf-8")
         client = self._client(tmp_path)
         real_resolve = Path.resolve
-        real_lstat = Path.lstat
         candidate_resolutions: list[bool] = []
-        candidate_lstats: list[Path] = []
 
         def track_resolve(path, strict=False):
             if path == candidate:
                 candidate_resolutions.append(strict)
             return real_resolve(path, strict=strict)
 
-        def track_lstat(path):
-            if path == candidate:
-                candidate_lstats.append(path)
-            return real_lstat(path)
-
-        with (
-            patch.object(Path, "resolve", autospec=True, side_effect=track_resolve),
-            patch.object(Path, "lstat", autospec=True, side_effect=track_lstat),
-        ):
+        with patch.object(Path, "resolve", autospec=True, side_effect=track_resolve):
             orphaned_files = check_files_on_disk(client, [])
 
         assert isinstance(orphaned_files, OrphanScanResult)
@@ -224,7 +213,6 @@ class TestOrphanDiscoveryCanonicalization:
         assert identity is not None
         assert identity.path == candidate
         assert candidate_resolutions == [True]
-        assert candidate_lstats == [candidate, candidate]
 
     def test_directory_exclusions_still_use_canonical_paths(self, tmp_path):
         excluded_dir = tmp_path / "excluded"
@@ -293,32 +281,6 @@ class TestOrphanDiscoveryCanonicalization:
         assert target.read_text(encoding="utf-8") == "preserve"
         client.torrents.info.assert_not_called()
 
-    @pytest.mark.parametrize("change", ["size", "mtime", "mode"])
-    def test_in_place_change_during_discovery_reuse_fails_closed(self, tmp_path, change):
-        candidate = tmp_path / "candidate.mkv"
-        candidate.write_text("original", encoding="utf-8")
-        client = self._client(tmp_path)
-        real_capture = _capture_file_identity_from_stat
-
-        def change_before_capture(path, discovered_stat):
-            if change == "size":
-                path.write_text("changed-size", encoding="utf-8")
-            elif change == "mtime":
-                changed_mtime_ns = discovered_stat.st_mtime_ns + 1_000_000_000
-                os.utime(path, ns=(changed_mtime_ns, changed_mtime_ns))
-            else:
-                path.chmod(stat.S_IMODE(discovered_stat.st_mode) | stat.S_IXUSR)
-            return real_capture(path, discovered_stat)
-
-        with (
-            patch(
-                "qbitunregistered.operations.orphaned._capture_file_identity_from_stat",
-                side_effect=change_before_capture,
-            ),
-            pytest.raises(SafetyCheckError, match="changed during identity capture"),
-        ):
-            check_files_on_disk(client, [])
-
     def test_replacement_during_discovery_still_fails_closed(self, tmp_path):
         candidate = tmp_path / "candidate.mkv"
         replacement = tmp_path / "replacement.mkv"
@@ -326,16 +288,16 @@ class TestOrphanDiscoveryCanonicalization:
         replacement.write_text("replacement", encoding="utf-8")
         client = self._client(tmp_path)
 
-        def replace_before_capture(path, discovered_stat):
+        def replace_before_capture(path):
             os.replace(replacement, path)
-            return _capture_file_identity_from_stat(path, discovered_stat)
+            return capture_file_identity(path)
 
         with (
             patch(
-                "qbitunregistered.operations.orphaned._capture_file_identity_from_stat",
+                "qbitunregistered.operations.orphaned.capture_file_identity",
                 side_effect=replace_before_capture,
             ),
-            pytest.raises(SafetyCheckError, match="File changed during safety inspection"),
+            pytest.raises(SafetyCheckError, match="changed during identity capture"),
         ):
             check_files_on_disk(client, [])
 

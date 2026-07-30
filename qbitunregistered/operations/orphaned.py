@@ -13,7 +13,7 @@ from qbitunregistered.cache import cached
 from qbitunregistered.file_operations import (
     FileIdentity,
     SafetyCheckError,
-    _capture_file_identity_from_stat,
+    capture_file_identity,
     fetch_torrent_files,
     invalidate_torrent_files,
     is_internal_recycle_staging_path,
@@ -547,7 +547,7 @@ def _capture_current_orphan_identity(
         return None
     except (OSError, RuntimeError) as error:
         raise SafetyCheckError(f"Could not inspect orphan candidate safely: {path}") from error
-    identity = _capture_file_identity_from_stat(path, discovered_stat)
+    identity = capture_file_identity(path)
     if not identity.matches(discovered_stat):
         raise SafetyCheckError(f"Orphan candidate changed during identity capture: {path}")
     return identity

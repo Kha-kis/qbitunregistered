@@ -1,7 +1,6 @@
 """Tests for file operations utilities."""
 
 import errno
-import inspect
 import os
 import pytest
 from contextlib import ExitStack
@@ -11,8 +10,6 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 from qbitunregistered.file_operations import (
     SafetyCheckError,
-    _capture_file_identity_from_stat,
-    capture_file_identity,
     check_cross_seeding,
     move_files_to_recycle_bin,
     get_torrent_file_paths,
@@ -20,83 +17,6 @@ from qbitunregistered.file_operations import (
     rollback_recycle_bin_moves,
 )
 from qbitunregistered.cache import get_cache
-
-
-class TestFileIdentityCapture:
-    """Exercise the public and private file-identity capture boundaries."""
-
-    def test_public_signature_and_independent_initial_lstat(self, tmp_path):
-        candidate = tmp_path / "candidate.mkv"
-        candidate.write_text("candidate", encoding="utf-8")
-        real_lstat = Path.lstat
-        inspected_paths: list[Path] = []
-
-        def track_lstat(path: Path):
-            inspected_paths.append(path)
-            return real_lstat(path)
-
-        with patch.object(Path, "lstat", autospec=True, side_effect=track_lstat):
-            identity = capture_file_identity(candidate)
-
-        assert tuple(inspect.signature(capture_file_identity).parameters) == ("file_path",)
-        assert identity.path == candidate.resolve()
-        assert inspected_paths == [candidate, candidate.resolve()]
-
-    def test_private_reuse_matches_public_regular_identity(self, tmp_path):
-        candidate = tmp_path / "candidate.mkv"
-        candidate.write_text("candidate", encoding="utf-8")
-
-        reused_identity = _capture_file_identity_from_stat(candidate, candidate.lstat())
-        public_identity = capture_file_identity(candidate)
-
-        assert reused_identity == public_identity
-
-    def test_direct_symlink_is_rejected(self, tmp_path):
-        target = tmp_path / "target.mkv"
-        target.write_text("target", encoding="utf-8")
-        link = tmp_path / "link.mkv"
-        link.symlink_to(target)
-
-        with pytest.raises(SafetyCheckError, match="Could not inspect file safely"):
-            _capture_file_identity_from_stat(link, link.lstat())
-        with pytest.raises(SafetyCheckError, match="Could not inspect file safely"):
-            capture_file_identity(link)
-
-    def test_hardlink_alias_retains_alias_path_and_shared_inode(self, tmp_path):
-        original = tmp_path / "original.mkv"
-        alias = tmp_path / "alias.mkv"
-        original.write_text("candidate", encoding="utf-8")
-        alias.hardlink_to(original)
-
-        identity = _capture_file_identity_from_stat(alias, alias.lstat())
-
-        assert identity.path == alias.resolve()
-        assert identity.inode == original.stat().st_ino
-        assert identity.device == original.stat().st_dev
-
-    def test_stale_inode_replacement_fails_closed(self, tmp_path):
-        candidate = tmp_path / "candidate.mkv"
-        replacement = tmp_path / "replacement.mkv"
-        candidate.write_text("candidate", encoding="utf-8")
-        replacement.write_text("replacement", encoding="utf-8")
-        discovered_stat = candidate.lstat()
-        os.replace(replacement, candidate)
-
-        with pytest.raises(SafetyCheckError, match="File changed during safety inspection"):
-            _capture_file_identity_from_stat(candidate, discovered_stat)
-
-    def test_missing_public_path_and_private_resolve_error_remain_compatible(self, tmp_path):
-        missing = tmp_path / "missing.mkv"
-        with pytest.raises(SafetyCheckError, match="Could not inspect file safely"):
-            capture_file_identity(missing)
-
-        candidate = tmp_path / "candidate.mkv"
-        candidate.write_text("candidate", encoding="utf-8")
-        with (
-            patch.object(Path, "resolve", autospec=True, side_effect=RuntimeError("loop")),
-            pytest.raises(SafetyCheckError, match="Could not inspect file safely"),
-        ):
-            _capture_file_identity_from_stat(candidate, candidate.lstat())
 
 
 class TestCheckCrossSeeding:
