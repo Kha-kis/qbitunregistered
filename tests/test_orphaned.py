@@ -1336,15 +1336,30 @@ class TestExactOwnershipCandidateFastPath:
         resolve.assert_not_called()
         is_relative_to.assert_not_called()
 
-    def test_normalized_candidate_collision_uses_resolution_fallback(self, tmp_path):
+    def test_normalized_candidate_collision_is_marked_ambiguous(self, tmp_path):
         save_root = tmp_path.resolve()
         first = save_root / "first.mkv"
         second = save_root / "second.mkv"
         first.write_text("first", encoding="utf-8")
         second.write_text("second", encoding="utf-8")
+        candidate_paths = {first, second}
+
+        with patch(
+            "qbitunregistered.operations.orphaned.os.path.normcase",
+            return_value="forced-collision",
+        ):
+            candidate_lookup = _index_candidate_paths(candidate_paths)
+
+        assert candidate_lookup == {"forced-collision": None}
+
+    def test_ambiguous_candidate_key_uses_resolution_fallback(self, tmp_path):
+        save_root = tmp_path.resolve()
+        first = save_root / "first.mkv"
+        first.write_text("first", encoding="utf-8")
         torrent = SimpleNamespace(hash="collision", save_path=str(save_root))
         client = MagicMock()
         client.torrents_files.return_value = [{"name": first.name}]
+        candidate_lookup = {os.path.normcase(str(first)): None}
         real_resolve = Path.resolve
         resolved_paths: list[Path] = []
 
@@ -1352,18 +1367,14 @@ class TestExactOwnershipCandidateFastPath:
             resolved_paths.append(path)
             return real_resolve(path, strict=strict)
 
-        with (
-            patch(
-                "qbitunregistered.operations.orphaned.os.path.normcase",
-                return_value="forced-collision",
-            ),
-            patch.object(Path, "resolve", autospec=True, side_effect=track_resolve),
-        ):
-            owned_paths = self._owned_paths(
+        with patch.object(Path, "resolve", autospec=True, side_effect=track_resolve):
+            owned_paths = _exact_torrent_owned_paths(
                 client,
                 torrent,
-                save_root,
-                {first, second},
+                {str(save_root): save_root},
+                candidate_lookup,
+                {},
+                context="in ambiguous candidate fallback test",
             )
 
         assert owned_paths == {first}
