@@ -5,6 +5,10 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
+import py_compile
+import subprocess
+import sys
 import tempfile
 import tracemalloc
 from dataclasses import replace
@@ -14,6 +18,7 @@ from typing import Any
 import pytest
 
 from benchmarks.gauntlet import __main__ as gauntlet_cli
+from benchmarks.gauntlet import launcher
 from benchmarks.gauntlet import paired
 from benchmarks.gauntlet import runner
 from benchmarks.gauntlet.baseline import (
@@ -65,6 +70,18 @@ requires_descriptor_no_follow = pytest.mark.skipif(
     not getattr(paired.os, "O_NOFOLLOW", 0),
     reason="contemporaneous paired execution requires descriptor no-follow support",
 )
+
+
+@pytest.fixture
+def isolated_parent_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    cache_root = tmp_path / "parent-pycache"
+    cache_root.mkdir()
+    monkeypatch.setenv(gauntlet_cli.ISOLATED_PARENT_CACHE_ENV, str(cache_root))
+    monkeypatch.setattr(gauntlet_cli.sys, "pycache_prefix", str(cache_root))
+    return cache_root
 
 
 def _test_environment() -> dict[str, str]:
@@ -677,6 +694,8 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     monkeypatch.setenv("PYTHONSTARTUP", "/private/injection.py")
     monkeypatch.setenv("PYTHONPATH", "/private/injection")
     monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(inherited_pycache))
+    monkeypatch.setenv("PythonWarnings", "ignore")
+    monkeypatch.setenv(paired.ISOLATED_PARENT_CACHE_ENV, "/inherited/parent-cache")
     pycache_roots: list[Path] = []
 
     def fake_run(command, **kwargs):
@@ -686,6 +705,8 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
         assert environment["PYTHONHASHSEED"] == "0"
         assert "PYTHONSTARTUP" not in environment
         assert "PYTHONPATH" not in environment
+        assert "PythonWarnings" not in environment
+        assert paired.ISOLATED_PARENT_CACHE_ENV not in environment
         pycache_root = Path(environment["PYTHONPYCACHEPREFIX"])
         assert pycache_root.is_dir()
         assert not pycache_root.is_relative_to(tmp_path.resolve())
@@ -710,6 +731,188 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     assert [result["profile"] for result in results] == ["quick", "quick"]
     assert len(set(pycache_roots)) == 2
     assert all(not path.exists() for path in pycache_roots)
+
+
+def test_source_launcher_ignores_timestamp_valid_parent_bytecode(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    package_root = repository_root / "benchmarks"
+    gauntlet_root = package_root / "gauntlet"
+    gauntlet_root.mkdir(parents=True)
+    poisoned_sources = (
+        (
+            package_root / "__init__.py",
+            'print("parent-stale")\n',
+            'print("parent-fresh")\n',
+        ),
+        (
+            gauntlet_root / "__init__.py",
+            'print("package-stale")\n',
+            'print("package-fresh")\n',
+        ),
+        (
+            gauntlet_root / "__main__.py",
+            'print("main-stale")\n',
+            'print("main-fresh")\n',
+        ),
+    )
+    source_timestamp = 1_700_000_000
+    for source, stale_source, fresh_source in poisoned_sources:
+        assert len(stale_source) == len(fresh_source)
+        source.write_text(stale_source, encoding="utf-8")
+        os.utime(source, (source_timestamp, source_timestamp))
+        py_compile.compile(
+            str(source),
+            doraise=True,
+            invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+        )
+        source.write_text(fresh_source, encoding="utf-8")
+        os.utime(source, (source_timestamp, source_timestamp))
+
+    clean_environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
+    clean_environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    direct = subprocess.run(
+        [sys.executable, "-m", "benchmarks.gauntlet"],
+        cwd=repository_root,
+        env=clean_environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert direct.returncode == 0
+    assert direct.stdout.splitlines() == [
+        "parent-stale",
+        "package-stale",
+        "main-stale",
+    ]
+
+    launcher_path = gauntlet_root / "launcher.py"
+    assert launcher.__file__ is not None
+    launcher_path.write_text(
+        Path(launcher.__file__).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    cache_parent = tmp_path / "cache-parent"
+    cache_parent.mkdir()
+    invocation_root = tmp_path / "invocation"
+    invocation_root.mkdir()
+    launched_environment = {
+        **clean_environment,
+        "PYTHONPATH": "/inherited/injection",
+        "TMPDIR": str(cache_parent),
+    }
+    launched = subprocess.run(
+        [sys.executable, "-I", str(launcher_path)],
+        cwd=invocation_root,
+        env=launched_environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert launched.returncode == 0
+    assert launched.stdout.splitlines() == [
+        "parent-fresh",
+        "package-fresh",
+        "main-fresh",
+    ]
+    assert list(cache_parent.iterdir()) == []
+
+
+@pytest.mark.parametrize(("child_returncode", "expected_returncode"), [(2, 2), (-15, 143)])
+def test_source_launcher_strips_injection_spawns_once_and_cleans_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_returncode: int,
+    expected_returncode: int,
+) -> None:
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(launcher, "_require_isolated_startup", lambda: None)
+    monkeypatch.setenv("PYTHONPATH", "/inherited/injection")
+    monkeypatch.setenv("PythonStartup", "/inherited/startup.py")
+    monkeypatch.setenv("pythonwarnings", "ignore")
+    monkeypatch.setenv(
+        launcher.ISOLATED_PARENT_CACHE_ENV.lower(),
+        "/inherited/parent-cache",
+    )
+    calls: list[list[str]] = []
+
+    def record_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        environment = kwargs["env"]
+        assert "PYTHONPATH" not in environment
+        assert "PythonStartup" not in environment
+        assert "pythonwarnings" not in environment
+        assert launcher.ISOLATED_PARENT_CACHE_ENV.lower() not in environment
+        cache_root = Path(environment["PYTHONPYCACHEPREFIX"])
+        assert cache_root.is_dir()
+        assert environment[launcher.ISOLATED_PARENT_CACHE_ENV] == str(cache_root)
+        assert environment["PYTHONHASHSEED"] == "0"
+        assert environment["PYTHONNOUSERSITE"] == "1"
+        return subprocess.CompletedProcess(command, child_returncode)
+
+    monkeypatch.setattr(launcher.subprocess, "run", record_run)
+
+    returncode = launcher.main(["--profile", "quick"])
+
+    assert returncode == expected_returncode
+    assert len(calls) == 1
+    assert calls[0][:6] == [
+        sys.executable,
+        "-s",
+        "-P",
+        "-c",
+        launcher.MODULE_BOOTSTRAP,
+        str(REPOSITORY_ROOT),
+    ]
+    assert calls[0][6:] == ["--profile", "quick"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_source_launcher_requires_isolated_interpreter() -> None:
+    if sys.flags.isolated:
+        pytest.skip("test runner already uses isolated interpreter mode")
+
+    with pytest.raises(SystemExit, match="must be started with python -I"):
+        launcher._require_isolated_startup()
+
+
+def test_paired_cli_rejects_unisolated_or_mismatched_parent_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    monkeypatch.setenv(gauntlet_cli.ISOLATED_PARENT_CACHE_ENV, str(cache_root))
+    monkeypatch.setattr(
+        gauntlet_cli.sys,
+        "pycache_prefix",
+        str(tmp_path / "different-cache"),
+    )
+    run_calls: list[tuple[object, ...]] = []
+
+    def record_paired_run(*args, **_kwargs):
+        run_calls.append(args)
+        return {"comparison": {"overall": "fail"}}
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", record_paired_run)
+
+    with pytest.raises(SystemExit, match="missing, mismatched, or unsafe"):
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+            ]
+        )
+
+    assert run_calls == []
 
 
 def test_cli_rejects_output_symlink_entry_inside_invoking_repository(
@@ -786,7 +989,10 @@ def test_cli_rejects_default_output_directory_inside_invoking_repository(
     assert list(repository_root.iterdir()) == [repository_root / "benchmarks"]
 
 
-def test_paired_cli_requires_both_worktrees_and_external_output(tmp_path: Path) -> None:
+def test_paired_cli_requires_both_worktrees_and_external_output(
+    tmp_path: Path,
+    isolated_parent_cache: Path,
+) -> None:
     control_root = tmp_path / "control"
     candidate_root = tmp_path / "candidate"
     control_root.mkdir()
@@ -828,6 +1034,7 @@ def test_paired_cli_requires_both_worktrees_and_external_output(tmp_path: Path) 
 def test_paired_cli_resolves_relative_worktrees_before_output_containment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
 ) -> None:
     control_root = tmp_path / "control"
     candidate_root = tmp_path / "candidate"
@@ -862,6 +1069,7 @@ def test_paired_cli_resolves_relative_worktrees_before_output_containment(
 def test_paired_cli_atomically_replaces_external_output_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
 ) -> None:
     control_root = tmp_path / "control"
     candidate_root = tmp_path / "candidate"
@@ -906,6 +1114,7 @@ def test_paired_cli_atomically_replaces_external_output_symlink(
 def test_paired_cli_rejects_output_symlink_entry_inside_evaluated_repository(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
 ) -> None:
     control_root = tmp_path / "control"
     candidate_root = tmp_path / "candidate"
@@ -949,6 +1158,7 @@ def test_paired_cli_rejects_output_symlink_entry_inside_evaluated_repository(
 def test_paired_cli_rejects_default_output_directory_inside_evaluated_repository(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
 ) -> None:
     control_root = tmp_path / "control"
     candidate_root = tmp_path / "candidate"
@@ -980,6 +1190,7 @@ def test_paired_cli_rejects_default_output_directory_inside_evaluated_repository
 def test_paired_cli_rejects_retargeted_output_ancestor_before_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
 ) -> None:
     control_root = tmp_path / "control"
     candidate_root = tmp_path / "candidate"

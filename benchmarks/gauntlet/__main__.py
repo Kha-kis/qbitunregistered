@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -15,6 +17,7 @@ from benchmarks.gauntlet.identity import (
 PROFILE_NAMES = ("quick", "full")
 DEFAULT_QUALITY_BAR = Path(__file__).with_name("quality-bar.toml")
 COMPARISON_FAILED_EXIT = 2
+ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
 
 
 def _positive_integer(value: str) -> int:
@@ -121,6 +124,28 @@ def _revalidate_default_output_directory(
         raise SystemExit("gauntlet output destination changed or became unsafe during execution")
 
 
+def _require_isolated_parent_cache(repository_roots: Sequence[Path]) -> Path:
+    cache_name = os.environ.get(ISOLATED_PARENT_CACHE_ENV)
+    if not cache_name or sys.pycache_prefix is None:
+        raise SystemExit("paired gauntlet must be started with benchmarks/gauntlet/launcher.py")
+    try:
+        cache_root = Path(cache_name).resolve()
+        active_cache_root = Path(sys.pycache_prefix).resolve()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SystemExit("paired gauntlet bytecode cache could not be resolved") from error
+    if (
+        cache_root != active_cache_root
+        or not cache_root.is_dir()
+        or not _output_is_outside_repositories(
+            cache_root,
+            cache_root,
+            repository_roots,
+        )
+    ):
+        raise SystemExit("paired gauntlet bytecode cache is missing, mismatched, or unsafe")
+    return cache_root
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one evaluator profile, optionally compare it, and write JSON."""
     repository_root = Path(__file__).resolve().parents[2]
@@ -160,6 +185,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             paired_candidate = paired_candidate.expanduser().resolve()
         except (OSError, RuntimeError, ValueError) as error:
             raise SystemExit("paired gauntlet worktree paths could not be resolved") from error
+        _require_isolated_parent_cache((repository_root, paired_control, paired_candidate))
         if arguments.compare is not None and arguments.compare.expanduser().resolve() != DEFAULT_QUALITY_BAR.resolve():
             raise SystemExit("paired gauntlet requires the invoking checkout's canonical quality bar")
         if paired_output is not None:

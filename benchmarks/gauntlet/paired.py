@@ -62,6 +62,7 @@ CHILD_TIMEOUT_SECONDS = 3_600
 DEPENDENCY_FILES = ("pyproject.toml", "uv.lock")
 PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
 IMPORTABLE_EXTENSION_ERROR = "repository contains an importable native extension in a protected package tree"
+ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
 
 
 class PairedGauntletError(RuntimeError):
@@ -574,7 +575,11 @@ def _run_child(
     samples: int,
     output: Path,
 ) -> dict[str, object]:
-    environment = {key: value for key, value in os.environ.items() if not key.startswith("PYTHON")}
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("PYTHON") and key.upper() != ISOLATED_PARENT_CACHE_ENV
+    }
     environment["PYTHONHASHSEED"] = "0"
     environment["PYTHONNOUSERSITE"] = "1"
     command = [

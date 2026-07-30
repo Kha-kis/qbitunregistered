@@ -12,7 +12,7 @@ replaces that stale machine comparison with two contemporaneous measurements
 of each production revision:
 
 ```bash
-uv run python -m benchmarks.gauntlet \
+uv run python -I benchmarks/gauntlet/launcher.py \
   --profile full \
   --paired-control /path/to/clean-control-worktree \
   --paired-candidate /path/to/clean-candidate-worktree \
@@ -32,6 +32,15 @@ run. Contemporaneous paired execution requires the platform to expose
 that capability is unavailable. An explicit output destination must also
 resolve to the same path outside all three repositories before and after the
 crossover.
+
+Paired mode must start through the source-only launcher shown above. The
+launcher removes inherited Python injection variables and starts the
+coordinator with a fresh temporary bytecode cache before any repository package
+can be imported. This launcher invocation is the only supported paired entry
+path. The current coordinator rejects direct paired execution with
+`python -m benchmarks.gauntlet`, but that check cannot make an already-stale
+module cache safe. Ordinary non-paired execution remains available through the
+module command.
 
 The orchestrator uses two symmetric crossover blocks: `control, candidate,
 candidate, control`, then `candidate, control, control, candidate`
