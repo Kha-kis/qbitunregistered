@@ -26,7 +26,9 @@ rejects a custom `--compare` path and always loads
 `benchmarks/gauntlet/quality-bar.toml` from the invoking checkout. The artifact
 records the three clean identities plus evaluator, quality-bar, and dependency
 digests, and the orchestrator rechecks all identities and digests after the
-run.
+run. Contemporaneous paired execution requires the platform to expose
+`O_NOFOLLOW` (or equivalent descriptor no-follow support); it fails closed when
+that capability is unavailable.
 
 The orchestrator uses two symmetric crossover blocks: `control, candidate,
 candidate, control`, then `candidate, control, control, candidate`

@@ -61,6 +61,10 @@ TINY_PROFILE = GauntletProfile(
     shard_count=4,
     tier="test",
 )
+requires_descriptor_no_follow = pytest.mark.skipif(
+    not getattr(paired.os, "O_NOFOLLOW", 0),
+    reason="contemporaneous paired execution requires descriptor no-follow support",
+)
 
 
 def _test_environment() -> dict[str, str]:
@@ -343,6 +347,7 @@ def test_paired_comparison_gates_each_block_and_memory_robustness() -> None:
     assert comparison["gates"]["memory_drift"]["status"] == "fail"
 
 
+@requires_descriptor_no_follow
 def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -397,6 +402,7 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     assert retained_sample_count == 40
 
 
+@requires_descriptor_no_follow
 def test_paired_runner_rejects_same_or_different_evaluator_worktrees(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -435,6 +441,7 @@ def test_paired_runner_rejects_same_or_different_evaluator_worktrees(
         )
 
 
+@requires_descriptor_no_follow
 def test_paired_runner_rejects_dependency_and_orchestrator_identity_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -522,6 +529,7 @@ def test_paired_bounded_reader_fails_closed_without_no_follow(
         )
 
 
+@requires_descriptor_no_follow
 def test_paired_child_uses_isolated_python_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
