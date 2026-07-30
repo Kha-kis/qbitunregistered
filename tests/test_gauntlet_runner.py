@@ -577,13 +577,16 @@ def test_paired_bounded_reader_fails_closed_without_no_follow(
 
 
 @requires_descriptor_no_follow
-def test_paired_child_uses_isolated_python_environment(
+def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "child.json"
+    inherited_pycache = tmp_path / "inherited-pycache"
     monkeypatch.setenv("PYTHONSTARTUP", "/private/injection.py")
     monkeypatch.setenv("PYTHONPATH", "/private/injection")
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(inherited_pycache))
+    pycache_roots: list[Path] = []
 
     def fake_run(command, **kwargs):
         assert command[1:3] == ["-s", "-m"]
@@ -592,20 +595,30 @@ def test_paired_child_uses_isolated_python_environment(
         assert environment["PYTHONHASHSEED"] == "0"
         assert "PYTHONSTARTUP" not in environment
         assert "PYTHONPATH" not in environment
+        pycache_root = Path(environment["PYTHONPYCACHEPREFIX"])
+        assert pycache_root.is_dir()
+        assert not pycache_root.is_relative_to(tmp_path.resolve())
+        assert pycache_root != inherited_pycache
+        pycache_roots.append(pycache_root)
         output.write_text(json.dumps(_valid_quick_result()), encoding="utf-8")
         return paired.subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(paired.subprocess, "run", fake_run)
 
-    result = paired._run_child(
-        tmp_path,
-        profile="quick",
-        seed=20_260_729,
-        samples=DEFAULT_SAMPLES,
-        output=output,
-    )
+    results = [
+        paired._run_child(
+            tmp_path,
+            profile="quick",
+            seed=20_260_729,
+            samples=DEFAULT_SAMPLES,
+            output=output,
+        )
+        for _ in range(2)
+    ]
 
-    assert result["profile"] == "quick"
+    assert [result["profile"] for result in results] == ["quick", "quick"]
+    assert len(set(pycache_roots)) == 2
+    assert all(not path.exists() for path in pycache_roots)
 
 
 def test_paired_cli_requires_both_worktrees_and_external_output(tmp_path: Path) -> None:

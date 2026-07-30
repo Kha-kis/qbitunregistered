@@ -37,9 +37,10 @@ The orchestrator uses two symmetric crossover blocks: `control, candidate,
 candidate, control`, then `candidate, control, control, candidate`
 (ABBA+BAAB). Role position sums are identical. Each child starts with `-s`,
 user-site loading disabled, and Python injection environment variables
-removed. Each run retains its warmup, five untraced timed samples, and traced
-memory pass. No sample is rejected. The artifact therefore retains 40 raw
-runtime samples and eight peak-memory values.
+removed. Each invocation also uses a fresh temporary bytecode cache outside
+the evaluated worktree. Each run retains its warmup, five untraced timed
+samples, and traced memory pass. No sample is rejected. The artifact therefore
+retains 40 raw runtime samples and eight peak-memory values.
 
 Runtime pools all 20 samples for each role and compares their medians with the
 locked `0.50` target. Each four-run block must independently meet that same

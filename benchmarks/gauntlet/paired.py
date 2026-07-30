@@ -556,15 +556,20 @@ def _run_child(
         str(output),
     ]
     try:
-        completed = subprocess.run(
-            command,
-            cwd=repository_root,
-            env=environment,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=CHILD_TIMEOUT_SECONDS,
-        )
+        with tempfile.TemporaryDirectory(prefix="qbitunregistered-gauntlet-pycache-") as pycache_name:
+            pycache_root = Path(pycache_name).resolve()
+            if pycache_root.is_relative_to(repository_root.expanduser().resolve()):
+                raise PairedGauntletError("paired child bytecode cache must be outside its worktree")
+            environment["PYTHONPYCACHEPREFIX"] = str(pycache_root)
+            completed = subprocess.run(
+                command,
+                cwd=repository_root,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=CHILD_TIMEOUT_SECONDS,
+            )
     except (OSError, subprocess.SubprocessError) as error:
         raise PairedGauntletError("paired child evaluation could not run") from error
     if completed.returncode != 0:
