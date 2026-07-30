@@ -1299,6 +1299,12 @@ def test_paired_cli_translates_invalid_canonical_quality_bar_without_paths(
     def load_invalid_quality_bar(*_args, **_kwargs):
         paired._load_canonical_quality_bar(quality_bar_path)
 
+    bound_directory = object()
+    monkeypatch.setattr(
+        runner,
+        "bind_output_directory",
+        lambda *_args, **_kwargs: nullcontext(bound_directory),
+    )
     monkeypatch.setattr(paired, "run_paired_gauntlet", load_invalid_quality_bar)
 
     with pytest.raises(SystemExit) as error_info:
