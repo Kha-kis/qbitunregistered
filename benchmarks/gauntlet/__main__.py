@@ -84,6 +84,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if paired_requested:
         assert paired_control is not None
         assert paired_candidate is not None
+        try:
+            paired_control = paired_control.expanduser().resolve()
+            paired_candidate = paired_candidate.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SystemExit("paired gauntlet worktree paths could not be resolved") from error
         if arguments.compare is not None and arguments.compare.expanduser().resolve() != DEFAULT_QUALITY_BAR.resolve():
             raise SystemExit("paired gauntlet requires the invoking checkout's canonical quality bar")
         if arguments.output is not None and (

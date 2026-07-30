@@ -393,6 +393,12 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     assert result["dependency_digest"] == "f" * 64
     assert len(result["quality_bar_digest"]) == 64
     assert len(result["evaluator_digest"]) == 64
+    assert result["thresholds"] == {
+        "runtime_control_fraction_max": 0.50,
+        "memory_control_fraction_max": 1.25,
+        "paired_runtime_relative_range_max": 0.50,
+        "paired_memory_relative_range_max": 0.50,
+    }
     assert len(result["runs"]) == 8
     retained_sample_count = 0
     for run in result["runs"]:
@@ -641,6 +647,40 @@ def test_paired_cli_requires_both_worktrees_and_external_output(tmp_path: Path) 
         )
 
 
+def test_paired_cli_resolves_relative_worktrees_before_output_containment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    invocation_root = tmp_path / "invocation"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    invocation_root.mkdir()
+    monkeypatch.chdir(invocation_root)
+    run_calls: list[tuple[object, ...]] = []
+
+    def record_paired_run(*args, **_kwargs):
+        run_calls.append(args)
+        return {}
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", record_paired_run)
+
+    with pytest.raises(SystemExit, match="outside both evaluated repositories"):
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                "../control",
+                "--paired-candidate",
+                "../candidate",
+                "--output",
+                "../control/result.json",
+            ]
+        )
+
+    assert run_calls == []
+
+
 def test_locked_profiles_match_live_reference_shape() -> None:
     assert (
         QUICK_PROFILE.torrent_count,
@@ -793,26 +833,30 @@ def test_nonlocked_sample_count_is_rejected_before_measurement(tmp_path: Path) -
     assert fixture.client.mutation_total == 0
 
 
-def test_comparison_rejects_unknown_identity_and_reports_pending_baseline() -> None:
+def test_canonical_quality_bar_reports_pending_baselines_without_weakening_targets() -> None:
     quality_bar = load_quality_bar(QUALITY_BAR_PATH)
-    quick_profile = quality_bar.profiles["quick"]
-    pending_quick_profile = replace(
-        quick_profile,
-        baseline=BaselineMeasurement(
+    for profile in quality_bar.profiles.values():
+        assert profile.baseline == BaselineMeasurement(
             status="pending_clean_evaluator_commit",
             median_runtime_seconds=None,
             peak_memory_bytes=None,
             environment=None,
-        ),
-    )
-    pending_quality_bar = replace(
-        quality_bar,
-        profiles={**quality_bar.profiles, "quick": pending_quick_profile},
-    )
+        )
+        assert profile.runtime_baseline_fraction_max == 0.50
+        assert profile.peak_memory_baseline_fraction_max == 1.25
+
     result = _valid_quick_result()
+    pending_report = compare_result(result, quality_bar)
+
+    assert pending_report["overall"] == "pending"
+    assert pending_report["gates"]["identity"]["status"] == "pass"
+    assert pending_report["gates"]["environment"]["status"] == "pending"
+    assert pending_report["gates"]["runtime"]["status"] == "pending"
+    assert pending_report["gates"]["memory"]["status"] == "pending"
+
     result["commit"] = "unknown"
     result["candidate_state"] = {"clean": None, "diff_sha256": "unknown"}
-    report = compare_result(result, pending_quality_bar)
+    report = compare_result(result, quality_bar)
 
     assert report["overall"] == "fail"
     assert report["gates"]["identity"]["status"] == "non_comparable"
@@ -832,7 +876,7 @@ def test_comparison_rejects_unknown_identity_and_reports_pending_baseline() -> N
     }
     mismatched_report = compare_result(
         mismatched_result,
-        pending_quality_bar,
+        quality_bar,
     )
     assert mismatched_report["gates"]["measurement_policy"]["status"] == "non_comparable"
 
@@ -841,7 +885,7 @@ def test_comparison_rejects_unknown_identity_and_reports_pending_baseline() -> N
     assert (
         compare_result(
             missing_policy_result,
-            pending_quality_bar,
+            quality_bar,
         )["gates"][
             "measurement_policy"
         ]["status"]
@@ -853,7 +897,7 @@ def test_comparison_rejects_unknown_identity_and_reports_pending_baseline() -> N
     assert (
         compare_result(
             extra_policy_result,
-            pending_quality_bar,
+            quality_bar,
         )["gates"][
             "measurement_policy"
         ]["status"]
