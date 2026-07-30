@@ -190,8 +190,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (OSError, RuntimeError, ValueError) as error:
             raise SystemExit("paired gauntlet worktree paths could not be resolved") from error
         _require_isolated_parent_cache((repository_root, paired_control, paired_candidate))
-        if arguments.compare is not None and arguments.compare.expanduser().resolve() != DEFAULT_QUALITY_BAR.resolve():
-            raise SystemExit("paired gauntlet requires the invoking checkout's canonical quality bar")
+        if arguments.compare is not None:
+            try:
+                canonical_compare = arguments.compare.expanduser().resolve()
+                canonical_quality_bar = DEFAULT_QUALITY_BAR.resolve()
+            except (OSError, RuntimeError, ValueError):
+                raise SystemExit("paired gauntlet requires the invoking checkout's canonical quality bar") from None
+            if canonical_compare != canonical_quality_bar:
+                raise SystemExit("paired gauntlet requires the invoking checkout's canonical quality bar")
         if paired_output is not None:
             assert paired_output_target is not None
             if not _output_is_outside_repositories(

@@ -76,6 +76,7 @@ PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
 SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 IMPORTABLE_EXTENSION_ERROR = "repository contains an importable native extension in a protected package tree"
 REDIRECTING_PACKAGE_ENTRY_ERROR = "repository contains a redirecting entry in a protected package tree"
+IGNORED_PYTHON_SOURCE_ERROR = "repository contains an ignored Python source in a protected package tree"
 ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
 _SECRET_ASSIGNMENT_PATTERN = re.compile(r"(?i)\b(api[\s_-]?key|password|passwd|token|secret)\b\s*[:=]\s*[^\r\n]*")
 _SECRET_JSON_PATTERN = re.compile(r"""(?ix)
@@ -643,10 +644,43 @@ def _reject_unsafe_package_entries_in_roots(repository_roots: Sequence[Path]) ->
         _reject_importable_extensions(repository_root)
 
 
+def _reject_ignored_python_sources(repository_root: Path) -> None:
+    """Reject Python sources hidden from clean-worktree identity checks."""
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "-z",
+                "--",
+                *PROTECTED_PACKAGE_NAMES,
+            ],
+            cwd=repository_root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise PairedGauntletError("could not inspect ignored repository package sources") from error
+    if completed.returncode != 0:
+        raise PairedGauntletError("could not inspect ignored repository package sources")
+    if any(
+        Path(os.fsdecode(relative_path)).suffix.casefold() == ".py"
+        for relative_path in completed.stdout.split(b"\0")
+        if relative_path
+    ):
+        raise PairedGauntletError(IGNORED_PYTHON_SOURCE_ERROR)
+
+
 def _require_clean_identity(repository_root: Path) -> RepositoryIdentity:
     identity = capture_repository_identity(repository_root)
     if not identity.known or identity.clean is not True:
         raise PairedGauntletError("paired repositories must have clean, complete Git identities")
+    _reject_ignored_python_sources(repository_root)
     return identity
 
 
@@ -701,12 +735,16 @@ def _require_unchanged_identity(
     repository_root: Path,
 ) -> None:
     try:
+        actual = capture_repository_identity(repository_root)
+        if not actual.known or actual.clean is not True:
+            raise RepositoryIdentityError("repository identity is incomplete")
         require_same_identity(
             expected,
-            capture_repository_identity(repository_root),
+            actual,
         )
     except RepositoryIdentityError as error:
         raise PairedGauntletError("paired repository identity changed during evaluation") from error
+    _reject_ignored_python_sources(repository_root)
 
 
 def _retain_stderr_tail(
@@ -781,6 +819,10 @@ def _sanitize_child_stderr(
     environment: Mapping[str, str],
     truncated: bool,
 ) -> str:
+    if truncated:
+        # A discarded prefix may have contained the label that makes the
+        # retained bytes recognizable as a credential, so the tail is unsafe.
+        return "[stderr truncated; diagnostic suppressed]"
     text = stderr.decode("utf-8", errors="replace")
     text = _ANSI_ESCAPE_PATTERN.sub("", text)
     for sensitive_value in (
@@ -809,10 +851,9 @@ def _sanitize_child_stderr(
     text = " ".join(text.split())
     if not text:
         return ""
-    prefix = "[stderr truncated] " if truncated else ""
-    maximum_text_bytes = MAX_CHILD_STDERR_BYTES - len(prefix.encode("ascii"))
+    maximum_text_bytes = MAX_CHILD_STDERR_BYTES
     encoded_text = text.encode("utf-8")[-maximum_text_bytes:]
-    return prefix + encoded_text.decode("utf-8", errors="ignore")
+    return encoded_text.decode("utf-8", errors="ignore")
 
 
 def _run_child(
@@ -975,10 +1016,12 @@ def run_paired_gauntlet(
     with tempfile.TemporaryDirectory(prefix="qbitunregistered-gauntlet-paired-") as temporary_root:
         for position, role in enumerate(PAIRED_ORDER):
             output = Path(temporary_root) / f"run-{position}.json"
+            child_root = roots[role]
+            _reject_ignored_python_sources(child_root)
             try:
                 result = sanitize_child_result(
                     _run_child(
-                        roots[role],
+                        child_root,
                         profile=profile,
                         seed=seed,
                         samples=samples,
@@ -995,6 +1038,7 @@ def run_paired_gauntlet(
                     dependency_paths,
                     dependency_environment_identity,
                 )
+                _reject_ignored_python_sources(child_root)
             paired_runs.append(
                 {
                     "position": position,

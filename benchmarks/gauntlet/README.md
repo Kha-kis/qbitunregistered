@@ -27,10 +27,13 @@ a custom `--compare` path and always loads
 `benchmarks/gauntlet/quality-bar.toml` from the invoking checkout. The artifact
 records the three clean identities plus evaluator, quality-bar, and dependency
 digests, and the orchestrator rechecks all identities and digests after the
-run. Protected package trees may not contain symbolic links, Windows junctions,
-or other reparse points that can redirect imports. The coordinator checks those
-trees before and after the crossover, and every isolated child checks again
-immediately before imports and after evaluation. Contemporaneous paired
+run. Protected package trees may not contain ignored Python sources, symbolic
+links, Windows junctions, or other reparse points that can redirect imports.
+Ignored-source detection honors repository, worktree, and configured global Git
+excludes. The coordinator checks ignored sources before and after each child
+crossover and rechecks all package-tree protections after the run. Every
+isolated child checks redirecting entries again immediately before imports and
+after evaluation. Contemporaneous paired
 execution requires the platform to expose
 `O_NOFOLLOW` (or equivalent descriptor no-follow support); it fails closed when
 that capability is unavailable. An explicit output destination must also

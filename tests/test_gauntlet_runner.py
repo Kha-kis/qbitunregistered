@@ -113,6 +113,30 @@ def _test_environment() -> dict[str, str]:
     }
 
 
+def _initialize_gauntlet_test_repository(repository_root: Path) -> None:
+    """Create a minimal committed repository with both protected package trees."""
+    (repository_root / "benchmarks" / "gauntlet").mkdir(parents=True)
+    (repository_root / "qbitunregistered").mkdir()
+    (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
+    (repository_root / "qbitunregistered" / "__init__.py").write_text("", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repository_root)], check=True)
+    subprocess.run(["git", "add", "."], cwd=repository_root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Gauntlet Test",
+            "-c",
+            "user.email=gauntlet@example.invalid",
+            "commit",
+            "-qm",
+            "test fixture",
+        ],
+        cwd=repository_root,
+        check=True,
+    )
+
+
 def _valid_quick_result() -> dict[str, Any]:
     quality_bar = load_quality_bar(QUALITY_BAR_PATH)
     profile = quality_bar.profiles["quick"]
@@ -423,6 +447,7 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     monkeypatch.setattr("benchmarks.gauntlet.paired._evaluator_digest", lambda _root: "d" * 64)
     monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "f" * 64)
     monkeypatch.setattr("benchmarks.gauntlet.paired._dependency_import_paths", lambda: dependency_paths)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._reject_ignored_python_sources", lambda _root: None)
 
     def fake_run_child(root: Path, **kwargs):
         role = "control" if root == control_root else "candidate"
@@ -493,6 +518,84 @@ def test_paired_runner_rejects_noncanonical_samples_before_setup(
     unexpected_setup.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "exclude_source",
+    ("gitignore", "repository_exclude", "configured_global_exclude"),
+)
+def test_paired_runner_rejects_ignored_python_sources_before_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exclude_source: str,
+) -> None:
+    orchestrator_root = tmp_path / "orchestrator"
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    for repository_root in (orchestrator_root, control_root, candidate_root):
+        _initialize_gauntlet_test_repository(repository_root)
+
+    ignored_relative_path = Path("benchmarks") / "gauntlet" / "private-credential-source.py"
+    ignore_pattern = f"/{ignored_relative_path.as_posix()}\n"
+    if exclude_source == "gitignore":
+        ignore_file = candidate_root / ".gitignore"
+        ignore_file.write_text(ignore_pattern, encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=candidate_root, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Gauntlet Test",
+                "-c",
+                "user.email=gauntlet@example.invalid",
+                "commit",
+                "-qm",
+                "ignore test source",
+            ],
+            cwd=candidate_root,
+            check=True,
+        )
+    elif exclude_source == "repository_exclude":
+        (candidate_root / ".git" / "info" / "exclude").write_text(
+            ignore_pattern,
+            encoding="utf-8",
+        )
+    else:
+        global_excludes = tmp_path / "configured-global-excludes"
+        global_excludes.write_text(ignore_pattern, encoding="utf-8")
+        subprocess.run(
+            ["git", "config", "core.excludesFile", str(global_excludes)],
+            cwd=candidate_root,
+            check=True,
+        )
+    ignored_path = candidate_root / ignored_relative_path
+    ignored_path.write_text("PASSWORD = 'must-not-leak'\n", encoding="utf-8")
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=candidate_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == ""
+
+    child = Mock(side_effect=AssertionError("paired child unexpectedly started"))
+    monkeypatch.setattr(paired, "_run_child", child)
+
+    with pytest.raises(PairedGauntletError) as error_info:
+        run_paired_gauntlet(
+            control_root,
+            candidate_root,
+            orchestrator_root=orchestrator_root,
+            profile="quick",
+            seed=20_260_729,
+            samples=DEFAULT_SAMPLES,
+        )
+
+    assert str(error_info.value) == paired.IGNORED_PYTHON_SOURCE_ERROR
+    assert ignored_path.name not in str(error_info.value)
+    assert str(tmp_path) not in str(error_info.value)
+    child.assert_not_called()
+
+
 @requires_descriptor_no_follow
 def test_paired_runner_rechecks_importable_extensions_after_crossover(
     tmp_path: Path,
@@ -517,6 +620,7 @@ def test_paired_runner_rechecks_importable_extensions_after_crossover(
     monkeypatch.setattr("benchmarks.gauntlet.paired._evaluator_digest", lambda _root: "d" * 64)
     monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "f" * 64)
     monkeypatch.setattr("benchmarks.gauntlet.paired._dependency_import_paths", lambda: ("dependencies",))
+    monkeypatch.setattr("benchmarks.gauntlet.paired._reject_ignored_python_sources", lambda _root: None)
     monkeypatch.setattr(
         "benchmarks.gauntlet.paired._current_dependency_environment_digest",
         lambda _paths: "a" * 64,
@@ -569,6 +673,7 @@ def test_paired_runner_rejects_dependency_environment_tampering_between_children
     monkeypatch.setattr(paired, "_evaluator_digest", lambda _root: "d" * 64)
     monkeypatch.setattr(paired, "_named_files_digest", lambda *_args: "f" * 64)
     monkeypatch.setattr(paired, "_dependency_import_paths", lambda: (str(dependency_root),))
+    monkeypatch.setattr(paired, "_reject_ignored_python_sources", lambda _root: None)
     real_load_quality_bar = paired._load_canonical_quality_bar
     loaded_quality_bars: list[Path] = []
     digested_quality_bars: list[Path] = []
@@ -1371,7 +1476,7 @@ def test_paired_child_stderr_capture_is_memory_bounded(
     assert truncated is True
 
 
-def test_paired_child_failure_reports_sanitized_truncated_stderr(
+def test_paired_child_failure_reports_sanitized_stderr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1380,20 +1485,17 @@ def test_paired_child_failure_reports_sanitized_truncated_stderr(
     monkeypatch.setenv("GAUNTLET_API_TOKEN", secret)
     monkeypatch.setenv("DOCKER_AUTH_CONFIG", "opaque-auth-secret")
     stderr_payload = (
-        b"x" * paired.MAX_CHILD_STDERR_BYTES
-        + (
-            f'\n\x1b[31mfailed at {tmp_path / "private" / "module.py"} token={secret}\x1b[0m\n'
-            'password="abc,assignment-tail"\n'
-            "mirror=https://operator:password@example.invalid/path\n"
-            '{"password":"hunter2"}\n'
-            '{"password":"abc\\"secret-tail"}\n'
-            "Authorization: Bearer bearer-secret\n"
-            "Cookie: session=cookie-secret\n"
-            "opaque-auth-secret\n"
-            'File "/tmp/private path/module.py", line 7\n'
-            'File "\\\\server\\private share\\module.py", line 9\n'
-        ).encode()
-    )
+        f'\n\x1b[31mfailed at {tmp_path / "private" / "module.py"} token={secret}\x1b[0m\n'
+        'password="abc,assignment-tail"\n'
+        "mirror=https://operator:password@example.invalid/path\n"
+        '{"password":"hunter2"}\n'
+        '{"password":"abc\\"secret-tail"}\n'
+        "Authorization: Bearer bearer-secret\n"
+        "Cookie: session=cookie-secret\n"
+        "opaque-auth-secret\n"
+        'File "/tmp/private path/module.py", line 7\n'
+        'File "\\\\server\\private share\\module.py", line 9\n'
+    ).encode()
 
     def fake_run(command, **kwargs):
         os.write(kwargs["stderr"], stderr_payload)
@@ -1413,7 +1515,7 @@ def test_paired_child_failure_reports_sanitized_truncated_stderr(
         )
 
     message = str(error_info.value)
-    assert message.startswith("paired child evaluation failed with exit code 9: [stderr truncated] ")
+    assert message.startswith("paired child evaluation failed with exit code 9: ")
     assert "<path>" in message
     assert "token=<redacted>" in message
     assert str(tmp_path) not in message
@@ -1429,6 +1531,41 @@ def test_paired_child_failure_reports_sanitized_truncated_stderr(
     assert "private share" not in message
     assert "\x1b" not in message
     assert len(message.encode("utf-8")) <= paired.MAX_CHILD_STDERR_BYTES + 64
+
+
+def test_paired_child_failure_suppresses_contextless_truncated_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "child.json"
+    secret_fragment = "credential-material-that-must-not-leak"
+    stderr_payload = ("password=" + secret_fragment * 200).encode()
+
+    def fake_run(command, **kwargs):
+        os.write(kwargs["stderr"], stderr_payload)
+        return paired.subprocess.CompletedProcess(command, 9)
+
+    monkeypatch.setattr(paired.subprocess, "run", fake_run)
+
+    with pytest.raises(PairedGauntletError) as error_info:
+        paired._run_child(
+            tmp_path,
+            profile="quick",
+            seed=20_260_729,
+            samples=DEFAULT_SAMPLES,
+            output=output,
+            dependency_paths=("dependencies",),
+            dependency_environment_digest="a" * 64,
+        )
+
+    message = str(error_info.value)
+    assert message == ("paired child evaluation failed with exit code 9: " "[stderr truncated; diagnostic suppressed]")
+    assert secret_fragment not in message
+    assert len(message.encode("utf-8")) < 256
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_paired_child_failure_with_empty_stderr_reports_only_exit_code(
@@ -2014,6 +2151,94 @@ def test_paired_cli_requires_both_worktrees_and_external_output(
                 str(custom_quality_bar),
             ]
         )
+
+
+def test_paired_cli_compare_symlink_loop_fails_with_canonical_path_free_error(
+    tmp_path: Path,
+) -> None:
+    control_root = tmp_path / "control-secret"
+    candidate_root = tmp_path / "candidate-secret"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    first_link = tmp_path / "private-compare-a"
+    second_link = tmp_path / "private-compare-b"
+    try:
+        first_link.symlink_to(second_link)
+        second_link.symlink_to(first_link)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a symbolic-link loop: {error}")
+    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(REPOSITORY_ROOT / "benchmarks" / "gauntlet" / "launcher.py"),
+            "--paired-control",
+            str(control_root),
+            "--paired-candidate",
+            str(candidate_root),
+            "--compare",
+            str(first_link),
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == ("paired gauntlet requires the invoking checkout's canonical quality bar")
+    assert "Traceback" not in completed.stderr
+    assert "secret" not in completed.stderr
+    assert str(tmp_path) not in completed.stderr
+
+
+def test_paired_cli_compare_resolve_error_is_canonical_and_path_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    private_compare = tmp_path / "private-credential-quality-bar.toml"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    original_resolve = Path.resolve
+
+    def selective_resolve(path: Path, strict: bool = False) -> Path:
+        if path == private_compare:
+            raise OSError(f"could not resolve secret path {path}")
+        return original_resolve(path, strict=strict)
+
+    child = Mock(side_effect=AssertionError("paired child unexpectedly started"))
+    monkeypatch.setattr(Path, "resolve", selective_resolve)
+    monkeypatch.setattr(paired, "run_paired_gauntlet", child)
+
+    with pytest.raises(SystemExit) as error_info:
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--compare",
+                str(private_compare),
+            ]
+        )
+
+    assert str(error_info.value) == ("paired gauntlet requires the invoking checkout's canonical quality bar")
+    assert error_info.value.__cause__ is None
+    assert "secret" not in str(error_info.value)
+    assert str(tmp_path) not in str(error_info.value)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    child.assert_not_called()
 
 
 def test_paired_cli_resolves_relative_worktrees_before_output_containment(
