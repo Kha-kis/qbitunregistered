@@ -13,9 +13,9 @@ import stat
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from types import ModuleType
+from types import CodeType, ModuleType
 from typing import Protocol
 
 PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
@@ -24,6 +24,7 @@ DEPENDENCY_DIGEST_ARGUMENT = "--dependency-environment-digest"
 PROTECTED_IMPORT_ERROR = "gauntlet protected imports could not be verified"
 _DIGEST_CHUNK_BYTES = 1024 * 1024
 _GIT_TIMEOUT_SECONDS = 10
+_REGULAR_BLOB_MODES = frozenset({b"100644", b"100755"})
 
 
 class DependencyEnvironmentError(RuntimeError):
@@ -41,6 +42,9 @@ class _ProtectedSource:
     fullname: str
     path: Path
     is_package: bool
+    mode: str
+    oid: str
+    source_bytes: bytes
 
 
 class _Digest(Protocol):
@@ -242,14 +246,45 @@ def _validate_protected_source(
         raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
 
 
-def _tracked_protected_sources(repository_root: Path) -> dict[str, _ProtectedSource]:
-    """Build the canonical protected-source map from Git's tracked files."""
+def _read_git_blob(repository_root: Path, oid: str) -> bytes:
+    """Read one immutable Git blob with a timeout and path-free failures."""
+    try:
+        completed = subprocess.run(
+            ["git", "--no-replace-objects", "cat-file", "blob", oid],
+            cwd=repository_root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR) from error
+    if completed.returncode != 0:
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+    return completed.stdout
+
+
+def _source_index_identity(
+    sources: Mapping[str, _ProtectedSource],
+) -> dict[str, tuple[Path, bool, str, str]]:
+    """Return source metadata that must remain stable across revalidation."""
+    return {fullname: (source.path, source.is_package, source.mode, source.oid) for fullname, source in sources.items()}
+
+
+def _tracked_protected_sources(
+    repository_root: Path,
+    *,
+    capture_source_bytes: bool = True,
+) -> dict[str, _ProtectedSource]:
+    """Build the canonical protected-source map from Git's staged index."""
     try:
         completed = subprocess.run(
             [
                 "git",
                 "ls-files",
                 "--cached",
+                "-v",
+                "--stage",
                 "-z",
                 "--",
                 *PROTECTED_PACKAGE_NAMES,
@@ -265,11 +300,23 @@ def _tracked_protected_sources(repository_root: Path) -> dict[str, _ProtectedSou
     if completed.returncode != 0:
         raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
 
+    if not completed.stdout.endswith(b"\0"):
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+    encoded_records = completed.stdout[:-1].split(b"\0")
+    if not encoded_records or any(not record for record in encoded_records):
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+
     sources: dict[str, _ProtectedSource] = {}
     casefold_names: dict[str, str] = {}
-    for encoded_path in completed.stdout.split(b"\0"):
-        if not encoded_path:
-            continue
+    for encoded_record in encoded_records:
+        try:
+            encoded_metadata, encoded_path = encoded_record.split(b"\t", 1)
+        except ValueError as error:
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR) from error
+        metadata_fields = encoded_metadata.split(b" ")
+        if len(metadata_fields) != 4 or any(not field for field in metadata_fields):
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        index_status, encoded_mode, encoded_oid, encoded_stage = metadata_fields
         relative_value = os.fsdecode(encoded_path)
         relative_path = PurePosixPath(relative_value)
         if (
@@ -282,6 +329,19 @@ def _tracked_protected_sources(repository_root: Path) -> dict[str, _ProtectedSou
             raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
         if relative_path.suffix != ".py":
             continue
+        if (
+            index_status != b"H"
+            or encoded_mode not in _REGULAR_BLOB_MODES
+            or encoded_stage != b"0"
+            or len(encoded_oid) not in {40, 64}
+            or any(character not in b"0123456789abcdefABCDEF" for character in encoded_oid)
+        ):
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        try:
+            mode = encoded_mode.decode("ascii")
+            oid = encoded_oid.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR) from error
         module_parts = list(relative_path.with_suffix("").parts)
         is_package = module_parts[-1] == "__init__"
         if is_package:
@@ -296,6 +356,9 @@ def _tracked_protected_sources(repository_root: Path) -> dict[str, _ProtectedSou
             fullname=fullname,
             path=repository_root.joinpath(*relative_path.parts),
             is_package=is_package,
+            mode=mode,
+            oid=oid,
+            source_bytes=b"",
         )
         _validate_protected_source(repository_root, source)
         sources[fullname] = source
@@ -312,7 +375,40 @@ def _tracked_protected_sources(repository_root: Path) -> dict[str, _ProtectedSou
             if parent is None or not parent.is_package:
                 raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
             parent_name = parent_name.rpartition(".")[0]
+    if capture_source_bytes:
+        sources = {
+            fullname: replace(
+                source,
+                source_bytes=_read_git_blob(repository_root, source.oid),
+            )
+            for fullname, source in sources.items()
+        }
     return sources
+
+
+class _ProtectedSourceLoader(importlib.abc.SourceLoader):
+    """Compile protected modules only from immutable captured index bytes."""
+
+    def __init__(self, source: _ProtectedSource) -> None:
+        self._source = source
+
+    def get_filename(self, fullname: str) -> str:
+        if fullname != self._source.fullname:
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        return str(self._source.path)
+
+    def get_data(self, path: str) -> bytes:
+        if Path(path) != self._source.path:
+            raise OSError(PROTECTED_IMPORT_ERROR)
+        return self._source.source_bytes
+
+    def get_code(self, fullname: str) -> CodeType:
+        filename = self.get_filename(fullname)
+        return self.source_to_code(self._source.source_bytes, filename)
+
+    def is_package(self, fullname: str) -> bool:
+        self.get_filename(fullname)
+        return self._source.is_package
 
 
 class _WorktreePackageFinder(importlib.abc.MetaPathFinder):
@@ -337,14 +433,17 @@ class _WorktreePackageFinder(importlib.abc.MetaPathFinder):
         del path
         if fullname.partition(".")[0].casefold() not in self._protected_names:
             return None
+        self.validate_sources()
         source = self._sources.get(fullname)
         if source is None:
             raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
         _validate_protected_source(self._repository_root, source)
         search_locations = [str(source.path.parent)] if source.is_package else None
+        loader = _ProtectedSourceLoader(source)
         spec = importlib.util.spec_from_file_location(
             fullname,
             source.path,
+            loader=loader,
             submodule_search_locations=search_locations,
         )
         if spec is None or spec.loader is None:
@@ -353,8 +452,12 @@ class _WorktreePackageFinder(importlib.abc.MetaPathFinder):
 
     def validate_sources(self) -> None:
         """Revalidate every tracked protected source after evaluation."""
-        for source in self._sources.values():
-            _validate_protected_source(self._repository_root, source)
+        current_sources = _tracked_protected_sources(
+            self._repository_root,
+            capture_source_bytes=False,
+        )
+        if _source_index_identity(current_sources) != _source_index_identity(self._sources):
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
 
 
 def _resolved_dependency_paths(raw_value: str, repository_root: Path) -> list[str]:

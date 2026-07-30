@@ -34,9 +34,14 @@ excludes. The coordinator checks ignored sources, redirects, and native
 extensions before and after each child crossover and rechecks all package-tree
 protections after the run. Every isolated child checks redirecting entries again
 immediately before imports and after evaluation. Its bootstrap binds protected
-root and descendant imports to regular Git-tracked Python sources; missing,
-ignored, native-only, namespace, redirected, or case-ambiguous protected
-imports fail closed without falling through to installed import finders.
+root and descendant imports to immutable blob bytes captured from regular,
+canonically visible Git index entries. The loader retains worktree filenames
+for package and traceback semantics, but it compiles only the captured index
+bytes and rechecks staged modes, object IDs, and the complete protected source
+set before every protected import and after evaluation. Skip-worktree,
+assume-unchanged, missing, ignored, native-only, namespace, redirected, or
+case-ambiguous protected imports fail closed without falling through to
+installed import finders.
 Contemporaneous paired
 execution requires the platform to expose
 `O_NOFOLLOW` (or equivalent descriptor no-follow support); it fails closed when

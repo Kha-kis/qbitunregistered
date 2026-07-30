@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 import math
 import os
@@ -45,7 +46,11 @@ from benchmarks.gauntlet.fixture_factory import (
     expected_endpoint_counters,
     materialized_fixture_digest,
 )
-from benchmarks.gauntlet.identity import RepositoryIdentity, RepositoryIdentityError
+from benchmarks.gauntlet.identity import (
+    RepositoryIdentity,
+    RepositoryIdentityError,
+    capture_repository_identity,
+)
 from benchmarks.gauntlet.paired import (
     PAIRED_ORDER,
     PairedGauntletError,
@@ -193,6 +198,46 @@ def _run_import_bootstrap_fixture(
         text=True,
         timeout=30,
     )
+
+
+def _set_test_index_flag(
+    repository_root: Path,
+    relative_path: str,
+    option: str,
+    expected_tag: str,
+) -> None:
+    """Set and verify one real Git index-hiding flag for a test source."""
+    try:
+        subprocess.run(
+            ["git", "update-index", option, "--", relative_path],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as error:
+        diagnostic = (error.stderr or b"").lower()
+        if b"not supported" in diagnostic or b"unknown option" in diagnostic:
+            pytest.skip(f"Git does not support {option}")
+        raise
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "-v", "-z", "--", relative_path],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    assert listed.stdout == f"{expected_tag} {relative_path}\0".encode()
+
+
+def _staged_source_record(
+    relative_path: str,
+    *,
+    tag: str = "H",
+    mode: str = "100644",
+    oid: str = "a" * 40,
+    stage: str = "0",
+) -> bytes:
+    """Build one exact `git ls-files -v --stage -z` source record."""
+    return f"{tag} {mode} {oid} {stage}\t{relative_path}".encode()
 
 
 def _valid_quick_result() -> dict[str, Any]:
@@ -1170,6 +1215,7 @@ def test_import_bootstrap_maps_valid_tracked_packages_and_modules(
         "benchmarks": True,
         "benchmarks.gauntlet": True,
         "benchmarks.gauntlet.__main__": False,
+        "qbitunregistered": True,
         "qbitunregistered.operations": True,
         "qbitunregistered.operations.nested": False,
     }
@@ -1178,11 +1224,356 @@ def test_import_bootstrap_maps_valid_tracked_packages_and_modules(
         assert spec is not None
         assert spec.origin == str(sources[fullname].path)
         assert (spec.submodule_search_locations is not None) is is_package
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        assert module.__file__ == str(sources[fullname].path)
+        if is_package:
+            assert module.__path__ == [str(sources[fullname].path.parent)]
+        else:
+            assert not hasattr(module, "__path__")
+    assert sources["qbitunregistered.operations.nested"].source_bytes == b"VALUE = 1\n"
     with pytest.raises(
         import_bootstrap.ProtectedPackageTreeError,
         match=f"^{import_bootstrap.PROTECTED_IMPORT_ERROR}$",
     ):
         finder.find_spec("Qbitunregistered.operations.nested", [])
+
+
+def test_import_bootstrap_accepts_canonical_nul_terminated_stage_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = b"\0".join(
+        (
+            _staged_source_record("benchmarks/__init__.py"),
+            _staged_source_record(
+                "qbitunregistered/__init__.py",
+                mode="100755",
+                oid="b" * 64,
+            ),
+            b"",
+        )
+    )
+
+    def run_git(
+        arguments: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if arguments[1] == "ls-files":
+            stdout = records
+        else:
+            assert arguments[1:4] == ["--no-replace-objects", "cat-file", "blob"]
+            stdout = b"INDEX_SOURCE = True\n"
+        return subprocess.CompletedProcess(arguments, 0, stdout=stdout)
+
+    monkeypatch.setattr(import_bootstrap.subprocess, "run", run_git)
+    monkeypatch.setattr(import_bootstrap, "_validate_protected_source", lambda *_args: None)
+
+    sources = import_bootstrap._tracked_protected_sources(tmp_path)
+
+    assert sources["benchmarks"].mode == "100644"
+    assert sources["benchmarks"].oid == "a" * 40
+    assert sources["qbitunregistered"].mode == "100755"
+    assert sources["qbitunregistered"].oid == "b" * 64
+    assert sources["qbitunregistered"].source_bytes == b"INDEX_SOURCE = True\n"
+
+
+def test_protected_loader_ignores_git_replacement_refs(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    payload_path = repository_root / "qbitunregistered" / "payload.py"
+    payload_relative = "qbitunregistered/payload.py"
+    canonical_side_effect = tmp_path / "canonical-side-effect"
+    malicious_side_effect = tmp_path / "malicious-side-effect"
+    canonical_source = (
+        "\n".join(
+            (
+                "from pathlib import Path",
+                "ORIGIN = 'canonical-index-blob'",
+                f"Path({str(canonical_side_effect)!r}).write_text('ran', encoding='utf-8')",
+            )
+        )
+        + "\n"
+    )
+    malicious_source = (
+        "\n".join(
+            (
+                "from pathlib import Path",
+                "ORIGIN = 'malicious-replacement-blob'",
+                f"Path({str(malicious_side_effect)!r}).write_text('ran', encoding='utf-8')",
+            )
+        )
+        + "\n"
+    )
+    _write_import_bootstrap_fixture(repository_root, "")
+    payload_path.write_text(canonical_source, encoding="utf-8")
+    _commit_gauntlet_test_repository(repository_root)
+    identity_before = capture_repository_identity(repository_root)
+    original_oid = subprocess.run(
+        ["git", "rev-parse", f"HEAD:{payload_relative}"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    replacement_oid = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        input=malicious_source,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "replace", original_oid, replacement_oid],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "-v", "--stage", "-z", "--", payload_relative],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    assert listed.stdout == f"H 100644 {original_oid} 0\t{payload_relative}\0".encode()
+    replaced_blob = subprocess.run(
+        ["git", "cat-file", "blob", original_oid],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert replaced_blob.stdout == malicious_source
+    assert capture_repository_identity(repository_root) == identity_before
+
+    sources = import_bootstrap._tracked_protected_sources(repository_root)
+    assert sources["qbitunregistered.payload"].oid == original_oid
+    assert sources["qbitunregistered.payload"].source_bytes == canonical_source.encode()
+    finder = import_bootstrap._WorktreePackageFinder(repository_root, sources)
+    spec = finder.find_spec("qbitunregistered.payload", [])
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.ORIGIN == "canonical-index-blob"
+    assert module.__file__ == str(payload_path)
+    assert canonical_side_effect.read_text(encoding="utf-8") == "ran"
+    assert not malicious_side_effect.exists()
+    assert not (payload_path.parent / "__pycache__").exists()
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == ""
+    assert capture_repository_identity(repository_root) == identity_before
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    ("missing-terminator", "double-terminator", "interior-empty-record"),
+)
+def test_import_bootstrap_rejects_malformed_nul_framing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    malformation: str,
+) -> None:
+    first = _staged_source_record("benchmarks/__init__.py")
+    second = _staged_source_record("qbitunregistered/__init__.py")
+    canonical = first + b"\0" + second + b"\0"
+    if malformation == "missing-terminator":
+        records = canonical[:-1]
+    elif malformation == "double-terminator":
+        records = canonical + b"\0"
+    else:
+        records = first + b"\0\0" + second + b"\0"
+    monkeypatch.setattr(
+        import_bootstrap.subprocess,
+        "run",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(
+            arguments,
+            0,
+            stdout=records,
+        ),
+    )
+    monkeypatch.setattr(import_bootstrap, "_validate_protected_source", lambda *_args: None)
+
+    with pytest.raises(
+        import_bootstrap.ProtectedPackageTreeError,
+        match=f"^{import_bootstrap.PROTECTED_IMPORT_ERROR}$",
+    ):
+        import_bootstrap._tracked_protected_sources(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("index_option", "expected_tag"),
+    (
+        ("--skip-worktree", "S"),
+        ("--assume-unchanged", "h"),
+    ),
+)
+def test_protected_loader_executes_captured_blob_after_post_validation_race(
+    tmp_path: Path,
+    index_option: str,
+    expected_tag: str,
+) -> None:
+    repository_root = tmp_path / "repository"
+    payload_path = repository_root / "qbitunregistered" / "payload.py"
+    canonical_side_effect = tmp_path / "canonical-side-effect"
+    malicious_side_effect = tmp_path / "malicious-side-effect"
+    _write_import_bootstrap_fixture(repository_root, "")
+    payload_path.write_text(
+        "\n".join(
+            (
+                "from pathlib import Path",
+                "ORIGIN = 'canonical-index-blob'",
+                f"Path({str(canonical_side_effect)!r}).write_text('ran', encoding='utf-8')",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+    sources = import_bootstrap._tracked_protected_sources(repository_root)
+    finder = import_bootstrap._WorktreePackageFinder(repository_root, sources)
+    spec = finder.find_spec("qbitunregistered.payload", [])
+    assert spec is not None
+    assert spec.loader is not None
+
+    _set_test_index_flag(
+        repository_root,
+        "qbitunregistered/payload.py",
+        index_option,
+        expected_tag,
+    )
+    payload_path.write_text(
+        "\n".join(
+            (
+                "from pathlib import Path",
+                "ORIGIN = 'malicious-worktree-source'",
+                f"Path({str(malicious_side_effect)!r}).write_text('ran', encoding='utf-8')",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.ORIGIN == "canonical-index-blob"
+    assert module.__file__ == str(payload_path)
+    assert canonical_side_effect.read_text(encoding="utf-8") == "ran"
+    assert not malicious_side_effect.exists()
+    assert not (payload_path.parent / "__pycache__").exists()
+    with pytest.raises(
+        import_bootstrap.ProtectedPackageTreeError,
+        match=f"^{import_bootstrap.PROTECTED_IMPORT_ERROR}$",
+    ):
+        finder.validate_sources()
+
+
+@pytest.mark.parametrize(
+    ("index_option", "expected_tag", "clear_option"),
+    (
+        ("--skip-worktree", "S", "--no-skip-worktree"),
+        ("--assume-unchanged", "h", "--no-assume-unchanged"),
+    ),
+)
+@pytest.mark.parametrize("flag_stage", ("before", "during"))
+def test_import_bootstrap_rejects_index_hidden_protected_sources(
+    tmp_path: Path,
+    index_option: str,
+    expected_tag: str,
+    clear_option: str,
+    flag_stage: str,
+) -> None:
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    payload_path = repository_root / "qbitunregistered" / "payload.py"
+    payload_relative = "qbitunregistered/payload.py"
+    malicious_side_effect = tmp_path / "malicious-side-effect"
+    accepted_result = tmp_path / "accepted-result"
+    dependency_root.mkdir(parents=True)
+    malicious_source = (
+        "from pathlib import Path\n" f"Path({str(malicious_side_effect)!r}).write_text('ran', encoding='utf-8')\n"
+    )
+    if flag_stage == "during":
+        main_source = "\n".join(
+            (
+                "from pathlib import Path",
+                "import subprocess",
+                f"repository_root = Path({str(repository_root)!r})",
+                (
+                    "subprocess.run("
+                    f"['git', 'update-index', {index_option!r}, '--', {payload_relative!r}], "
+                    "cwd=repository_root, check=True)"
+                ),
+                f"Path({str(payload_path)!r}).write_text({malicious_source!r}, encoding='utf-8')",
+                "import qbitunregistered.payload",
+                f"Path({str(accepted_result)!r}).write_text('accepted', encoding='utf-8')",
+            )
+        )
+    else:
+        main_source = "\n".join(
+            (
+                "import qbitunregistered.payload",
+                "from pathlib import Path",
+                f"Path({str(accepted_result)!r}).write_text('accepted', encoding='utf-8')",
+            )
+        )
+    _write_import_bootstrap_fixture(repository_root, main_source + "\n")
+    payload_path.write_text("ORIGIN = 'tracked'\n", encoding="utf-8")
+    _commit_gauntlet_test_repository(repository_root)
+    if flag_stage == "during":
+        _set_test_index_flag(
+            repository_root,
+            payload_relative,
+            index_option,
+            expected_tag,
+        )
+        subprocess.run(
+            ["git", "update-index", clear_option, "--", payload_relative],
+            cwd=repository_root,
+            check=True,
+        )
+    identity_before = capture_repository_identity(repository_root)
+    if flag_stage == "before":
+        _set_test_index_flag(
+            repository_root,
+            payload_relative,
+            index_option,
+            expected_tag,
+        )
+        payload_path.write_text(malicious_source, encoding="utf-8")
+    assert identity_before.known
+    assert identity_before.clean is True
+
+    completed = _run_import_bootstrap_fixture(repository_root, dependency_root)
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == ""
+    assert capture_repository_identity(repository_root) == identity_before
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == import_bootstrap.PROTECTED_IMPORT_ERROR
+    assert "Traceback" not in completed.stderr
+    assert str(tmp_path) not in completed.stderr
+    assert not malicious_side_effect.exists()
+    assert not accepted_result.exists()
 
 
 def test_import_bootstrap_uses_tracked_source_after_native_injection(
@@ -1273,12 +1664,13 @@ def test_import_bootstrap_rejects_casefold_module_collisions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    oid = b"a" * 40
     tracked_paths = b"\0".join(
         (
-            b"benchmarks/__init__.py",
-            b"qbitunregistered/__init__.py",
-            b"qbitunregistered/Collision.py",
-            b"qbitunregistered/collision.py",
+            b"H 100644 " + oid + b" 0\tbenchmarks/__init__.py",
+            b"H 100644 " + oid + b" 0\tqbitunregistered/__init__.py",
+            b"H 100644 " + oid + b" 0\tqbitunregistered/Collision.py",
+            b"H 100644 " + oid + b" 0\tqbitunregistered/collision.py",
             b"",
         )
     )
