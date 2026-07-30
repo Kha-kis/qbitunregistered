@@ -58,15 +58,9 @@ def is_internal_recycle_staging_path(path: Path) -> bool:
     return any(part.startswith(RECYCLE_STAGING_DIRECTORY_PREFIX) for part in path.parts)
 
 
-def capture_file_identity(file_path: Path) -> FileIdentity:
-    """Capture a stable identity for an existing, non-symlink regular file.
-
-    Raises:
-        SafetyCheckError: If the path is missing, changes during inspection, or
-            does not identify a regular file.
-    """
+def _capture_file_identity_from_stat(file_path: Path, initial_stat: os.stat_result) -> FileIdentity:
+    """Capture a stable identity after an existing path inspection."""
     try:
-        initial_stat = file_path.lstat()
         if stat.S_ISLNK(initial_stat.st_mode) or not stat.S_ISREG(initial_stat.st_mode):
             raise SafetyCheckError(f"Expected a regular non-symlink file: {file_path}")
         resolved_path = file_path.resolve(strict=True)
@@ -89,6 +83,20 @@ def capture_file_identity(file_path: Path) -> FileIdentity:
         size=resolved_stat.st_size,
         mtime_ns=resolved_stat.st_mtime_ns,
     )
+
+
+def capture_file_identity(file_path: Path) -> FileIdentity:
+    """Capture a stable identity for an existing, non-symlink regular file.
+
+    Raises:
+        SafetyCheckError: If the path is missing, changes during inspection, or
+            does not identify a regular file.
+    """
+    try:
+        initial_stat = file_path.lstat()
+    except (OSError, RuntimeError) as error:
+        raise SafetyCheckError(f"Could not inspect file safely: {file_path}") from error
+    return _capture_file_identity_from_stat(file_path, initial_stat)
 
 
 def verify_file_identity(identity: FileIdentity) -> os.stat_result:
