@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -59,20 +60,65 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _outside_repository(path: Path, repository_root: Path) -> bool:
-    try:
-        return not path.expanduser().resolve().is_relative_to(repository_root)
-    except (OSError, RuntimeError, ValueError):
-        return False
-
-
-def _resolve_paired_output(path: Path) -> tuple[Path, Path]:
+def _resolve_output(path: Path) -> tuple[Path, Path]:
     try:
         expanded_path = path.expanduser()
         publication_path = expanded_path.parent.resolve() / expanded_path.name
         return publication_path, publication_path.resolve()
     except (OSError, RuntimeError, ValueError) as error:
-        raise SystemExit("paired gauntlet output path could not be resolved") from error
+        raise SystemExit("gauntlet output path could not be resolved") from error
+
+
+def _output_is_outside_repositories(
+    publication_path: Path,
+    target_path: Path,
+    repository_roots: Sequence[Path],
+) -> bool:
+    return all(
+        not output_path.is_relative_to(repository_root)
+        for output_path in (publication_path, target_path)
+        for repository_root in repository_roots
+    )
+
+
+def _revalidate_output(
+    path: Path,
+    expected_publication_path: Path,
+    expected_target_path: Path,
+    repository_roots: Sequence[Path],
+) -> Path:
+    publication_path, target_path = _resolve_output(path)
+    if (
+        publication_path != expected_publication_path
+        or target_path != expected_target_path
+        or not _output_is_outside_repositories(
+            publication_path,
+            target_path,
+            repository_roots,
+        )
+    ):
+        raise SystemExit("gauntlet output destination changed or became unsafe during execution")
+    return publication_path
+
+
+def _resolve_default_output_directory() -> Path:
+    try:
+        return Path(tempfile.gettempdir()).resolve()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SystemExit("gauntlet default output directory could not be resolved") from error
+
+
+def _revalidate_default_output_directory(
+    expected_directory: Path,
+    repository_roots: Sequence[Path],
+) -> None:
+    output_directory = _resolve_default_output_directory()
+    if output_directory != expected_directory or not _output_is_outside_repositories(
+        output_directory,
+        output_directory,
+        repository_roots,
+    ):
+        raise SystemExit("gauntlet output destination changed or became unsafe during execution")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -80,15 +126,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     repository_root = Path(__file__).resolve().parents[2]
     identity_before_imports = capture_repository_identity(repository_root)
     arguments = build_parser().parse_args(argv)
-    if arguments.output is not None and not _outside_repository(
-        arguments.output,
-        repository_root,
-    ):
-        raise SystemExit("gauntlet output must be outside the repository")
+    resolved_output: Path | None = None
+    resolved_output_target: Path | None = None
+    default_output_directory: Path | None = None
+    if arguments.output is not None:
+        resolved_output, resolved_output_target = _resolve_output(arguments.output)
+        if not _output_is_outside_repositories(
+            resolved_output,
+            resolved_output_target,
+            (repository_root,),
+        ):
+            raise SystemExit("gauntlet output must be outside the repository")
+    else:
+        default_output_directory = _resolve_default_output_directory()
+        if not _output_is_outside_repositories(
+            default_output_directory,
+            default_output_directory,
+            (repository_root,),
+        ):
+            raise SystemExit("gauntlet output must be outside the repository")
     paired_control: Path | None = arguments.paired_control
     paired_candidate: Path | None = arguments.paired_candidate
-    paired_output: Path | None = None
-    paired_output_target: Path | None = None
+    paired_output = resolved_output
+    paired_output_target = resolved_output_target
     paired_requested = paired_control is not None or paired_candidate is not None
     if paired_requested and (paired_control is None or paired_candidate is None):
         raise SystemExit("--paired-control and --paired-candidate must be supplied together")
@@ -102,11 +162,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SystemExit("paired gauntlet worktree paths could not be resolved") from error
         if arguments.compare is not None and arguments.compare.expanduser().resolve() != DEFAULT_QUALITY_BAR.resolve():
             raise SystemExit("paired gauntlet requires the invoking checkout's canonical quality bar")
-        if arguments.output is not None:
-            paired_output, paired_output_target = _resolve_paired_output(arguments.output)
-            if not _outside_repository(paired_output_target, paired_control) or not _outside_repository(
+        if paired_output is not None:
+            assert paired_output_target is not None
+            if not _output_is_outside_repositories(
+                paired_output,
                 paired_output_target,
-                paired_candidate,
+                (paired_control, paired_candidate),
+            ):
+                raise SystemExit("paired gauntlet output must be outside both evaluated repositories")
+        else:
+            assert default_output_directory is not None
+            if not _output_is_outside_repositories(
+                default_output_directory,
+                default_output_directory,
+                (paired_control, paired_candidate),
             ):
                 raise SystemExit("paired gauntlet output must be outside both evaluated repositories")
 
@@ -138,18 +207,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         if paired_output is not None:
             assert arguments.output is not None
             assert paired_output_target is not None
-            revalidated_output, revalidated_output_target = _resolve_paired_output(arguments.output)
-            if (
-                revalidated_output != paired_output
-                or revalidated_output_target != paired_output_target
-                or any(
-                    not _outside_repository(revalidated_output_target, root)
-                    for root in (repository_root, paired_control, paired_candidate)
-                )
-            ):
-                raise SystemExit("paired gauntlet output destination changed or became unsafe during execution")
-            paired_output = revalidated_output
-        output_path = write_serialized_result(serialized_result, paired_output)
+            paired_output = _revalidate_output(
+                arguments.output,
+                paired_output,
+                paired_output_target,
+                (repository_root, paired_control, paired_candidate),
+            )
+        else:
+            assert default_output_directory is not None
+            _revalidate_default_output_directory(
+                default_output_directory,
+                (repository_root, paired_control, paired_candidate),
+            )
+        if paired_output is None:
+            assert default_output_directory is not None
+            output_path = write_serialized_result(
+                serialized_result,
+                default_directory=default_output_directory,
+            )
+        else:
+            output_path = write_serialized_result(serialized_result, paired_output)
         print(output_path)
         return 0 if paired_result["comparison"]["overall"] == "pass" else COMPARISON_FAILED_EXIT
 
@@ -172,7 +249,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         identity_before_imports,
         capture_repository_identity(repository_root),
     )
-    output_path = write_serialized_result(serialized_result, arguments.output)
+    if resolved_output is not None:
+        assert arguments.output is not None
+        assert resolved_output_target is not None
+        resolved_output = _revalidate_output(
+            arguments.output,
+            resolved_output,
+            resolved_output_target,
+            (repository_root,),
+        )
+    else:
+        assert default_output_directory is not None
+        _revalidate_default_output_directory(
+            default_output_directory,
+            (repository_root,),
+        )
+    if resolved_output is None:
+        assert default_output_directory is not None
+        output_path = write_serialized_result(
+            serialized_result,
+            default_directory=default_output_directory,
+        )
+    else:
+        output_path = write_serialized_result(serialized_result, resolved_output)
     print(output_path)
     return exit_code
 

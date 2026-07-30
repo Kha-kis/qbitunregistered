@@ -712,6 +712,80 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     assert all(not path.exists() for path in pycache_roots)
 
 
+def test_cli_rejects_output_symlink_entry_inside_invoking_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = tmp_path / "repository"
+    (repository_root / "benchmarks" / "gauntlet").mkdir(parents=True)
+    monkeypatch.setattr(
+        gauntlet_cli,
+        "__file__",
+        str(repository_root / "benchmarks" / "gauntlet" / "__main__.py"),
+    )
+    identity = RepositoryIdentity("a" * 40, True, "b" * 64)
+    monkeypatch.setattr(
+        gauntlet_cli,
+        "capture_repository_identity",
+        lambda _root: identity,
+    )
+    protected_path = tmp_path / "protected.json"
+    protected_content = "protected external content\n"
+    protected_path.write_text(protected_content, encoding="utf-8")
+    output_path = repository_root / "result.json"
+    try:
+        output_path.symlink_to(protected_path)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a file symbolic link: {error}")
+    run_calls: list[tuple[object, ...]] = []
+
+    def record_gauntlet_run(*args, **_kwargs):
+        run_calls.append(args)
+        return {}
+
+    monkeypatch.setattr(runner, "run_gauntlet", record_gauntlet_run)
+
+    with pytest.raises(SystemExit, match="outside the repository"):
+        gauntlet_cli.main(["--output", str(output_path)])
+
+    assert run_calls == []
+    assert output_path.is_symlink()
+    assert protected_path.read_text(encoding="utf-8") == protected_content
+
+
+def test_cli_rejects_default_output_directory_inside_invoking_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = tmp_path / "repository"
+    (repository_root / "benchmarks" / "gauntlet").mkdir(parents=True)
+    monkeypatch.setattr(
+        gauntlet_cli,
+        "__file__",
+        str(repository_root / "benchmarks" / "gauntlet" / "__main__.py"),
+    )
+    monkeypatch.setattr(tempfile, "tempdir", str(repository_root))
+    identity = RepositoryIdentity("a" * 40, True, "b" * 64)
+    monkeypatch.setattr(
+        gauntlet_cli,
+        "capture_repository_identity",
+        lambda _root: identity,
+    )
+    run_calls: list[tuple[object, ...]] = []
+
+    def record_gauntlet_run(*args, **_kwargs):
+        run_calls.append(args)
+        return {}
+
+    monkeypatch.setattr(runner, "run_gauntlet", record_gauntlet_run)
+
+    with pytest.raises(SystemExit, match="outside the repository"):
+        gauntlet_cli.main([])
+
+    assert run_calls == []
+    assert list(repository_root.iterdir()) == [repository_root / "benchmarks"]
+
+
 def test_paired_cli_requires_both_worktrees_and_external_output(tmp_path: Path) -> None:
     control_root = tmp_path / "control"
     candidate_root = tmp_path / "candidate"
@@ -829,7 +903,7 @@ def test_paired_cli_atomically_replaces_external_output_symlink(
     assert json.loads(output_path.read_text(encoding="utf-8")) == {"comparison": {"overall": "fail"}}
 
 
-def test_paired_cli_rejects_output_symlink_into_evaluated_repository(
+def test_paired_cli_rejects_output_symlink_entry_inside_evaluated_repository(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -839,9 +913,10 @@ def test_paired_cli_rejects_output_symlink_into_evaluated_repository(
     control_root.mkdir()
     candidate_root.mkdir()
     output_root.mkdir()
-    protected_path = candidate_root / "protected.json"
-    protected_path.write_text("protected candidate content\n", encoding="utf-8")
-    output_path = output_root / "result.json"
+    protected_path = output_root / "protected.json"
+    protected_content = "protected external content\n"
+    protected_path.write_text(protected_content, encoding="utf-8")
+    output_path = candidate_root / "result.json"
     try:
         output_path.symlink_to(protected_path)
     except (NotImplementedError, OSError) as error:
@@ -868,7 +943,38 @@ def test_paired_cli_rejects_output_symlink_into_evaluated_repository(
 
     assert run_calls == []
     assert output_path.is_symlink()
-    assert protected_path.read_text(encoding="utf-8") == "protected candidate content\n"
+    assert protected_path.read_text(encoding="utf-8") == protected_content
+
+
+def test_paired_cli_rejects_default_output_directory_inside_evaluated_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(candidate_root))
+    run_calls: list[tuple[object, ...]] = []
+
+    def record_paired_run(*args, **_kwargs):
+        run_calls.append(args)
+        return {"comparison": {"overall": "fail"}}
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", record_paired_run)
+
+    with pytest.raises(SystemExit, match="outside both evaluated repositories"):
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+            ]
+        )
+
+    assert run_calls == []
+    assert list(candidate_root.iterdir()) == []
 
 
 def test_paired_cli_rejects_retargeted_output_ancestor_before_write(
@@ -1375,6 +1481,26 @@ def test_omitted_output_uses_a_unique_system_temporary_file(
     assert output.parent == tmp_path
     assert output.name.startswith("qbitunregistered-gauntlet-")
     assert json.loads(output.read_text(encoding="utf-8")) == {"schema_version": SCHEMA_VERSION}
+
+
+def test_omitted_output_uses_bound_validated_temporary_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validated_directory = tmp_path / "validated"
+    changed_default_directory = tmp_path / "changed-default"
+    validated_directory.mkdir()
+    changed_default_directory.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(changed_default_directory))
+
+    output = runner.write_serialized_result(
+        "validated artifact\n",
+        default_directory=validated_directory,
+    )
+
+    assert output.parent == validated_directory
+    assert output.read_text(encoding="utf-8") == "validated artifact\n"
+    assert list(changed_default_directory.iterdir()) == []
 
 
 def test_explicit_output_replaces_hard_link_without_mutating_protected_file(

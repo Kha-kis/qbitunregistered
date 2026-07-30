@@ -626,13 +626,19 @@ def serialize_result(result: Mapping[str, object]) -> str:
     return json.dumps(result, indent=2, sort_keys=True) + "\n"
 
 
-def write_serialized_result(serialized_result: str, output: Path | None = None) -> Path:
-    """Write prepared JSON to an explicit path or unique system temporary file."""
+def write_serialized_result(
+    serialized_result: str,
+    output: Path | None = None,
+    *,
+    default_directory: Path | None = None,
+) -> Path:
+    """Write JSON to an explicit path or a unique file in the temporary directory."""
     remove_output_on_failure = output is None
     if output is None:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix="qbitunregistered-gauntlet-",
             suffix=".json",
+            dir=default_directory,
         )
         output_path = Path(temporary_name)
         try:
