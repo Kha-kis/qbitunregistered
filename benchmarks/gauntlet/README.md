@@ -27,7 +27,11 @@ a custom `--compare` path and always loads
 `benchmarks/gauntlet/quality-bar.toml` from the invoking checkout. The artifact
 records the three clean identities plus evaluator, quality-bar, and dependency
 digests, and the orchestrator rechecks all identities and digests after the
-run. Contemporaneous paired execution requires the platform to expose
+run. Protected package trees may not contain symbolic links, Windows junctions,
+or other reparse points that can redirect imports. The coordinator checks those
+trees before and after the crossover, and every isolated child checks again
+immediately before imports and after evaluation. Contemporaneous paired
+execution requires the platform to expose
 `O_NOFOLLOW` (or equivalent descriptor no-follow support); it fails closed when
 that capability is unavailable. An explicit output destination must also
 resolve to the same path outside all three repositories before and after the
@@ -53,8 +57,14 @@ and native-module directory, remain first; ordinary installed dependency
 directories follow, and editable-install path hooks are not executed. Thus
 checkout-level modules cannot shadow standard-library or third-party imports,
 while the evaluated worktree remains authoritative for both first-party
-packages. This launcher invocation is the only supported paired entry path. The
-current coordinator rejects direct paired execution with
+packages. The coordinator fixes one ordered set of installed dependency paths
+for the complete crossover and fingerprints every relative path and regular
+file's contents. Every child bootstrap recomputes that fingerprint immediately
+before and after evaluator execution, and the coordinator rechecks it after
+each child. Redirecting and special dependency entries fail closed. The
+artifact dependency digest binds this environment fingerprint to the identical
+`pyproject.toml` and `uv.lock` bytes. This launcher invocation is the only
+supported paired entry path. The current coordinator rejects direct paired execution with
 `python -m benchmarks.gauntlet`, but that check cannot make an already-stale
 module cache safe. Ordinary non-paired execution remains available through the
 module command.

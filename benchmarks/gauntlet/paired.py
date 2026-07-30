@@ -33,6 +33,11 @@ from benchmarks.gauntlet.identity import (
     capture_repository_identity,
     require_same_identity,
 )
+from benchmarks.gauntlet.import_bootstrap import (
+    DEPENDENCY_DIGEST_ARGUMENT,
+    DependencyEnvironmentError,
+    dependency_environment_digest,
+)
 from benchmarks.gauntlet.paired_evidence import (
     PairedEvidenceError,
     sanitize_child_result,
@@ -40,7 +45,7 @@ from benchmarks.gauntlet.paired_evidence import (
 
 PAIRED_SCHEMA_NAME = "qbitunregistered.gauntlet.paired-result"
 PAIRED_SCHEMA_VERSION = 2
-PAIRING_VERSION = "2.0.0"
+PAIRING_VERSION = "2.1.0"
 PAIRED_ORDER: tuple[Literal["control", "candidate"], ...] = (
     "control",
     "candidate",
@@ -69,6 +74,7 @@ DEPENDENCY_FILES = ("pyproject.toml", "uv.lock")
 PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
 SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 IMPORTABLE_EXTENSION_ERROR = "repository contains an importable native extension in a protected package tree"
+REDIRECTING_PACKAGE_ENTRY_ERROR = "repository contains a redirecting entry in a protected package tree"
 ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
 _SECRET_ASSIGNMENT_PATTERN = re.compile(r"(?i)\b(api[\s_-]?key|password|passwd|token|secret)\b\s*[:=]\s*[^\r\n]*")
 _SECRET_JSON_PATTERN = re.compile(r"""(?ix)
@@ -594,8 +600,45 @@ def _reject_importable_extensions(repository_root: Path) -> None:
         raise PairedGauntletError("could not inspect repository package trees for native extensions") from error
 
 
-def _reject_importable_extensions_in_roots(repository_roots: Sequence[Path]) -> None:
+def _entry_is_redirecting(file_stat: os.stat_result) -> bool:
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    file_attributes = getattr(file_stat, "st_file_attributes", 0)
+    return stat.S_ISLNK(file_stat.st_mode) or bool(reparse_point and file_attributes & reparse_point)
+
+
+def _reject_package_tree_redirects(repository_root: Path) -> None:
+    """Reject symlinks and Windows reparse points in protected packages."""
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    try:
+        for package_name in PROTECTED_PACKAGE_NAMES:
+            package_root = repository_root / package_name
+            try:
+                package_stat = os.lstat(package_root)
+            except FileNotFoundError:
+                continue
+            if _entry_is_redirecting(package_stat):
+                raise PairedGauntletError(REDIRECTING_PACKAGE_ENTRY_ERROR)
+            if not stat.S_ISDIR(package_stat.st_mode):
+                continue
+            for current_root, directory_names, file_names in os.walk(
+                package_root,
+                topdown=True,
+                onerror=raise_walk_error,
+                followlinks=False,
+            ):
+                for name in (*directory_names, *file_names):
+                    if _entry_is_redirecting(os.lstat(Path(current_root) / name)):
+                        raise PairedGauntletError(REDIRECTING_PACKAGE_ENTRY_ERROR)
+    except OSError as error:
+        raise PairedGauntletError("could not inspect repository package trees for redirecting entries") from error
+
+
+def _reject_unsafe_package_entries_in_roots(repository_roots: Sequence[Path]) -> None:
     for repository_root in repository_roots:
+        _reject_package_tree_redirects(repository_root)
         _reject_importable_extensions(repository_root)
 
 
@@ -626,6 +669,30 @@ def _dependency_import_paths() -> tuple[str, ...]:
             if resolved_value not in dependency_paths:
                 dependency_paths.append(resolved_value)
     return tuple(dependency_paths)
+
+
+def _bound_dependency_digest(lock_digest: str, environment_digest: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"lock\0")
+    digest.update(lock_digest.encode("ascii"))
+    digest.update(b"\nenvironment\0")
+    digest.update(environment_digest.encode("ascii"))
+    return digest.hexdigest()
+
+
+def _current_dependency_environment_digest(dependency_paths: Sequence[str]) -> str:
+    try:
+        return dependency_environment_digest(dependency_paths)
+    except DependencyEnvironmentError as error:
+        raise PairedGauntletError("paired dependency environment could not be verified") from error
+
+
+def _require_dependency_environment(
+    dependency_paths: Sequence[str],
+    expected_digest: str,
+) -> None:
+    if _current_dependency_environment_digest(dependency_paths) != expected_digest:
+        raise PairedGauntletError("paired dependency environment changed during evaluation")
 
 
 def _require_unchanged_identity(
@@ -754,6 +821,8 @@ def _run_child(
     seed: int,
     samples: int,
     output: Path,
+    dependency_paths: Sequence[str],
+    dependency_environment_digest: str,
 ) -> dict[str, object]:
     environment = {
         key: value
@@ -769,7 +838,9 @@ def _run_child(
         "-P",
         str(repository_root / "benchmarks" / "gauntlet" / "import_bootstrap.py"),
         str(repository_root),
-        json.dumps(_dependency_import_paths()),
+        json.dumps(dependency_paths),
+        DEPENDENCY_DIGEST_ARGUMENT,
+        dependency_environment_digest,
         "--profile",
         profile,
         "--seed",
@@ -858,7 +929,7 @@ def run_paired_gauntlet(
     control_identity = _require_clean_identity(control_root)
     candidate_identity = _require_clean_identity(candidate_root)
     repository_roots = (orchestrator_root, control_root, candidate_root)
-    _reject_importable_extensions_in_roots(repository_roots)
+    _reject_unsafe_package_entries_in_roots(repository_roots)
     canonical_quality_bar = orchestrator_root / "benchmarks" / "gauntlet" / "quality-bar.toml"
     quality_bar = _load_canonical_quality_bar(canonical_quality_bar)
     quality_bar_digest = _file_digest(
@@ -889,6 +960,12 @@ def run_paired_gauntlet(
         raise PairedGauntletError("orchestrator and paired worktrees do not have identical dependency locks")
     if profile not in quality_bar.profiles:
         raise PairedGauntletError("paired profile is not present in the quality bar")
+    dependency_paths = _dependency_import_paths()
+    dependency_environment_identity = _current_dependency_environment_digest(dependency_paths)
+    bound_dependency_digest = _bound_dependency_digest(
+        orchestrator_dependency_digest,
+        dependency_environment_identity,
+    )
 
     roots = {"control": control_root, "candidate": candidate_root}
     paired_runs: list[PairedRun] = []
@@ -903,11 +980,18 @@ def run_paired_gauntlet(
                         seed=seed,
                         samples=samples,
                         output=output,
+                        dependency_paths=dependency_paths,
+                        dependency_environment_digest=dependency_environment_identity,
                     ),
                     quality_bar,
                 )
             except PairedEvidenceError as error:
                 raise PairedGauntletError("paired child evidence failed strict validation") from error
+            finally:
+                _require_dependency_environment(
+                    dependency_paths,
+                    dependency_environment_identity,
+                )
             paired_runs.append(
                 {
                     "position": position,
@@ -924,7 +1008,7 @@ def run_paired_gauntlet(
     _require_unchanged_identity(orchestrator_identity, orchestrator_root)
     _require_unchanged_identity(control_identity, control_root)
     _require_unchanged_identity(candidate_identity, candidate_root)
-    _reject_importable_extensions_in_roots(repository_roots)
+    _reject_unsafe_package_entries_in_roots(repository_roots)
     if (
         _evaluator_digest(orchestrator_root) != orchestrator_digest
         or _evaluator_digest(control_root) != control_digest
@@ -943,7 +1027,7 @@ def run_paired_gauntlet(
         "pairing_version": PAIRING_VERSION,
         "evaluator_digest": orchestrator_digest,
         "quality_bar_digest": quality_bar_digest,
-        "dependency_digest": orchestrator_dependency_digest,
+        "dependency_digest": bound_dependency_digest,
         "order": list(PAIRED_ORDER),
         "profile": profile,
         "seed": seed,

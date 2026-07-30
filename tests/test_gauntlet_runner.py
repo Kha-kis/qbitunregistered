@@ -7,6 +7,7 @@ import json
 import math
 import os
 import py_compile
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14,11 +15,13 @@ import tracemalloc
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from benchmarks.gauntlet import __main__ as gauntlet_cli
+from benchmarks.gauntlet import import_bootstrap
 from benchmarks.gauntlet import launcher
 from benchmarks.gauntlet import paired
 from benchmarks.gauntlet import runner
@@ -405,6 +408,11 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
         control_root: RepositoryIdentity("a" * 40, True, "a" * 64),
         candidate_root: RepositoryIdentity("c" * 40, True, "c" * 64),
     }
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_root.mkdir(parents=True)
+    (dependency_root / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
+    dependency_paths = (str(dependency_root),)
+    dependency_environment_identity = import_bootstrap.dependency_environment_digest(dependency_paths)
 
     monkeypatch.setattr(
         "benchmarks.gauntlet.paired.capture_repository_identity",
@@ -412,9 +420,12 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     )
     monkeypatch.setattr("benchmarks.gauntlet.paired._evaluator_digest", lambda _root: "d" * 64)
     monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "f" * 64)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._dependency_import_paths", lambda: dependency_paths)
 
-    def fake_run_child(root: Path, **_kwargs):
+    def fake_run_child(root: Path, **kwargs):
         role = "control" if root == control_root else "candidate"
+        assert kwargs["dependency_paths"] == dependency_paths
+        assert kwargs["dependency_environment_digest"] == dependency_environment_identity
         calls.append(role)
         return copy.deepcopy(expected_runs[len(calls) - 1]["result"])
 
@@ -432,7 +443,10 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     assert result["identities"]["orchestrator"]["commit"] == "e" * 40
     assert result["identities"]["control"]["commit"] == "a" * 40
     assert result["identities"]["candidate"]["commit"] == "c" * 40
-    assert result["dependency_digest"] == "f" * 64
+    assert result["dependency_digest"] == paired._bound_dependency_digest(
+        "f" * 64,
+        dependency_environment_identity,
+    )
     assert len(result["quality_bar_digest"]) == 64
     assert len(result["evaluator_digest"]) == 64
     assert result["thresholds"] == {
@@ -473,6 +487,11 @@ def test_paired_runner_rechecks_importable_extensions_after_crossover(
     )
     monkeypatch.setattr("benchmarks.gauntlet.paired._evaluator_digest", lambda _root: "d" * 64)
     monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "f" * 64)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._dependency_import_paths", lambda: ("dependencies",))
+    monkeypatch.setattr(
+        "benchmarks.gauntlet.paired._current_dependency_environment_digest",
+        lambda _paths: "a" * 64,
+    )
 
     def fake_run_child(root: Path, **_kwargs) -> dict[str, object]:
         calls.append(root)
@@ -495,6 +514,54 @@ def test_paired_runner_rechecks_importable_extensions_after_crossover(
         )
 
     assert len(calls) == len(PAIRED_ORDER)
+
+
+def test_paired_runner_rejects_dependency_environment_tampering_between_children(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_file = dependency_root / "dependency.py"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    dependency_root.mkdir(parents=True)
+    dependency_file.write_text("VALUE = 1\n", encoding="utf-8")
+    expected_runs = _paired_runs()
+    calls: list[Path] = []
+    identities = {
+        REPOSITORY_ROOT: RepositoryIdentity("e" * 40, True, "e" * 64),
+        control_root: RepositoryIdentity("a" * 40, True, "a" * 64),
+        candidate_root: RepositoryIdentity("c" * 40, True, "c" * 64),
+    }
+
+    monkeypatch.setattr(paired, "capture_repository_identity", lambda root: identities[root])
+    monkeypatch.setattr(paired, "_evaluator_digest", lambda _root: "d" * 64)
+    monkeypatch.setattr(paired, "_named_files_digest", lambda *_args: "f" * 64)
+    monkeypatch.setattr(paired, "_dependency_import_paths", lambda: (str(dependency_root),))
+
+    def tamper_after_first_child(root: Path, **_kwargs) -> dict[str, object]:
+        calls.append(root)
+        dependency_file.write_text("VALUE = 2\n", encoding="utf-8")
+        return copy.deepcopy(expected_runs[0]["result"])
+
+    monkeypatch.setattr(paired, "_run_child", tamper_after_first_child)
+
+    with pytest.raises(
+        PairedGauntletError,
+        match=r"^paired dependency environment changed during evaluation$",
+    ):
+        run_paired_gauntlet(
+            control_root,
+            candidate_root,
+            orchestrator_root=REPOSITORY_ROOT,
+            profile="quick",
+            seed=load_quality_bar(QUALITY_BAR_PATH).profiles["quick"].seed,
+            samples=DEFAULT_SAMPLES,
+        )
+
+    assert calls == [control_root]
 
 
 @requires_descriptor_no_follow
@@ -575,6 +642,83 @@ def test_paired_runner_rejects_different_parent_package_initializers_before_chil
         )
 
     assert child_calls == []
+
+
+def test_paired_runner_rejects_package_directory_symlink_before_child_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roots = [tmp_path / name for name in ("orchestrator", "control", "candidate")]
+    for root in roots:
+        (root / "benchmarks" / "gauntlet").mkdir(parents=True)
+        (root / "qbitunregistered").mkdir()
+    orchestrator_root, control_root, candidate_root = roots
+    redirect_target = tmp_path / "redirect-target"
+    redirect_target.mkdir()
+    redirect = candidate_root / "benchmarks" / "gauntlet" / "redirected"
+    try:
+        redirect.symlink_to(redirect_target, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a directory symbolic link: {error}")
+    identity = RepositoryIdentity("a" * 40, True, "b" * 64)
+    monkeypatch.setattr(paired, "_require_clean_identity", lambda _root: identity)
+    child_calls: list[Path] = []
+    monkeypatch.setattr(
+        paired,
+        "_run_child",
+        lambda repository_root, **_kwargs: child_calls.append(repository_root),
+    )
+
+    with pytest.raises(PairedGauntletError, match="redirecting entry"):
+        run_paired_gauntlet(
+            control_root,
+            candidate_root,
+            orchestrator_root=orchestrator_root,
+            profile="quick",
+            seed=load_quality_bar(QUALITY_BAR_PATH).profiles["quick"].seed,
+            samples=DEFAULT_SAMPLES,
+        )
+
+    assert child_calls == []
+
+
+def test_redirect_detection_includes_windows_reparse_points() -> None:
+    reparse_stat = cast(
+        os.stat_result,
+        SimpleNamespace(
+            st_mode=stat.S_IFDIR,
+            st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+        ),
+    )
+
+    assert paired._entry_is_redirecting(reparse_stat)
+    assert import_bootstrap._entry_is_redirecting(reparse_stat)
+
+
+def test_package_tree_rejects_windows_reparse_point_before_traversal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "benchmarks"
+    package_root.mkdir()
+    real_lstat = os.lstat
+    reparse_stat = cast(
+        os.stat_result,
+        SimpleNamespace(
+            st_mode=stat.S_IFDIR,
+            st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+        ),
+    )
+
+    def report_reparse_point(path: os.PathLike[str] | str) -> os.stat_result:
+        if Path(path) == package_root:
+            return reparse_stat
+        return real_lstat(path)
+
+    monkeypatch.setattr(paired.os, "lstat", report_reparse_point)
+
+    with pytest.raises(PairedGauntletError, match="redirecting entry"):
+        paired._reject_package_tree_redirects(tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -709,6 +853,244 @@ def test_paired_bounded_reader_fails_closed_without_no_follow(
         )
 
 
+def test_dependency_environment_digest_tracks_paths_and_contents_not_mtime(
+    tmp_path: Path,
+) -> None:
+    dependency_root = tmp_path / "environment" / "site-packages"
+    package_root = dependency_root / "package"
+    dependency_file = package_root / "module.py"
+    package_root.mkdir(parents=True)
+    dependency_file.write_text("VALUE = 1\n", encoding="utf-8")
+    dependency_paths = (str(dependency_root),)
+    first = import_bootstrap.dependency_environment_digest(dependency_paths)
+    original_stat = dependency_file.stat()
+
+    os.utime(
+        dependency_file,
+        ns=(
+            original_stat.st_atime_ns,
+            original_stat.st_mtime_ns + 1_000_000_000,
+        ),
+    )
+    assert import_bootstrap.dependency_environment_digest(dependency_paths) == first
+
+    dependency_file.write_text("VALUE = 2\n", encoding="utf-8")
+    os.utime(
+        dependency_file,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    content_changed = import_bootstrap.dependency_environment_digest(dependency_paths)
+    assert content_changed != first
+
+    (package_root / "renamed.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert import_bootstrap.dependency_environment_digest(dependency_paths) != content_changed
+
+
+def test_dependency_environment_digest_rejects_redirecting_entries(
+    tmp_path: Path,
+) -> None:
+    dependency_root = tmp_path / "environment" / "site-packages"
+    package_root = dependency_root / "package"
+    target = tmp_path / "target.py"
+    package_root.mkdir(parents=True)
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    redirect = package_root / "module.py"
+    try:
+        redirect.symlink_to(target)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a symbolic link: {error}")
+
+    with pytest.raises(
+        import_bootstrap.DependencyEnvironmentError,
+        match="redirecting entry",
+    ):
+        import_bootstrap.dependency_environment_digest((str(dependency_root),))
+
+
+def test_dependency_environment_digest_rejects_windows_reparse_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_root.mkdir(parents=True)
+    real_lstat = os.lstat
+    reparse_stat = cast(
+        os.stat_result,
+        SimpleNamespace(
+            st_mode=stat.S_IFDIR,
+            st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+        ),
+    )
+
+    def report_reparse_point(path: os.PathLike[str] | str) -> os.stat_result:
+        if Path(path) == dependency_root:
+            return reparse_stat
+        return real_lstat(path)
+
+    monkeypatch.setattr(import_bootstrap.os, "lstat", report_reparse_point)
+
+    with pytest.raises(
+        import_bootstrap.DependencyEnvironmentError,
+        match="redirecting entry",
+    ):
+        import_bootstrap.dependency_environment_digest((str(dependency_root),))
+
+
+@pytest.mark.parametrize("redirect_stage", ["before", "during"])
+def test_import_bootstrap_rejects_package_redirects_inside_each_child(
+    tmp_path: Path,
+    redirect_stage: str,
+) -> None:
+    repository_root = tmp_path / "repository"
+    gauntlet_root = repository_root / "benchmarks" / "gauntlet"
+    qbitunregistered_root = repository_root / "qbitunregistered"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    marker = tmp_path / "evaluator-ran"
+    redirect_path = (
+        repository_root / "benchmarks" / "__init__.py"
+        if redirect_stage == "before"
+        else qbitunregistered_root / "redirected.py"
+    )
+    redirect_target = tmp_path / "redirect-target.py"
+    gauntlet_root.mkdir(parents=True)
+    qbitunregistered_root.mkdir()
+    dependency_root.mkdir(parents=True)
+    (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
+    (gauntlet_root / "__init__.py").write_text("", encoding="utf-8")
+    (qbitunregistered_root / "__init__.py").write_text("", encoding="utf-8")
+    redirect_path.write_text("", encoding="utf-8")
+    redirect_target.write_text("", encoding="utf-8")
+    assert import_bootstrap.__file__ is not None
+    bootstrap_path = gauntlet_root / "import_bootstrap.py"
+    bootstrap_path.write_bytes(Path(import_bootstrap.__file__).read_bytes())
+    main_lines = [
+        "from pathlib import Path",
+        f'Path({str(marker)!r}).write_text("ran", encoding="utf-8")',
+    ]
+    if redirect_stage == "during":
+        main_lines.extend(
+            [
+                f"redirect = Path({str(redirect_path)!r})",
+                "redirect.unlink()",
+                f"redirect.symlink_to(Path({str(redirect_target)!r}))",
+            ]
+        )
+    (gauntlet_root / "__main__.py").write_text("\n".join(main_lines) + "\n", encoding="utf-8")
+    dependency_paths = (str(dependency_root.resolve()),)
+    expected_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+
+    # Model a redirect introduced after the coordinator's preflight scan.
+    import_bootstrap._validate_protected_package_trees(repository_root)
+    if redirect_stage == "before":
+        redirect_path.unlink()
+        try:
+            redirect_path.symlink_to(redirect_target)
+        except (NotImplementedError, OSError) as error:
+            pytest.skip(f"platform cannot create a symbolic link: {error}")
+    else:
+        probe = tmp_path / "symlink-probe"
+        try:
+            probe.symlink_to(redirect_target)
+        except (NotImplementedError, OSError) as error:
+            pytest.skip(f"platform cannot create a symbolic link: {error}")
+        probe.unlink()
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-s",
+            "-S",
+            "-P",
+            str(bootstrap_path),
+            str(repository_root),
+            json.dumps(dependency_paths),
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            expected_digest,
+        ],
+        cwd=tmp_path,
+        env={
+            **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == ("gauntlet protected package tree contains a redirecting entry")
+    assert "Traceback" not in completed.stderr
+    assert marker.exists() is (redirect_stage == "during")
+
+
+@pytest.mark.parametrize("tamper_stage", ["before", "during"])
+def test_import_bootstrap_rejects_dependency_tampering_without_traceback(
+    tmp_path: Path,
+    tamper_stage: str,
+) -> None:
+    repository_root = tmp_path / "repository"
+    gauntlet_root = repository_root / "benchmarks" / "gauntlet"
+    qbitunregistered_root = repository_root / "qbitunregistered"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_file = dependency_root / "dependency.py"
+    marker = tmp_path / "evaluator-ran"
+    gauntlet_root.mkdir(parents=True)
+    qbitunregistered_root.mkdir()
+    dependency_root.mkdir(parents=True)
+    (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
+    (gauntlet_root / "__init__.py").write_text("", encoding="utf-8")
+    (qbitunregistered_root / "__init__.py").write_text("", encoding="utf-8")
+    dependency_file.write_text("VALUE = 1\n", encoding="utf-8")
+    assert import_bootstrap.__file__ is not None
+    bootstrap_path = gauntlet_root / "import_bootstrap.py"
+    bootstrap_path.write_bytes(Path(import_bootstrap.__file__).read_bytes())
+    main_lines = [
+        "from pathlib import Path",
+        f'Path({str(marker)!r}).write_text("ran", encoding="utf-8")',
+    ]
+    if tamper_stage == "during":
+        main_lines.extend(
+            [
+                "import dependency",
+                'Path(dependency.__file__).write_text("VALUE = 2\\n", encoding="utf-8")',
+            ]
+        )
+    (gauntlet_root / "__main__.py").write_text("\n".join(main_lines) + "\n", encoding="utf-8")
+    dependency_paths = (str(dependency_root.resolve()),)
+    expected_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    if tamper_stage == "before":
+        dependency_file.write_text("VALUE = 2\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-s",
+            "-S",
+            "-P",
+            str(bootstrap_path),
+            str(repository_root),
+            json.dumps(dependency_paths),
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            expected_digest,
+        ],
+        cwd=tmp_path,
+        env={
+            **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == (f"gauntlet dependency environment changed {tamper_stage} evaluation")
+    assert "Traceback" not in completed.stderr
+    assert marker.exists() is (tamper_stage == "during")
+
+
 @requires_descriptor_no_follow
 def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches(
     tmp_path: Path,
@@ -722,12 +1104,18 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     monkeypatch.setenv("PythonWarnings", "ignore")
     monkeypatch.setenv(paired.ISOLATED_PARENT_CACHE_ENV, "/inherited/parent-cache")
     pycache_roots: list[Path] = []
+    dependency_paths = paired._dependency_import_paths()
+    dependency_environment_identity = import_bootstrap.dependency_environment_digest(dependency_paths)
 
     def fake_run(command, **kwargs):
         assert command[1:4] == ["-s", "-S", "-P"]
         assert command[4] == str(tmp_path / "benchmarks" / "gauntlet" / "import_bootstrap.py")
         assert command[5] == str(tmp_path)
-        assert json.loads(command[6]) == list(paired._dependency_import_paths())
+        assert json.loads(command[6]) == list(dependency_paths)
+        assert command[7:9] == [
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            dependency_environment_identity,
+        ]
         environment = kwargs["env"]
         assert environment["PYTHONNOUSERSITE"] == "1"
         assert environment["PYTHONHASHSEED"] == "0"
@@ -752,6 +1140,8 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
             seed=20_260_729,
             samples=DEFAULT_SAMPLES,
             output=output,
+            dependency_paths=dependency_paths,
+            dependency_environment_digest=dependency_environment_identity,
         )
         for _ in range(2)
     ]
@@ -837,6 +1227,7 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
     assert direct_result["third_party"] == "root-shadow"
 
     dependency_json = json.dumps([str(dependency_root.resolve())])
+    dependency_environment_identity = import_bootstrap.dependency_environment_digest((str(dependency_root.resolve()),))
     controlled = subprocess.run(
         [
             sys.executable,
@@ -846,6 +1237,8 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
             str(gauntlet_root / "import_bootstrap.py"),
             str(repository_root),
             dependency_json,
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            dependency_environment_identity,
         ],
         cwd=repository_root,
         env=clean_environment,
@@ -968,6 +1361,8 @@ def test_paired_child_failure_reports_sanitized_truncated_stderr(
             seed=20_260_729,
             samples=DEFAULT_SAMPLES,
             output=output,
+            dependency_paths=("dependencies",),
+            dependency_environment_digest="a" * 64,
         )
 
     message = str(error_info.value)
@@ -1010,6 +1405,8 @@ def test_paired_child_failure_with_empty_stderr_reports_only_exit_code(
             seed=20_260_729,
             samples=DEFAULT_SAMPLES,
             output=output,
+            dependency_paths=("dependencies",),
+            dependency_environment_digest="a" * 64,
         )
 
 

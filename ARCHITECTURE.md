@@ -668,6 +668,24 @@ for tag, hashes in torrents_by_tag.items():
   - Tagging operations
   - Cache operations
 
+## Evaluator Isolation
+
+The repository-local paired gauntlet is an evaluator-only boundary and never
+contacts a live qBittorrent instance. Its source launcher binds first-party
+imports to the selected clean worktree, rejects symbolic links and Windows
+reparse points throughout protected package trees, and keeps installed
+dependencies behind the standard library on `sys.path`. The coordinator checks
+protected trees before and after the crossover; each isolated child closes the
+preflight-to-import gap by checking immediately before imports and after
+evaluation.
+
+One content-and-relative-path fingerprint binds the ordered installed
+dependency directories for all eight crossover children. Each child verifies
+that fingerprint immediately before and after evaluator execution, while the
+coordinator independently rechecks it after every child. The paired artifact's
+dependency digest combines that environment fingerprint with the identical
+`pyproject.toml` and `uv.lock` inputs from all three worktrees.
+
 ## Extension Points
 
 ### Adding New Operations
