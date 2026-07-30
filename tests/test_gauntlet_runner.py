@@ -48,6 +48,7 @@ from benchmarks.gauntlet.paired import (
 from benchmarks.gauntlet.runner import (
     DEFAULT_SAMPLES,
     EVALUATOR_VERSION,
+    GauntletSafetyError,
     SCHEMA_NAME,
     SCHEMA_VERSION,
     evaluate_fixture,
@@ -69,6 +70,10 @@ TINY_PROFILE = GauntletProfile(
 requires_descriptor_no_follow = pytest.mark.skipif(
     not getattr(paired.os, "O_NOFOLLOW", 0),
     reason="contemporaneous paired execution requires descriptor no-follow support",
+)
+requires_bound_publication = pytest.mark.skipif(
+    not runner._supports_bound_publication(),
+    reason="safe paired publication requires descriptor-relative filesystem operations",
 )
 
 
@@ -733,6 +738,109 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     assert all(not path.exists() for path in pycache_roots)
 
 
+def test_paired_child_stderr_capture_is_memory_bounded(
+    tmp_path: Path,
+) -> None:
+    stderr_payload = b"a" * (paired.MAX_CHILD_STDERR_BYTES * 3)
+
+    completed, captured, truncated = paired._run_child_with_bounded_stderr(
+        [
+            sys.executable,
+            "-c",
+            ("import sys; " f"sys.stderr.buffer.write(b'a' * {len(stderr_payload)}); " "raise SystemExit(7)"),
+        ],
+        repository_root=tmp_path,
+        environment={},
+    )
+
+    assert completed.returncode == 7
+    assert len(captured) == paired.MAX_CHILD_STDERR_BYTES
+    assert captured == stderr_payload[-paired.MAX_CHILD_STDERR_BYTES :]
+    assert truncated is True
+
+
+def test_paired_child_failure_reports_sanitized_truncated_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "child.json"
+    secret = "sensitive-child-token"
+    monkeypatch.setenv("GAUNTLET_API_TOKEN", secret)
+    monkeypatch.setenv("DOCKER_AUTH_CONFIG", "opaque-auth-secret")
+    stderr_payload = (
+        b"x" * paired.MAX_CHILD_STDERR_BYTES
+        + (
+            f'\n\x1b[31mfailed at {tmp_path / "private" / "module.py"} token={secret}\x1b[0m\n'
+            'password="abc,assignment-tail"\n'
+            "mirror=https://operator:password@example.invalid/path\n"
+            '{"password":"hunter2"}\n'
+            '{"password":"abc\\"secret-tail"}\n'
+            "Authorization: Bearer bearer-secret\n"
+            "Cookie: session=cookie-secret\n"
+            "opaque-auth-secret\n"
+            'File "/tmp/private path/module.py", line 7\n'
+            'File "\\\\server\\private share\\module.py", line 9\n'
+        ).encode()
+    )
+
+    def fake_run(command, **kwargs):
+        os.write(kwargs["stderr"], stderr_payload)
+        return paired.subprocess.CompletedProcess(command, 9)
+
+    monkeypatch.setattr(paired.subprocess, "run", fake_run)
+
+    with pytest.raises(PairedGauntletError) as error_info:
+        paired._run_child(
+            tmp_path,
+            profile="quick",
+            seed=20_260_729,
+            samples=DEFAULT_SAMPLES,
+            output=output,
+        )
+
+    message = str(error_info.value)
+    assert message.startswith("paired child evaluation failed with exit code 9: [stderr truncated] ")
+    assert "<path>" in message
+    assert "token=<redacted>" in message
+    assert str(tmp_path) not in message
+    assert secret not in message
+    assert "operator:password" not in message
+    assert "hunter2" not in message
+    assert "secret-tail" not in message
+    assert "assignment-tail" not in message
+    assert "bearer-secret" not in message
+    assert "cookie-secret" not in message
+    assert "opaque-auth-secret" not in message
+    assert "private path" not in message
+    assert "private share" not in message
+    assert "\x1b" not in message
+    assert len(message.encode("utf-8")) <= paired.MAX_CHILD_STDERR_BYTES + 64
+
+
+def test_paired_child_failure_with_empty_stderr_reports_only_exit_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "child.json"
+
+    def fake_run(command, **_kwargs):
+        return paired.subprocess.CompletedProcess(command, 4)
+
+    monkeypatch.setattr(paired.subprocess, "run", fake_run)
+
+    with pytest.raises(
+        PairedGauntletError,
+        match=r"^paired child evaluation failed with exit code 4$",
+    ):
+        paired._run_child(
+            tmp_path,
+            profile="quick",
+            seed=20_260_729,
+            samples=DEFAULT_SAMPLES,
+            output=output,
+        )
+
+
 def test_source_launcher_ignores_timestamp_valid_parent_bytecode(
     tmp_path: Path,
 ) -> None:
@@ -1066,6 +1174,7 @@ def test_paired_cli_resolves_relative_worktrees_before_output_containment(
     assert run_calls == []
 
 
+@requires_bound_publication
 def test_paired_cli_atomically_replaces_external_output_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1187,6 +1296,7 @@ def test_paired_cli_rejects_default_output_directory_inside_evaluated_repository
     assert list(candidate_root.iterdir()) == []
 
 
+@requires_bound_publication
 def test_paired_cli_rejects_retargeted_output_ancestor_before_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1243,6 +1353,80 @@ def test_paired_cli_rejects_retargeted_output_ancestor_before_write(
     assert protected_path.read_text(encoding="utf-8") == protected_content
     assert (first_parent / "result.json").is_symlink()
     assert (second_parent / "result.json").is_symlink()
+
+
+@requires_bound_publication
+def test_paired_cli_rejects_raced_bound_directory_without_protected_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    outside_container = tmp_path / "outside"
+    outside_results = outside_container / "results"
+    outside_results.mkdir(parents=True)
+    saved_container = tmp_path / "saved-outside"
+    unsafe_container = candidate_root / "unsafe"
+    unsafe_results = unsafe_container / "results"
+    unsafe_results.mkdir(parents=True)
+    output_path = outside_results / "result.json"
+
+    def swap_to_unsafe_directory(*_args, **_kwargs):
+        outside_container.rename(saved_container)
+        outside_container.symlink_to(unsafe_container, target_is_directory=True)
+        return {"comparison": {"overall": "fail"}}
+
+    monkeypatch.setattr(paired, "run_paired_gauntlet", swap_to_unsafe_directory)
+
+    with pytest.raises(SystemExit, match="changed or became unsafe"):
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--output",
+                str(output_path),
+            ]
+        )
+
+    assert list((saved_container / "results").iterdir()) == []
+    assert list(unsafe_results.iterdir()) == []
+
+
+@requires_bound_publication
+def test_paired_cli_fails_closed_without_existing_output_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    missing_directory = tmp_path / "missing" / "output"
+    monkeypatch.setattr(
+        paired,
+        "run_paired_gauntlet",
+        lambda *_args, **_kwargs: {"comparison": {"overall": "fail"}},
+    )
+
+    with pytest.raises(SystemExit, match="could not bind the validated result directory"):
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--output",
+                str(missing_directory / "result.json"),
+            ]
+        )
+
+    assert not missing_directory.exists()
 
 
 def test_locked_profiles_match_live_reference_shape() -> None:
@@ -1714,6 +1898,22 @@ def test_omitted_output_uses_bound_validated_temporary_directory(
     assert list(changed_default_directory.iterdir()) == []
 
 
+@requires_bound_publication
+def test_bound_omitted_output_uses_unique_file_in_validated_directory(
+    tmp_path: Path,
+) -> None:
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        output = runner.write_serialized_result(
+            "bound artifact\n",
+            default_directory=tmp_path,
+            bound_directory=bound_directory,
+        )
+
+    assert output.parent == tmp_path
+    assert output.name.startswith("qbitunregistered-gauntlet-")
+    assert output.read_text(encoding="utf-8") == "bound artifact\n"
+
+
 def test_explicit_output_replaces_hard_link_without_mutating_protected_file(
     tmp_path: Path,
 ) -> None:
@@ -1798,6 +1998,95 @@ def test_explicit_output_cleans_staging_file_when_fsync_fails(
 
     assert output.read_text(encoding="utf-8") == "previous artifact\n"
     assert list(tmp_path.iterdir()) == [output]
+
+
+@requires_bound_publication
+def test_bound_publication_ignores_ancestor_retarget_during_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    safe_directory = tmp_path / "safe"
+    protected_directory = tmp_path / "protected"
+    safe_directory.mkdir()
+    protected_directory.mkdir()
+    output_alias = tmp_path / "current"
+    try:
+        output_alias.symlink_to(safe_directory, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a directory symbolic link: {error}")
+    output = safe_directory / "result.json"
+    real_rename = os.rename
+
+    def retarget_then_replace(source, destination, **kwargs):
+        output_alias.unlink()
+        output_alias.symlink_to(protected_directory, target_is_directory=True)
+        real_rename(source, destination, **kwargs)
+
+    monkeypatch.setattr(runner.os, "rename", retarget_then_replace)
+
+    with runner.bind_output_directory(safe_directory) as bound_directory:
+        written_path = runner.write_serialized_result(
+            "bound artifact\n",
+            output,
+            bound_directory=bound_directory,
+        )
+
+    assert written_path == output
+    assert output.read_text(encoding="utf-8") == "bound artifact\n"
+    assert list(protected_directory.iterdir()) == []
+    assert not (output_alias / "result.json").exists()
+
+
+@requires_bound_publication
+def test_bound_publication_rejects_repeated_retarget_matching_fd_identity(
+    tmp_path: Path,
+) -> None:
+    candidate_root = tmp_path / "candidate"
+    unsafe_results = candidate_root / "unsafe" / "results"
+    unsafe_results.mkdir(parents=True)
+    outside_container = tmp_path / "outside"
+    outside_results = outside_container / "results"
+    outside_results.mkdir(parents=True)
+    saved_container = tmp_path / "saved-outside"
+    outside_container.rename(saved_container)
+    outside_container.symlink_to(candidate_root / "unsafe", target_is_directory=True)
+    descriptor = os.open(outside_results, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    bound_directory = runner.BoundOutputDirectory(
+        outside_results,
+        descriptor,
+        (candidate_root,),
+    )
+    try:
+        with pytest.raises(
+            GauntletSafetyError,
+            match="changed before publication",
+        ):
+            runner.write_serialized_result(
+                "unsafe artifact\n",
+                outside_results / "result.json",
+                bound_directory=bound_directory,
+            )
+    finally:
+        os.close(descriptor)
+
+    assert list((saved_container / "results").iterdir()) == []
+    assert list(unsafe_results.iterdir()) == []
+
+
+def test_bound_publication_fails_closed_without_descriptor_relative_support(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner, "_supports_bound_publication", lambda: False)
+
+    with pytest.raises(
+        GauntletSafetyError,
+        match="safe descriptor-relative result publication is unavailable",
+    ):
+        with runner.bind_output_directory(tmp_path):
+            pytest.fail("unsupported publication must not yield a directory")
+
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.gauntlet_full

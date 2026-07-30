@@ -41,7 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         type=Path,
-        help="JSON output path outside the repository; defaults to a unique system temporary file.",
+        help=(
+            "JSON output path outside the repository; defaults to a unique system temporary file. "
+            "Paired mode requires an existing parent directory."
+        ),
     )
     parser.add_argument(
         "--compare",
@@ -207,6 +210,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from benchmarks.gauntlet.baseline import compare_result, load_quality_bar
     from benchmarks.gauntlet.runner import (
+        GauntletSafetyError,
+        bind_output_directory,
         run_gauntlet,
         serialize_result,
         write_serialized_result,
@@ -217,42 +222,53 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         assert paired_control is not None
         assert paired_candidate is not None
-        paired_result = run_paired_gauntlet(
-            paired_control,
-            paired_candidate,
-            orchestrator_root=repository_root,
-            profile=arguments.profile,
-            seed=arguments.seed,
-            samples=arguments.samples,
-        )
-        serialized_result = serialize_result(paired_result)
-        require_same_identity(
-            identity_before_imports,
-            capture_repository_identity(repository_root),
-        )
-        if paired_output is not None:
-            assert arguments.output is not None
-            assert paired_output_target is not None
-            paired_output = _revalidate_output(
-                arguments.output,
-                paired_output,
-                paired_output_target,
-                (repository_root, paired_control, paired_candidate),
-            )
-        else:
-            assert default_output_directory is not None
-            _revalidate_default_output_directory(
-                default_output_directory,
-                (repository_root, paired_control, paired_candidate),
-            )
-        if paired_output is None:
-            assert default_output_directory is not None
-            output_path = write_serialized_result(
-                serialized_result,
-                default_directory=default_output_directory,
-            )
-        else:
-            output_path = write_serialized_result(serialized_result, paired_output)
+        publication_directory = paired_output.parent if paired_output is not None else default_output_directory
+        assert publication_directory is not None
+        try:
+            with bind_output_directory(
+                publication_directory,
+                protected_roots=(repository_root, paired_control, paired_candidate),
+            ) as bound_directory:
+                paired_result = run_paired_gauntlet(
+                    paired_control,
+                    paired_candidate,
+                    orchestrator_root=repository_root,
+                    profile=arguments.profile,
+                    seed=arguments.seed,
+                    samples=arguments.samples,
+                )
+                serialized_result = serialize_result(paired_result)
+                require_same_identity(
+                    identity_before_imports,
+                    capture_repository_identity(repository_root),
+                )
+                if paired_output is not None:
+                    assert arguments.output is not None
+                    assert paired_output_target is not None
+                    paired_output = _revalidate_output(
+                        arguments.output,
+                        paired_output,
+                        paired_output_target,
+                        (repository_root, paired_control, paired_candidate),
+                    )
+                    output_path = write_serialized_result(
+                        serialized_result,
+                        paired_output,
+                        bound_directory=bound_directory,
+                    )
+                else:
+                    assert default_output_directory is not None
+                    _revalidate_default_output_directory(
+                        default_output_directory,
+                        (repository_root, paired_control, paired_candidate),
+                    )
+                    output_path = write_serialized_result(
+                        serialized_result,
+                        default_directory=default_output_directory,
+                        bound_directory=bound_directory,
+                    )
+        except GauntletSafetyError as error:
+            raise SystemExit(str(error)) from error
         print(output_path)
         return 0 if paired_result["comparison"]["overall"] == "pass" else COMPARISON_FAILED_EXIT
 

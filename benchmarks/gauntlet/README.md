@@ -31,7 +31,13 @@ run. Contemporaneous paired execution requires the platform to expose
 `O_NOFOLLOW` (or equivalent descriptor no-follow support); it fails closed when
 that capability is unavailable. An explicit output destination must also
 resolve to the same path outside all three repositories before and after the
-crossover.
+crossover. Publication is bound to an identity-checked directory descriptor;
+staging, cleanup, and replacement use names relative to that descriptor so an
+ancestor symlink retarget cannot redirect the artifact. Paired execution fails
+closed before staging when the platform lacks the required descriptor-relative
+filesystem operations or trustworthy kernel descriptor-path introspection. The
+parent directory for an explicit paired `--output` must already exist so it can
+be safely bound; ordinary non-paired output retains automatic parent creation.
 
 Paired mode must start through the source-only launcher shown above. The
 launcher removes inherited Python injection variables and starts the
@@ -51,7 +57,10 @@ the evaluated worktree. Repository-local native extensions that could shadow
 the `benchmarks` or `qbitunregistered` package trees are rejected before and
 after the crossover. Each run retains its warmup, five untraced timed samples,
 and traced memory pass. No sample is rejected. The artifact therefore retains
-40 raw runtime samples and eight peak-memory values.
+40 raw runtime samples and eight peak-memory values. Child standard output is
+discarded. Standard error is drained without accumulating it on disk or in
+unbounded memory; a nonzero exit reports only a bounded excerpt with paths,
+credential-like values, control sequences, and URL user information redacted.
 
 Runtime pools all 20 samples for each role and compares their medians with the
 locked `0.50` target. Each four-run block must independently meet that same

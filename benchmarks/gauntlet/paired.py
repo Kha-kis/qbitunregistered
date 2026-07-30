@@ -6,11 +6,13 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Mapping, Sequence
 from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
@@ -58,11 +60,45 @@ REQUIRED_CHILD_GATES = {
     "variance",
 }
 MAX_CHILD_ARTIFACT_BYTES = 8 * 1024 * 1024
+MAX_CHILD_STDERR_BYTES = 4 * 1024
 CHILD_TIMEOUT_SECONDS = 3_600
+CHILD_STDERR_DRAIN_TIMEOUT_SECONDS = 5
 DEPENDENCY_FILES = ("pyproject.toml", "uv.lock")
 PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
 IMPORTABLE_EXTENSION_ERROR = "repository contains an importable native extension in a protected package tree"
 ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
+_SECRET_ASSIGNMENT_PATTERN = re.compile(r"(?i)\b(api[\s_-]?key|password|passwd|token|secret)\b\s*[:=]\s*[^\r\n]*")
+_SECRET_JSON_PATTERN = re.compile(r"""(?ix)
+    (
+        ["'](?:api[\s_-]?key|password|passwd|token|secret)["']
+        \s*:\s*
+    )
+    (?:
+        "(?:\\.|[^"\\\r\n])*"
+        |
+        '(?:\\.|[^'\\\r\n])*'
+        |
+        [^,}\s]+
+    )
+    """)
+_SENSITIVE_HEADER_PATTERN = re.compile(r"(?im)^(\s*(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*)[^\r\n]*$")
+_URL_USERINFO_PATTERN = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@")
+_QUOTED_ABSOLUTE_PATH_PATTERN = re.compile(r"""(?x)
+    (?P<quote>["'])
+    (?:
+        /
+        |
+        [a-zA-Z]:[\\/]
+        |
+        \\\\
+    )
+    [^"'\r\n]+
+    (?P=quote)
+    """)
+_UNC_PATH_PATTERN = re.compile(r"(?<![\w])\\\\[^\r\n,;)]*")
+_WINDOWS_ABSOLUTE_PATH_PATTERN = re.compile(r"(?i)(?<![\w])[a-z]:[\\/][^\s:;,)]*")
+_POSIX_ABSOLUTE_PATH_PATTERN = re.compile(r"(?<![\w])/(?:[^/\s]+/)*[^/\s:;,)]*")
+_ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class PairedGauntletError(RuntimeError):
@@ -567,6 +603,112 @@ def _require_clean_identity(repository_root: Path) -> RepositoryIdentity:
     return identity
 
 
+def _retain_stderr_tail(
+    read_descriptor: int,
+    captured: bytearray,
+    overflowed: list[bool],
+    read_errors: list[OSError],
+) -> None:
+    try:
+        with os.fdopen(read_descriptor, "rb") as stderr_reader:
+            while chunk := stderr_reader.read(64 * 1024):
+                if len(chunk) >= MAX_CHILD_STDERR_BYTES:
+                    captured[:] = chunk[-MAX_CHILD_STDERR_BYTES:]
+                    overflowed[0] = True
+                    continue
+                excess = len(captured) + len(chunk) - MAX_CHILD_STDERR_BYTES
+                if excess > 0:
+                    del captured[:excess]
+                    overflowed[0] = True
+                captured.extend(chunk)
+    except OSError as error:
+        read_errors.append(error)
+
+
+def _run_child_with_bounded_stderr(
+    command: Sequence[str],
+    *,
+    repository_root: Path,
+    environment: Mapping[str, str],
+) -> tuple[subprocess.CompletedProcess[bytes], bytes, bool]:
+    try:
+        read_descriptor, write_descriptor = os.pipe()
+    except OSError as error:
+        raise PairedGauntletError("paired child diagnostic capture could not start") from error
+    captured = bytearray()
+    overflowed = [False]
+    read_errors: list[OSError] = []
+    stderr_thread = threading.Thread(
+        target=_retain_stderr_tail,
+        args=(read_descriptor, captured, overflowed, read_errors),
+        daemon=True,
+        name="gauntlet-child-stderr",
+    )
+    try:
+        stderr_thread.start()
+    except BaseException:
+        os.close(read_descriptor)
+        os.close(write_descriptor)
+        raise
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository_root,
+            env=environment,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=write_descriptor,
+            timeout=CHILD_TIMEOUT_SECONDS,
+        )
+    finally:
+        os.close(write_descriptor)
+        stderr_thread.join(CHILD_STDERR_DRAIN_TIMEOUT_SECONDS)
+    if stderr_thread.is_alive() or read_errors:
+        raise PairedGauntletError("paired child diagnostic capture failed")
+    return completed, bytes(captured), overflowed[0]
+
+
+def _sanitize_child_stderr(
+    stderr: bytes,
+    *,
+    repository_root: Path,
+    environment: Mapping[str, str],
+    truncated: bool,
+) -> str:
+    text = stderr.decode("utf-8", errors="replace")
+    text = _ANSI_ESCAPE_PATTERN.sub("", text)
+    for sensitive_value in (
+        str(repository_root),
+        *(
+            value
+            for key, value in environment.items()
+            if value
+            and any(
+                marker in key.upper()
+                for marker in ("AUTH", "COOKIE", "CREDENTIAL", "KEY", "PASSWORD", "PASSWD", "SECRET", "TOKEN")
+            )
+        ),
+    ):
+        if len(sensitive_value) >= 4:
+            text = text.replace(sensitive_value, "<redacted>")
+    text = _SECRET_JSON_PATTERN.sub(lambda match: f'{match.group(1)}"<redacted>"', text)
+    text = _SECRET_ASSIGNMENT_PATTERN.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    text = _SENSITIVE_HEADER_PATTERN.sub(lambda match: f"{match.group(1)}<redacted>", text)
+    text = _URL_USERINFO_PATTERN.sub(r"\1<redacted>@", text)
+    text = _QUOTED_ABSOLUTE_PATH_PATTERN.sub('"<path>"', text)
+    text = _UNC_PATH_PATTERN.sub("<path>", text)
+    text = _WINDOWS_ABSOLUTE_PATH_PATTERN.sub("<path>", text)
+    text = _POSIX_ABSOLUTE_PATH_PATTERN.sub("<path>", text)
+    text = "".join(character if character in "\n\t" or character.isprintable() else " " for character in text)
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    prefix = "[stderr truncated] " if truncated else ""
+    maximum_text_bytes = MAX_CHILD_STDERR_BYTES - len(prefix.encode("ascii"))
+    encoded_text = text.encode("utf-8")[-maximum_text_bytes:]
+    return prefix + encoded_text.decode("utf-8", errors="ignore")
+
+
 def _run_child(
     repository_root: Path,
     *,
@@ -602,19 +744,22 @@ def _run_child(
             if pycache_root.is_relative_to(repository_root.expanduser().resolve()):
                 raise PairedGauntletError("paired child bytecode cache must be outside its worktree")
             environment["PYTHONPYCACHEPREFIX"] = str(pycache_root)
-            completed = subprocess.run(
+            completed, captured_stderr, stderr_truncated = _run_child_with_bounded_stderr(
                 command,
-                cwd=repository_root,
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=CHILD_TIMEOUT_SECONDS,
+                repository_root=repository_root,
+                environment=environment,
             )
     except (OSError, subprocess.SubprocessError) as error:
         raise PairedGauntletError("paired child evaluation could not run") from error
     if completed.returncode != 0:
-        raise PairedGauntletError("paired child evaluation failed")
+        diagnostic = _sanitize_child_stderr(
+            captured_stderr,
+            repository_root=repository_root,
+            environment=environment,
+            truncated=stderr_truncated,
+        )
+        detail = f": {diagnostic}" if diagnostic else ""
+        raise PairedGauntletError(f"paired child evaluation failed with exit code {completed.returncode}{detail}")
     try:
         result = json.loads(
             _read_regular_file(
