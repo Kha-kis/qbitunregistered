@@ -16,8 +16,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   separately traced peak memory, stable candidate identity, TOML quality-bar
   comparison, and explicit fail-closed regression coverage.
 
+### Changed
+
+- Orphan ownership reconciliation now indexes candidate directories separately
+  from regular files and uses a collision-safe, execution-local lookup for
+  exact qBittorrent file metadata. Ambiguous, anchored, traversing, aliased, or
+  malformed paths retain canonical resolution and fail-closed containment
+  checks. The locked full gauntlet median is now less than half of the accepted
+  baseline without increasing qBittorrent API calls.
+- Empty-directory discovery is deduplicated and bounded beneath the most
+  specific authorized scan root or active torrent root, avoiding filesystem
+  inspection above cleanup authority.
+
 ### Fixed
 
+- Malformed torrent metadata that resolves to a save root can no longer be
+  treated as file ownership; final validation aborts before deletion.
+- Direct symlink plans remain rejected even though filesystem discovery
+  preserves its established canonical-path behavior.
+- Windows rooted-relative metadata and normalized-key collisions now use the
+  canonical fallback instead of bypassing save-root containment.
+- Bulk content validation retains a final canonical check after component
+  inspection, preventing a parent-directory replacement race from skipping
+  exact ownership metadata.
 - Paired gauntlet runs now report malformed canonical quality bars without
   tracebacks or private paths, reject directory and special-file output targets
   before evaluation, fail closed when a bound output directory moves after

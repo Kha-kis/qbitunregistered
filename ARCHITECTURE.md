@@ -191,8 +191,12 @@ tagging.
   owned pathname without a per-torrent file-list request
 - Fetch exact file lists for multi-file boundaries only when they can overlap
   filesystem candidates; uncertain bulk metadata falls back to exact metadata
-- Scan disk against in-memory set (fast)
-- Cache resolved paths per unique save_path (reduces syscalls 1M+ → ~1K)
+- Index candidate parent directories separately from regular candidate paths
+  so bulk directory checks do not retain or expand unnecessary file entries
+- Match safe relative exact metadata through a collision-aware, execution-local
+  canonical candidate index; ambiguous or unsafe keys use normal path
+  resolution and containment validation
+- Cache canonical path objects and their string forms per unique save path
 - Filter save paths to only needed directories
 
 **Scanning**:
@@ -222,11 +226,13 @@ candidate that is inaccessible, non-regular, replaced after discovery, or
 changes during capture still fails the complete plan closed.
 
 Bulk boundary trust requires an absolute canonical path beneath the torrent
-save path, an accessible regular file or directory, and no symlink in any
-component below the canonical save root. Missing, malformed, inaccessible, or
-symlinked boundaries use live exact file metadata. Directory boundaries never
-protect a whole tree in exact mode. Final real-run validation uses the same
-builder, limited to boundaries that can overlap the immutable candidate plan.
+save path, an accessible regular file or directory, no symlink or Windows
+reparse point in any component below the canonical save root, and a final
+canonical containment check after component inspection. Missing, malformed,
+inaccessible, aliased, or uncertain boundaries use live exact file metadata.
+Directory boundaries never protect a whole tree in exact mode. Final real-run
+validation uses the same builder, limited to boundaries that can overlap the
+immutable candidate plan.
 The supported qBittorrent client has shared mutable HTTP session and application
 cache state without a thread-safety guarantee, so ownership requests remain
 sequential.
