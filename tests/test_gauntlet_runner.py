@@ -24,12 +24,20 @@ from benchmarks.gauntlet.fixture_factory import (
     FULL_PROFILE,
     PROFILES,
     QUICK_PROFILE,
+    FakeBulkTorrent,
     GauntletProfile,
     build_blueprint,
     build_fixture,
     expected_endpoint_budgets,
     expected_endpoint_counters,
     materialized_fixture_digest,
+)
+from benchmarks.gauntlet.identity import RepositoryIdentity
+from benchmarks.gauntlet.paired import (
+    PAIRED_ORDER,
+    PairedGauntletError,
+    compare_paired_results,
+    run_paired_gauntlet,
 )
 from benchmarks.gauntlet.runner import (
     DEFAULT_SAMPLES,
@@ -121,6 +129,262 @@ def _valid_quick_result() -> dict[str, Any]:
         "median_absolute_deviation_seconds": 0.0,
         "peak_memory_bytes": 1,
     }
+
+
+def _paired_runs(
+    *,
+    control_runtimes: tuple[float, float] = (2.0, 2.0),
+    candidate_runtimes: tuple[float, float] = (0.8, 0.8),
+    control_memory: tuple[int, int] = (1_000, 1_000),
+    candidate_memory: tuple[int, int] = (1_100, 1_100),
+) -> list[dict[str, Any]]:
+    values = (
+        ("control", control_runtimes[0], control_memory[0], "a"),
+        ("candidate", candidate_runtimes[0], candidate_memory[0], "c"),
+        ("candidate", candidate_runtimes[1], candidate_memory[1], "c"),
+        ("control", control_runtimes[1], control_memory[1], "a"),
+    )
+    runs: list[dict[str, Any]] = []
+    for position, (role, runtime, memory, commit_character) in enumerate(values):
+        result = _valid_quick_result()
+        samples = [runtime] * DEFAULT_SAMPLES
+        result.update(
+            {
+                "commit": commit_character * 40,
+                "candidate_state": {"clean": True, "diff_sha256": commit_character * 64},
+                "sample_runtime_seconds": samples,
+                "median_runtime_seconds": runtime,
+                "minimum_runtime_seconds": runtime,
+                "maximum_runtime_seconds": runtime,
+                "median_absolute_deviation_seconds": 0.0,
+                "peak_memory_bytes": memory,
+            }
+        )
+        runs.append({"position": position, "role": role, "result": result})
+    return runs
+
+
+def test_fake_qbittorrent_bulk_response_embeds_exact_files_without_endpoint_calls(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path / "fixture", TINY_PROFILE, seed=107)
+    source_torrent = fixture.initial_torrents[0]
+    expected_files = fixture.client.torrents_files(torrent_hash=source_torrent.hash)
+    fixture.client.reset_read_counts()
+
+    snapshot = fixture.client.torrents.info(include_files=True)
+
+    assert isinstance(snapshot, list)
+    assert all(isinstance(torrent, FakeBulkTorrent) for torrent in snapshot)
+    exact_torrent = next(torrent for torrent in snapshot if torrent.hash == source_torrent.hash)
+    assert exact_torrent["files"] == expected_files
+    assert fixture.client.read_counts == {"torrents.info": 1}
+
+
+def test_fake_qbittorrent_legacy_and_unsupported_bulk_modes_preserve_fallback(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path / "fixture", TINY_PROFILE, seed=109)
+    fixture.client.set_bulk_files_mode("legacy_missing")
+    snapshot = fixture.client.torrents.info(include_files=True)
+
+    assert isinstance(snapshot, list)
+    assert all(isinstance(torrent, FakeBulkTorrent) and "files" not in torrent for torrent in snapshot)
+    for torrent in fixture.initial_torrents[: TINY_PROFILE.exact_metadata_torrent_count]:
+        fixture.client.torrents_files(torrent_hash=torrent.hash)
+    assert fixture.client.read_counts == {
+        "torrents.info": 1,
+        "torrents_files": TINY_PROFILE.exact_metadata_torrent_count,
+    }
+
+    fixture.client.reset_read_counts()
+    fixture.client.set_bulk_files_mode("unsupported")
+    with pytest.raises(TypeError, match="unsupported"):
+        fixture.client.torrents.info(include_files=True)
+    assert fixture.client.torrents.info() == list(fixture.initial_torrents)
+    assert fixture.client.read_counts == {"torrents.info": 2}
+
+
+def test_fake_qbittorrent_malformed_bulk_mode_is_explicit(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path / "fixture", TINY_PROFILE, seed=113)
+    fixture.client.set_bulk_files_mode("malformed")
+
+    snapshot = fixture.client.torrents.info(include_files=True)
+
+    assert isinstance(snapshot, list)
+    assert any(isinstance(torrent, FakeBulkTorrent) and isinstance(torrent["files"], dict) for torrent in snapshot)
+    assert fixture.client.read_counts["torrents_files"] == 0
+
+
+def test_paired_comparison_passes_supported_api_reduction_and_retains_all_samples() -> None:
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+    runs = _paired_runs()
+    for run in runs:
+        if run["role"] == "candidate":
+            result = run["result"]
+            for counters in [
+                result["endpoint_counters"],
+                *result["timed_sample_endpoint_counters"],
+                *result["pass_endpoint_counters"].values(),
+            ]:
+                counters["torrents_files"] = 0
+
+    comparison = compare_paired_results(runs, quality_bar)
+
+    assert comparison["overall"] == "pass"
+    assert comparison["runtime_pair_ratios"] == pytest.approx([0.4, 0.4])
+    assert comparison["memory_pair_ratios"] == pytest.approx([1.1, 1.1])
+    assert comparison["runtime_control_fraction"] == pytest.approx(0.4)
+    assert comparison["memory_control_fraction"] == pytest.approx(1.1)
+    assert comparison["role_runtime_relative_ranges"] == {
+        "control": 0.0,
+        "candidate": 0.0,
+    }
+    assert [sample for run in runs for sample in run["result"]["sample_runtime_seconds"]] == [2.0] * 5 + [0.8] * 10 + [2.0] * 5
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda runs: runs.reverse(),
+        lambda runs: runs[1]["result"].update({"environment": {**_test_environment(), "processor": "other"}}),
+        lambda runs: runs[2]["result"]["candidate_state"].update({"clean": False}),
+        lambda runs: runs[1]["result"].update({"seed": 0}),
+        lambda runs: runs[1]["result"].update({"sample_runtime_seconds": [math.nan] * 5}),
+    ],
+)
+def test_paired_comparison_fails_closed_on_order_identity_environment_or_parsing(mutate) -> None:
+    runs = _paired_runs()
+    mutate(runs)
+
+    comparison = compare_paired_results(runs, load_quality_bar(QUALITY_BAR_PATH))
+
+    assert comparison["overall"] == "fail"
+
+
+def test_paired_comparison_rejects_child_variance_and_cross_pair_drift() -> None:
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+    varying = _paired_runs()
+    varying[1]["result"].update(
+        {
+            "sample_runtime_seconds": [0.4, 0.4, 0.8, 1.2, 1.2],
+            "median_runtime_seconds": 0.8,
+            "minimum_runtime_seconds": 0.4,
+            "maximum_runtime_seconds": 1.2,
+            "median_absolute_deviation_seconds": 0.4,
+        }
+    )
+    assert compare_paired_results(varying, quality_bar)["gates"]["child_gates"]["status"] == "fail"
+
+    drifting = _paired_runs(candidate_runtimes=(0.8, 1.6))
+    comparison = compare_paired_results(drifting, quality_bar)
+    assert comparison["gates"]["paired_drift"]["status"] == "fail"
+    assert comparison["overall"] == "fail"
+
+
+def test_paired_runner_uses_abba_isolated_worktrees_and_emits_both_identities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    expected_runs = _paired_runs()
+    calls: list[str] = []
+    identities = {
+        control_root: RepositoryIdentity("a" * 40, True, "a" * 64),
+        candidate_root: RepositoryIdentity("c" * 40, True, "c" * 64),
+    }
+
+    monkeypatch.setattr(
+        "benchmarks.gauntlet.paired.capture_repository_identity",
+        lambda root: identities[root],
+    )
+    monkeypatch.setattr("benchmarks.gauntlet.paired._evaluator_digest", lambda _root: "d" * 64)
+
+    def fake_run_child(root: Path, **_kwargs):
+        role = "control" if root == control_root else "candidate"
+        calls.append(role)
+        return copy.deepcopy(expected_runs[len(calls) - 1]["result"])
+
+    monkeypatch.setattr("benchmarks.gauntlet.paired._run_child", fake_run_child)
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+
+    result = run_paired_gauntlet(
+        control_root,
+        candidate_root,
+        quality_bar,
+        profile="quick",
+        seed=quality_bar.profiles["quick"].seed,
+        samples=DEFAULT_SAMPLES,
+    )
+
+    assert calls == list(PAIRED_ORDER)
+    assert result["identities"]["control"]["commit"] == "a" * 40
+    assert result["identities"]["candidate"]["commit"] == "c" * 40
+    assert len(result["runs"]) == 4
+    retained_sample_count = 0
+    for run in result["runs"]:
+        samples = run["result"]["sample_runtime_seconds"]
+        assert isinstance(samples, list)
+        retained_sample_count += len(samples)
+    assert retained_sample_count == 20
+
+
+def test_paired_runner_rejects_same_or_different_evaluator_worktrees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = RepositoryIdentity("a" * 40, True, "b" * 64)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._require_clean_identity", lambda _root: identity)
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+
+    with pytest.raises(PairedGauntletError, match="isolated"):
+        run_paired_gauntlet(
+            tmp_path,
+            tmp_path,
+            quality_bar,
+            profile="quick",
+            seed=quality_bar.profiles["quick"].seed,
+            samples=DEFAULT_SAMPLES,
+        )
+
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    monkeypatch.setattr(
+        "benchmarks.gauntlet.paired._evaluator_digest",
+        lambda root: "a" * 64 if root == control_root else "c" * 64,
+    )
+    with pytest.raises(PairedGauntletError, match="identical evaluator"):
+        run_paired_gauntlet(
+            control_root,
+            candidate_root,
+            quality_bar,
+            profile="quick",
+            seed=quality_bar.profiles["quick"].seed,
+            samples=DEFAULT_SAMPLES,
+        )
+
+
+def test_paired_cli_requires_both_worktrees_and_external_output(tmp_path: Path) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+
+    with pytest.raises(SystemExit, match="must be supplied together"):
+        gauntlet_cli.main(["--paired-control", str(control_root)])
+
+    with pytest.raises(SystemExit, match="outside both evaluated repositories"):
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--output",
+                str(candidate_root / "result.json"),
+            ]
+        )
 
 
 def test_locked_profiles_match_live_reference_shape() -> None:

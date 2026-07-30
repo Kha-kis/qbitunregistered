@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import NotRequired, Protocol, TypedDict, cast
 
 from benchmarks.gauntlet.fixture_factory import (
-    MUTATION_COUNTER_KEYS,
     PROFILES,
     EndpointBudget,
     GauntletFixture,
@@ -43,7 +42,7 @@ from qbitunregistered.operations.orphaned import (
 
 SCHEMA_NAME = "qbitunregistered.gauntlet.result"
 SCHEMA_VERSION = 3
-EVALUATOR_VERSION = "1.1.0"
+EVALUATOR_VERSION = "1.2.0"
 DEFAULT_SEED = 20_260_729
 DEFAULT_SAMPLES = 5
 

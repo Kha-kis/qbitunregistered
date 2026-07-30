@@ -46,6 +46,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Compare with a TOML quality bar; the repository quality bar is used when no path is supplied.",
     )
+    parser.add_argument(
+        "--paired-control",
+        type=Path,
+        help="Clean control worktree for a contemporaneous ABBA comparison.",
+    )
+    parser.add_argument(
+        "--paired-candidate",
+        type=Path,
+        help="Clean candidate worktree for a contemporaneous ABBA comparison.",
+    )
     return parser
 
 
@@ -66,6 +76,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         repository_root,
     ):
         raise SystemExit("gauntlet output must be outside the repository")
+    paired_control: Path | None = arguments.paired_control
+    paired_candidate: Path | None = arguments.paired_candidate
+    paired_requested = paired_control is not None or paired_candidate is not None
+    if paired_requested and (paired_control is None or paired_candidate is None):
+        raise SystemExit("--paired-control and --paired-candidate must be supplied together")
+    if paired_requested:
+        assert paired_control is not None
+        assert paired_candidate is not None
+        if arguments.output is not None and (
+            not _outside_repository(arguments.output, paired_control)
+            or not _outside_repository(arguments.output, paired_candidate)
+        ):
+            raise SystemExit("paired gauntlet output must be outside both evaluated repositories")
 
     from benchmarks.gauntlet.baseline import compare_result, load_quality_bar
     from benchmarks.gauntlet.runner import (
@@ -73,6 +96,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         serialize_result,
         write_serialized_result,
     )
+
+    if paired_requested:
+        from benchmarks.gauntlet.paired import run_paired_gauntlet
+
+        assert paired_control is not None
+        assert paired_candidate is not None
+        quality_bar_path = arguments.compare if arguments.compare is not None else DEFAULT_QUALITY_BAR
+        paired_result = run_paired_gauntlet(
+            paired_control,
+            paired_candidate,
+            load_quality_bar(quality_bar_path),
+            profile=arguments.profile,
+            seed=arguments.seed,
+            samples=arguments.samples,
+        )
+        serialized_result = serialize_result(paired_result)
+        require_same_identity(
+            identity_before_imports,
+            capture_repository_identity(repository_root),
+        )
+        output_path = write_serialized_result(serialized_result, arguments.output)
+        print(output_path)
+        return 0 if paired_result["comparison"]["overall"] == "pass" else COMPARISON_FAILED_EXIT
 
     result = run_gauntlet(
         arguments.profile,
