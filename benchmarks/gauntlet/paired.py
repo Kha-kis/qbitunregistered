@@ -42,6 +42,7 @@ from benchmarks.gauntlet.paired_evidence import (
     PairedEvidenceError,
     sanitize_child_result,
 )
+from benchmarks.gauntlet.runner import DEFAULT_SAMPLES
 
 PAIRED_SCHEMA_NAME = "qbitunregistered.gauntlet.paired-result"
 PAIRED_SCHEMA_VERSION = 2
@@ -920,6 +921,8 @@ def run_paired_gauntlet(
     samples: int,
 ) -> PairedResult:
     """Run clean worktrees under the invoking checkout's canonical evaluator."""
+    if samples != DEFAULT_SAMPLES:
+        raise PairedGauntletError(f"comparable paired gauntlet runs require exactly {DEFAULT_SAMPLES} timed samples")
     orchestrator_root = orchestrator_root.expanduser().resolve()
     control_root = control_root.expanduser().resolve()
     candidate_root = candidate_root.expanduser().resolve()

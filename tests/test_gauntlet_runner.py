@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 
@@ -463,6 +464,33 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
         assert isinstance(samples, list)
         retained_sample_count += len(samples)
     assert retained_sample_count == 40
+
+
+def test_paired_runner_rejects_noncanonical_samples_before_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unexpected_setup = Mock(side_effect=AssertionError("paired setup unexpectedly started"))
+    monkeypatch.setattr(paired, "_require_clean_identity", unexpected_setup)
+    monkeypatch.setattr(paired, "_load_canonical_quality_bar", unexpected_setup)
+    monkeypatch.setattr(paired, "_dependency_import_paths", unexpected_setup)
+    monkeypatch.setattr(paired.tempfile, "TemporaryDirectory", unexpected_setup)
+    monkeypatch.setattr(paired, "_run_child", unexpected_setup)
+
+    with pytest.raises(
+        PairedGauntletError,
+        match=rf"^comparable paired gauntlet runs require exactly {DEFAULT_SAMPLES} timed samples$",
+    ):
+        run_paired_gauntlet(
+            tmp_path / "control",
+            tmp_path / "candidate",
+            orchestrator_root=REPOSITORY_ROOT,
+            profile="quick",
+            seed=load_quality_bar(QUALITY_BAR_PATH).profiles["quick"].seed,
+            samples=DEFAULT_SAMPLES + 1,
+        )
+
+    unexpected_setup.assert_not_called()
 
 
 @requires_descriptor_no_follow
