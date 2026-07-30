@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -11,11 +12,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
-MODULE_BOOTSTRAP = (
-    "import runpy, sys; "
-    "sys.path.insert(0, sys.argv.pop(1)); "
-    "runpy.run_module('benchmarks.gauntlet', run_name='__main__', alter_sys=True)"
-)
+SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 
 
 def _require_isolated_startup() -> None:
@@ -57,6 +54,28 @@ def _isolated_environment(
     return environment
 
 
+def _dependency_import_paths() -> tuple[str, ...]:
+    """Return ordinary installed-package paths without editable source roots."""
+    dependency_paths: list[str] = []
+    for value in sys.path:
+        if not value:
+            continue
+        try:
+            path = Path(value)
+            resolved_path = path.resolve()
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SystemExit("gauntlet dependency import path could not be resolved") from error
+        if (
+            path.is_absolute()
+            and resolved_path.is_dir()
+            and SITE_DIRECTORY_NAMES.intersection(part.casefold() for part in resolved_path.parts)
+        ):
+            resolved_value = str(resolved_path)
+            if resolved_value not in dependency_paths:
+                dependency_paths.append(resolved_value)
+    return tuple(dependency_paths)
+
+
 def main(arguments: Sequence[str] | None = None) -> int:
     """Run the gauntlet module with a fresh parent-process bytecode cache."""
     _require_isolated_startup()
@@ -83,10 +102,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 [
                     sys.executable,
                     "-s",
+                    "-S",
                     "-P",
-                    "-c",
-                    MODULE_BOOTSTRAP,
+                    str(repository_root / "benchmarks" / "gauntlet" / "import_bootstrap.py"),
                     str(repository_root),
+                    json.dumps(_dependency_import_paths()),
                     *resolved_arguments,
                 ],
                 check=False,

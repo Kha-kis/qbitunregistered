@@ -39,7 +39,7 @@ from benchmarks.gauntlet.fixture_factory import (
     expected_endpoint_counters,
     materialized_fixture_digest,
 )
-from benchmarks.gauntlet.identity import RepositoryIdentity
+from benchmarks.gauntlet.identity import RepositoryIdentity, RepositoryIdentityError
 from benchmarks.gauntlet.paired import (
     PAIRED_ORDER,
     PairedGauntletError,
@@ -705,7 +705,10 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     pycache_roots: list[Path] = []
 
     def fake_run(command, **kwargs):
-        assert command[1:3] == ["-s", "-m"]
+        assert command[1:4] == ["-s", "-S", "-P"]
+        assert command[4] == str(tmp_path / "benchmarks" / "gauntlet" / "import_bootstrap.py")
+        assert command[5] == str(tmp_path)
+        assert json.loads(command[6]) == list(paired._dependency_import_paths())
         environment = kwargs["env"]
         assert environment["PYTHONNOUSERSITE"] == "1"
         assert environment["PYTHONHASHSEED"] == "0"
@@ -737,6 +740,136 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     assert [result["profile"] for result in results] == ["quick", "quick"]
     assert len(set(pycache_roots)) == 2
     assert all(not path.exists() for path in pycache_roots)
+
+
+def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    gauntlet_root = repository_root / "benchmarks" / "gauntlet"
+    selected_package = repository_root / "qbitunregistered"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    installed_package = dependency_root / "qbitunregistered"
+    gauntlet_root.mkdir(parents=True)
+    selected_package.mkdir()
+    installed_package.mkdir(parents=True)
+    (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
+    (gauntlet_root / "__init__.py").write_text("", encoding="utf-8")
+    (selected_package / "__init__.py").write_text('ORIGIN = "selected-worktree"\n', encoding="utf-8")
+    (installed_package / "__init__.py").write_text('ORIGIN = "editable-install"\n', encoding="utf-8")
+    (dependency_root / "schedule.py").write_text('ORIGIN = "installed-dependency"\n', encoding="utf-8")
+    (repository_root / "schedule.py").write_text('ORIGIN = "root-shadow"\n', encoding="utf-8")
+    (gauntlet_root / "__main__.py").write_text(
+        "\n".join(
+            (
+                "import json",
+                "import schedule",
+                "import statistics",
+                "import sys",
+                "import qbitunregistered",
+                "print(json.dumps({",
+                '    "first_party": qbitunregistered.ORIGIN,',
+                '    "first_party_file": qbitunregistered.__file__,',
+                '    "third_party": getattr(schedule, "ORIGIN", "installed-dependency"),',
+                '    "third_party_file": schedule.__file__,',
+                '    "statistics_file": statistics.__file__,',
+                '    "statistics_marker": getattr(statistics, "ORIGIN", "stdlib"),',
+                '    "path": sys.path,',
+                "}))",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert paired.__file__ is not None
+    bootstrap_source = Path(paired.__file__).with_name("import_bootstrap.py")
+    (gauntlet_root / "import_bootstrap.py").write_bytes(bootstrap_source.read_bytes())
+    assert launcher.__file__ is not None
+    (gauntlet_root / "launcher.py").write_bytes(Path(launcher.__file__).read_bytes())
+
+    shadow_source = repository_root / "statistics.py"
+    stale_shadow = 'ORIGIN = "root-stale"\n'
+    fresh_shadow = 'ORIGIN = "root-fresh"\n'
+    assert len(stale_shadow) == len(fresh_shadow)
+    source_timestamp = 1_700_000_000
+    shadow_source.write_text(stale_shadow, encoding="utf-8")
+    os.utime(shadow_source, (source_timestamp, source_timestamp))
+    py_compile.compile(
+        str(shadow_source),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+    )
+    shadow_source.write_text(fresh_shadow, encoding="utf-8")
+    os.utime(shadow_source, (source_timestamp, source_timestamp))
+
+    clean_environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
+    clean_environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    direct = subprocess.run(
+        [sys.executable, "-s", "-m", "benchmarks.gauntlet"],
+        cwd=repository_root,
+        env=clean_environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert direct.returncode == 0
+    direct_result = json.loads(direct.stdout)
+    assert direct_result["statistics_marker"] == "root-stale"
+    assert direct_result["third_party"] == "root-shadow"
+
+    dependency_json = json.dumps([str(dependency_root.resolve())])
+    controlled = subprocess.run(
+        [
+            sys.executable,
+            "-s",
+            "-S",
+            "-P",
+            str(gauntlet_root / "import_bootstrap.py"),
+            str(repository_root),
+            dependency_json,
+        ],
+        cwd=repository_root,
+        env=clean_environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert controlled.returncode == 0, controlled.stderr
+    controlled_result = json.loads(controlled.stdout)
+
+    launched = subprocess.run(
+        [sys.executable, "-I", str(gauntlet_root / "launcher.py")],
+        cwd=repository_root,
+        env={
+            **clean_environment,
+            "TMPDIR": str(tmp_path),
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert launched.returncode == 0, launched.stderr
+    launched_result = json.loads(launched.stdout)
+
+    for result in (controlled_result, launched_result):
+        assert result["first_party"] == "selected-worktree"
+        assert Path(result["first_party_file"]).is_relative_to(selected_package)
+        assert result["third_party"] == "installed-dependency"
+        assert Path(result["third_party_file"]) != repository_root / "schedule.py"
+        assert result["statistics_marker"] == "stdlib"
+        assert Path(result["statistics_file"]) != shadow_source
+        import_paths = [Path(value) for value in result["path"]]
+        assert repository_root not in import_paths
+        third_party_path = Path(result["third_party_file"]).resolve()
+        dependency_path = next(path for path in import_paths if third_party_path.is_relative_to(path.resolve()))
+        dependency_index = import_paths.index(dependency_path)
+        stdlib_zip_indexes = [index for index, path in enumerate(import_paths) if path.suffix.casefold() == ".zip"]
+        dynamic_library_indexes = [
+            index for index, path in enumerate(import_paths) if path.name.casefold() in {"lib-dynload", "dlls"}
+        ]
+        assert stdlib_zip_indexes
+        assert dynamic_library_indexes
+        assert max(*stdlib_zip_indexes, *dynamic_library_indexes) < dependency_index
 
 
 def test_paired_child_stderr_capture_is_memory_bounded(
@@ -902,6 +1035,11 @@ def test_source_launcher_ignores_timestamp_valid_parent_bytecode(
         Path(launcher.__file__).read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    bootstrap_path = gauntlet_root / "import_bootstrap.py"
+    bootstrap_path.write_bytes(Path(launcher.__file__).with_name("import_bootstrap.py").read_bytes())
+    qbitunregistered_root = repository_root / "qbitunregistered"
+    qbitunregistered_root.mkdir()
+    (qbitunregistered_root / "__init__.py").write_text("", encoding="utf-8")
     cache_parent = tmp_path / "cache-parent"
     cache_parent.mkdir()
     invocation_root = tmp_path / "invocation"
@@ -967,15 +1105,16 @@ def test_source_launcher_strips_injection_spawns_once_and_cleans_cache(
 
     assert returncode == expected_returncode
     assert len(calls) == 1
-    assert calls[0][:6] == [
+    assert calls[0][:7] == [
         sys.executable,
         "-s",
+        "-S",
         "-P",
-        "-c",
-        launcher.MODULE_BOOTSTRAP,
+        str(REPOSITORY_ROOT / "benchmarks" / "gauntlet" / "import_bootstrap.py"),
         str(REPOSITORY_ROOT),
+        json.dumps(launcher._dependency_import_paths()),
     ]
-    assert calls[0][6:] == ["--profile", "quick"]
+    assert calls[0][7:] == ["--profile", "quick"]
     assert list(tmp_path.iterdir()) == []
 
 
@@ -1090,6 +1229,71 @@ def test_paired_cli_translates_sanitized_child_failure_without_chaining(
     assert error_info.value.__cause__ is None
     assert error_info.value.__suppress_context__ is True
     assert str(sensitive_path) not in str(error_info.value)
+
+
+def test_paired_cli_translates_changed_repository_identity_without_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_parent_cache: Path,
+) -> None:
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    expected_identity = RepositoryIdentity("a" * 40, True, "b" * 64)
+    changed_identity = RepositoryIdentity("c" * 40, False, "d" * 64)
+    captured_identities = iter((expected_identity, changed_identity))
+    monkeypatch.setattr(
+        gauntlet_cli,
+        "capture_repository_identity",
+        lambda _root: next(captured_identities),
+    )
+    monkeypatch.setattr(
+        runner,
+        "bind_output_directory",
+        lambda *_args, **_kwargs: nullcontext(None),
+    )
+    monkeypatch.setattr(
+        paired,
+        "run_paired_gauntlet",
+        lambda *_args, **_kwargs: {"comparison": {"overall": "fail"}},
+    )
+
+    with pytest.raises(SystemExit) as error_info:
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+            ]
+        )
+
+    assert str(error_info.value) == "paired repository identity changed during evaluation"
+    assert error_info.value.__cause__ is None
+    assert error_info.value.__suppress_context__ is True
+    assert str(tmp_path) not in str(error_info.value)
+
+
+def test_paired_domain_translates_repository_identity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = RepositoryIdentity("a" * 40, True, "b" * 64)
+    changed = RepositoryIdentity("c" * 40, False, "d" * 64)
+    monkeypatch.setattr(
+        paired,
+        "capture_repository_identity",
+        lambda _root: changed,
+    )
+
+    with pytest.raises(
+        PairedGauntletError,
+        match=r"^paired repository identity changed during evaluation$",
+    ) as error_info:
+        paired._require_unchanged_identity(expected, tmp_path)
+
+    assert isinstance(error_info.value.__cause__, RepositoryIdentityError)
 
 
 @pytest.mark.parametrize(

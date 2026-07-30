@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from benchmarks.gauntlet.identity import (
+    RepositoryIdentityError,
     capture_repository_identity,
     require_same_identity,
 )
@@ -269,6 +270,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
         except (GauntletSafetyError, PairedGauntletError) as error:
             raise SystemExit(str(error)) from None
+        except RepositoryIdentityError:
+            raise SystemExit("paired repository identity changed during evaluation") from None
         print(output_path)
         return 0 if paired_result["comparison"]["overall"] == "pass" else COMPARISON_FAILED_EXIT
 

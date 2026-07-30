@@ -28,6 +28,7 @@ from benchmarks.gauntlet.baseline import (
 )
 from benchmarks.gauntlet.identity import (
     RepositoryIdentity,
+    RepositoryIdentityError,
     capture_repository_identity,
     require_same_identity,
 )
@@ -65,6 +66,7 @@ CHILD_TIMEOUT_SECONDS = 3_600
 CHILD_STDERR_DRAIN_TIMEOUT_SECONDS = 5
 DEPENDENCY_FILES = ("pyproject.toml", "uv.lock")
 PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
+SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 IMPORTABLE_EXTENSION_ERROR = "repository contains an importable native extension in a protected package tree"
 ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
 _SECRET_ASSIGNMENT_PATTERN = re.compile(r"(?i)\b(api[\s_-]?key|password|passwd|token|secret)\b\s*[:=]\s*[^\r\n]*")
@@ -603,6 +605,41 @@ def _require_clean_identity(repository_root: Path) -> RepositoryIdentity:
     return identity
 
 
+def _dependency_import_paths() -> tuple[str, ...]:
+    """Return ordinary installed-package paths without editable source roots."""
+    dependency_paths: list[str] = []
+    for value in sys.path:
+        if not value:
+            continue
+        try:
+            path = Path(value)
+            resolved_path = path.resolve()
+        except (OSError, RuntimeError, ValueError) as error:
+            raise PairedGauntletError("paired dependency import path could not be resolved") from error
+        if (
+            path.is_absolute()
+            and resolved_path.is_dir()
+            and SITE_DIRECTORY_NAMES.intersection(part.casefold() for part in resolved_path.parts)
+        ):
+            resolved_value = str(resolved_path)
+            if resolved_value not in dependency_paths:
+                dependency_paths.append(resolved_value)
+    return tuple(dependency_paths)
+
+
+def _require_unchanged_identity(
+    expected: RepositoryIdentity,
+    repository_root: Path,
+) -> None:
+    try:
+        require_same_identity(
+            expected,
+            capture_repository_identity(repository_root),
+        )
+    except RepositoryIdentityError as error:
+        raise PairedGauntletError("paired repository identity changed during evaluation") from error
+
+
 def _retain_stderr_tail(
     read_descriptor: int,
     captured: bytearray,
@@ -727,8 +764,11 @@ def _run_child(
     command = [
         sys.executable,
         "-s",
-        "-m",
-        "benchmarks.gauntlet",
+        "-S",
+        "-P",
+        str(repository_root / "benchmarks" / "gauntlet" / "import_bootstrap.py"),
+        str(repository_root),
+        json.dumps(_dependency_import_paths()),
         "--profile",
         profile,
         "--seed",
@@ -871,12 +911,9 @@ def run_paired_gauntlet(
     }
     if any(_complete_clean_identity(run["result"]) != expected_identities[run["role"]] for run in paired_runs):
         raise PairedGauntletError("paired child identity does not match its requested worktree")
-    require_same_identity(
-        orchestrator_identity,
-        capture_repository_identity(orchestrator_root),
-    )
-    require_same_identity(control_identity, capture_repository_identity(control_root))
-    require_same_identity(candidate_identity, capture_repository_identity(candidate_root))
+    _require_unchanged_identity(orchestrator_identity, orchestrator_root)
+    _require_unchanged_identity(control_identity, control_root)
+    _require_unchanged_identity(candidate_identity, candidate_root)
     _reject_importable_extensions_in_roots(repository_roots)
     if (
         _evaluator_digest(orchestrator_root) != orchestrator_digest

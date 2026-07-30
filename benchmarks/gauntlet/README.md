@@ -42,25 +42,35 @@ be safely bound; ordinary non-paired output retains automatic parent creation.
 Paired mode must start through the source-only launcher shown above. The
 launcher removes inherited Python injection variables and starts the
 coordinator with a fresh temporary bytecode cache before any repository package
-can be imported. This launcher invocation is the only supported paired entry
-path. The current coordinator rejects direct paired execution with
+can be imported. The coordinator and every measured child then start with
+Python's site initialization disabled and unsafe path prepending blocked. A
+source-only finder binds the `benchmarks` and `qbitunregistered` package trees
+to the selected worktree without adding its repository root to `sys.path`.
+Interpreter-owned standard-library paths, including the standard-library zip
+and native-module directory, remain first; ordinary installed dependency
+directories follow, and editable-install path hooks are not executed. Thus
+checkout-level modules cannot shadow standard-library or third-party imports,
+while the evaluated worktree remains authoritative for both first-party
+packages. This launcher invocation is the only supported paired entry path. The
+current coordinator rejects direct paired execution with
 `python -m benchmarks.gauntlet`, but that check cannot make an already-stale
 module cache safe. Ordinary non-paired execution remains available through the
 module command.
 
 The orchestrator uses two symmetric crossover blocks: `control, candidate,
 candidate, control`, then `candidate, control, control, candidate`
-(ABBA+BAAB). Role position sums are identical. Each child starts with `-s`,
-user-site loading disabled, and Python injection environment variables
-removed. Each invocation also uses a fresh temporary bytecode cache outside
-the evaluated worktree. Repository-local native extensions that could shadow
-the `benchmarks` or `qbitunregistered` package trees are rejected before and
-after the crossover. Each run retains its warmup, five untraced timed samples,
-and traced memory pass. No sample is rejected. The artifact therefore retains
-40 raw runtime samples and eight peak-memory values. Child standard output is
-discarded. Standard error is drained without accumulating it on disk or in
-unbounded memory; a nonzero exit reports only a bounded excerpt with paths,
-credential-like values, control sequences, and URL user information redacted.
+(ABBA+BAAB). Role position sums are identical. Each child starts with
+`-s -S -P`, user-site and ordinary site initialization disabled, and Python injection
+environment variables removed. Each invocation also uses a fresh temporary
+bytecode cache outside the evaluated worktree. Repository-local native
+extensions that could shadow the `benchmarks` or `qbitunregistered` package
+trees are rejected before and after the crossover. Each run retains its
+warmup, five untraced timed samples, and traced memory pass. No sample is
+rejected. The artifact therefore retains 40 raw runtime samples and eight
+peak-memory values. Child standard output is discarded. Standard error is
+drained without accumulating it on disk or in unbounded memory; a nonzero exit
+reports only a bounded excerpt with paths, credential-like values, control
+sequences, and URL user information redacted.
 
 Runtime pools all 20 samples for each role and compares their medians with the
 locked `0.50` target. Each four-run block must independently meet that same
