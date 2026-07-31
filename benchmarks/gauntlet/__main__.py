@@ -2,9 +2,36 @@
 
 from __future__ import annotations
 
+import sys
+
+_COORDINATOR_BOOTSTRAP_MODULE = "_qbitunregistered_gauntlet_coordinator_bootstrap"
+_COORDINATOR_LAUNCH_ERROR = "paired gauntlet must be started with benchmarks/gauntlet/launcher.py"
+
+
+def _paired_arguments_requested(arguments: Sequence[str]) -> bool:
+    return any(argument.startswith("--paired-") for argument in arguments)
+
+
+def _require_isolated_coordinator() -> None:
+    flags = sys.flags
+    bootstrap_state = sys.modules.get(_COORDINATOR_BOOTSTRAP_MODULE)
+    accept = getattr(bootstrap_state, "accept", None)
+    if (
+        not flags.no_site
+        or not flags.no_user_site
+        or not flags.safe_path
+        or not callable(accept)
+        or accept(__file__) is not True
+    ):
+        raise SystemExit(_COORDINATOR_LAUNCH_ERROR)
+
+
+_EARLY_COORDINATOR_ISOLATION_VERIFIED = _paired_arguments_requested(sys.argv[1:])
+if _EARLY_COORDINATOR_ISOLATION_VERIFIED:
+    _require_isolated_coordinator()
+
 import argparse
 import os
-import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -182,6 +209,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if paired_requested and (paired_control is None or paired_candidate is None):
         raise SystemExit("--paired-control and --paired-candidate must be supplied together")
     if paired_requested:
+        if not _EARLY_COORDINATOR_ISOLATION_VERIFIED:
+            _require_isolated_coordinator()
         assert paired_control is not None
         assert paired_candidate is not None
         try:

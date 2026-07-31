@@ -22,6 +22,7 @@ PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
 SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 DEPENDENCY_DIGEST_ARGUMENT = "--dependency-environment-digest"
 PROTECTED_IMPORT_ERROR = "gauntlet protected imports could not be verified"
+COORDINATOR_BOOTSTRAP_MODULE = "_qbitunregistered_gauntlet_coordinator_bootstrap"
 _DIGEST_CHUNK_BYTES = 1024 * 1024
 _GIT_TIMEOUT_SECONDS = 10
 _REGULAR_BLOB_MODES = frozenset({b"100644", b"100755"})
@@ -460,6 +461,40 @@ class _WorktreePackageFinder(importlib.abc.MetaPathFinder):
             raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
 
 
+class _CoordinatorBootstrapState(ModuleType):
+    """One-use proof that the coordinator was loaded by this bootstrap."""
+
+    def __init__(
+        self,
+        repository_root: Path,
+        protected_finder: _WorktreePackageFinder,
+        import_paths: Sequence[str],
+    ) -> None:
+        super().__init__(COORDINATOR_BOOTSTRAP_MODULE)
+        self._expected_main = repository_root / "benchmarks" / "gauntlet" / "__main__.py"
+        self._protected_finder = protected_finder
+        self._import_paths = tuple(import_paths)
+        self._accepted = False
+
+    def accept(self, source_file: str) -> bool:
+        """Consume the bootstrap proof only in its bound coordinator."""
+        if (
+            self._accepted
+            or sys.modules.get(COORDINATOR_BOOTSTRAP_MODULE) is not self
+            or not sys.meta_path
+            or sys.meta_path[0] is not self._protected_finder
+            or tuple(sys.path) != self._import_paths
+            or Path(source_file) != self._expected_main
+        ):
+            return False
+        for module_name in ("benchmarks", "benchmarks.gauntlet", "__main__"):
+            module = sys.modules.get(module_name)
+            if module is None or not isinstance(module.__loader__, _ProtectedSourceLoader):
+                return False
+        self._accepted = True
+        return True
+
+
 def _resolved_dependency_paths(raw_value: str, repository_root: Path) -> list[str]:
     try:
         values = json.loads(raw_value)
@@ -543,6 +578,14 @@ def main(arguments: Sequence[str] | None = None) -> None:
     # packages outrank ordinary installed dependencies.
     sys.path[:] = [*interpreter_paths, *dependency_paths]
     sys.meta_path.insert(0, protected_finder)
+    if COORDINATOR_BOOTSTRAP_MODULE in sys.modules:
+        raise SystemExit(PROTECTED_IMPORT_ERROR)
+    bootstrap_state = _CoordinatorBootstrapState(
+        repository_root,
+        protected_finder,
+        sys.path,
+    )
+    sys.modules[COORDINATOR_BOOTSTRAP_MODULE] = bootstrap_state
     sys.argv[:] = ["benchmarks.gauntlet", *resolved_arguments]
     try:
         try:
@@ -550,16 +593,20 @@ def main(arguments: Sequence[str] | None = None) -> None:
         except ProtectedPackageTreeError:
             raise SystemExit(PROTECTED_IMPORT_ERROR) from None
     finally:
-        _require_safe_package_trees(repository_root)
         try:
-            protected_finder.validate_sources()
-        except ProtectedPackageTreeError:
-            raise SystemExit(PROTECTED_IMPORT_ERROR) from None
-        if (
-            expected_dependency_digest is not None
-            and _current_dependency_digest(dependency_paths) != expected_dependency_digest
-        ):
-            raise SystemExit("gauntlet dependency environment changed during evaluation")
+            _require_safe_package_trees(repository_root)
+            try:
+                protected_finder.validate_sources()
+            except ProtectedPackageTreeError:
+                raise SystemExit(PROTECTED_IMPORT_ERROR) from None
+            if (
+                expected_dependency_digest is not None
+                and _current_dependency_digest(dependency_paths) != expected_dependency_digest
+            ):
+                raise SystemExit("gauntlet dependency environment changed during evaluation")
+        finally:
+            if sys.modules.get(COORDINATOR_BOOTSTRAP_MODULE) is bootstrap_state:
+                del sys.modules[COORDINATOR_BOOTSTRAP_MODULE]
 
 
 if __name__ == "__main__":

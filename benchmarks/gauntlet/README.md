@@ -76,10 +76,12 @@ before and after evaluator execution, and the coordinator rechecks it after
 each child. Redirecting and special dependency entries fail closed. The
 artifact dependency digest binds this environment fingerprint to the identical
 `pyproject.toml` and `uv.lock` bytes. This launcher invocation is the only
-supported paired entry path. The current coordinator rejects direct paired execution with
-`python -m benchmarks.gauntlet`, but that check cannot make an already-stale
-module cache safe. Ordinary non-paired execution remains available through the
-module command.
+supported paired entry path. The coordinator rejects direct paired execution
+with `python -m benchmarks.gauntlet` unless the validated bootstrap supplies
+its one-use in-process isolation state and the exact interpreter flags,
+protected finder, and sanitized import paths still match. Caller-controlled
+cache environment markers cannot satisfy that proof. Ordinary non-paired
+execution remains available through the module command.
 
 The orchestrator uses two symmetric crossover blocks: `control, candidate,
 candidate, control`, then `candidate, control, control, candidate`

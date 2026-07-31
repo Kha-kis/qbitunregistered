@@ -679,6 +679,14 @@ protected trees before and after the crossover; each isolated child closes the
 preflight-to-import gap by checking immediately before imports and after
 evaluation.
 
+The paired coordinator accepts execution only from the validated import
+bootstrap. A one-use process-local state binds the exact protected finder,
+sanitized import path, source location, and site/safe-path interpreter flags
+before coordinator imports proceed. Cache environment variables remain
+operational inputs, not authentication markers, so direct module execution
+cannot spoof the launcher boundary. Ordinary non-paired module execution is
+unchanged.
+
 One content-and-relative-path fingerprint binds the ordered installed
 dependency directories for all eight crossover children. Each child verifies
 that fingerprint immediately before and after evaluator execution, while the

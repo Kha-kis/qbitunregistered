@@ -132,6 +132,7 @@ def isolated_parent_cache(
 ) -> Path:
     cache_root = tmp_path / "parent-pycache"
     cache_root.mkdir()
+    monkeypatch.setattr(gauntlet_cli, "_require_isolated_coordinator", lambda: None)
     monkeypatch.setenv(gauntlet_cli.ISOLATED_PARENT_CACHE_ENV, str(cache_root))
     monkeypatch.setattr(gauntlet_cli.sys, "pycache_prefix", str(cache_root))
     return cache_root
@@ -1985,14 +1986,21 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
     (gauntlet_root / "__main__.py").write_text(
         "\n".join(
             (
+                "import sys",
                 "import json",
+                ("bootstrap_state = " f"sys.modules.get({import_bootstrap.COORDINATOR_BOOTSTRAP_MODULE!r})"),
+                ("bootstrap_accepted = bootstrap_state is not None " "and bootstrap_state.accept(__file__)"),
                 "import schedule",
                 "import statistics",
-                "import sys",
                 "import qbitunregistered",
                 "print(json.dumps({",
+                '    "bootstrap_accepted": bootstrap_accepted,',
                 '    "first_party": qbitunregistered.ORIGIN,',
                 '    "first_party_file": qbitunregistered.__file__,',
+                (
+                    '    "flags": {"no_site": sys.flags.no_site, '
+                    '"no_user_site": sys.flags.no_user_site, "safe_path": sys.flags.safe_path},'
+                ),
                 '    "third_party": getattr(schedule, "ORIGIN", "installed-dependency"),',
                 '    "third_party_file": schedule.__file__,',
                 '    "statistics_file": statistics.__file__,',
@@ -2038,6 +2046,7 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
     )
     assert direct.returncode == 0
     direct_result = json.loads(direct.stdout)
+    assert direct_result["bootstrap_accepted"] is False
     assert direct_result["statistics_marker"] == "root-stale"
     assert direct_result["third_party"] == "root-shadow"
 
@@ -2079,6 +2088,12 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
     launched_result = json.loads(launched.stdout)
 
     for result in (controlled_result, launched_result):
+        assert result["bootstrap_accepted"] is True
+        assert result["flags"] == {
+            "no_site": 1,
+            "no_user_site": 1,
+            "safe_path": True,
+        }
         assert result["first_party"] == "selected-worktree"
         assert Path(result["first_party_file"]).is_relative_to(selected_package)
         assert result["third_party"] == "installed-dependency"
@@ -2409,6 +2424,119 @@ def test_source_launcher_requires_isolated_interpreter() -> None:
         launcher._require_isolated_startup()
 
 
+def test_direct_paired_module_rejects_spoofed_cache_markers_before_root_shadow(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    gauntlet_root = repository_root / "benchmarks" / "gauntlet"
+    qbitunregistered_root = repository_root / "qbitunregistered"
+    gauntlet_root.mkdir(parents=True)
+    qbitunregistered_root.mkdir()
+    (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
+    (gauntlet_root / "__init__.py").write_text("", encoding="utf-8")
+    (qbitunregistered_root / "__init__.py").write_text("", encoding="utf-8")
+    for source_name in ("__main__.py", "baseline.py", "identity.py"):
+        source = REPOSITORY_ROOT / "benchmarks" / "gauntlet" / source_name
+        (gauntlet_root / source_name).write_bytes(source.read_bytes())
+    shadow_marker = tmp_path / "statistics-shadow-ran"
+    shadow_source = repository_root / "statistics.py"
+    shadow_source.write_text(
+        "from pathlib import Path\n" f"Path({str(shadow_marker)!r}).write_text('executed', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+    subprocess.run(["git", "add", "statistics.py"], cwd=repository_root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Gauntlet Test",
+            "-c",
+            "user.email=gauntlet@example.invalid",
+            "commit",
+            "--amend",
+            "--no-edit",
+            "-q",
+        ],
+        cwd=repository_root,
+        check=True,
+    )
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    cache_root = tmp_path / "spoofed-cache"
+    control_root.mkdir()
+    candidate_root.mkdir()
+    cache_root.mkdir()
+    secret = "operator-secret-value"
+    environment = {
+        **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+        "PYTHONPYCACHEPREFIX": str(cache_root),
+        gauntlet_cli.ISOLATED_PARENT_CACHE_ENV: str(cache_root),
+        "GAUNTLET_SECRET": secret,
+    }
+
+    argument_forms = (
+        [
+            "--paired-control",
+            str(control_root),
+            "--paired-candidate",
+            str(candidate_root),
+        ],
+        [
+            f"--paired-control={control_root}",
+            f"--paired-candidate={candidate_root}",
+        ],
+    )
+    invocations: tuple[tuple[list[str], dict[str, str]], ...] = (
+        ([], environment),
+        (
+            ["-s", "-S", "-P"],
+            {
+                **environment,
+                "PYTHONPATH": str(repository_root),
+            },
+        ),
+    )
+    for interpreter_arguments, invocation_environment in invocations:
+        for arguments in argument_forms:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    *interpreter_arguments,
+                    "-m",
+                    "benchmarks.gauntlet",
+                    *arguments,
+                ],
+                cwd=repository_root,
+                env=invocation_environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            assert completed.returncode == 1
+            assert completed.stdout == ""
+            assert completed.stderr.strip() == "paired gauntlet must be started with benchmarks/gauntlet/launcher.py"
+            assert "Traceback" not in completed.stderr
+            assert str(repository_root) not in completed.stderr
+            assert secret not in completed.stderr
+    assert not shadow_marker.exists()
+
+
+def test_direct_nonpaired_module_entry_remains_available() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "benchmarks.gauntlet", "--help"],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0
+    assert "Run the deterministic qbitunregistered safety gauntlet." in completed.stdout
+    assert completed.stderr == ""
+
+
 @requires_bound_publication
 def test_source_launcher_reports_paired_failure_without_traceback_or_paths() -> None:
     assert launcher.__file__ is not None
@@ -2446,6 +2574,7 @@ def test_paired_cli_rejects_unisolated_or_mismatched_parent_cache(
     candidate_root.mkdir()
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
+    monkeypatch.setattr(gauntlet_cli, "_require_isolated_coordinator", lambda: None)
     monkeypatch.setenv(gauntlet_cli.ISOLATED_PARENT_CACHE_ENV, str(cache_root))
     monkeypatch.setattr(
         gauntlet_cli.sys,
