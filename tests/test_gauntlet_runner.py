@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import importlib.util
 import json
 import math
@@ -3978,14 +3977,12 @@ def test_explicit_publication_supports_near_name_max_output_and_cleans_failures(
             "intended_action_digest": "a" * 64,
         }
     )
-    expected_digest = hashlib.sha256(serialized_result.encode()).hexdigest()
 
     written_path = runner.write_serialized_result(serialized_result, output)
 
     assert written_path == output
     assert output.read_text(encoding="utf-8") == serialized_result
     assert json.loads(output.read_text(encoding="utf-8"))["intended_action_digest"] == "a" * 64
-    assert hashlib.sha256(output.read_bytes()).hexdigest() == expected_digest
     assert list(tmp_path.iterdir()) == [output]
 
     def fail_replace(_source: Path, _destination: Path) -> None:
@@ -3996,7 +3993,7 @@ def test_explicit_publication_supports_near_name_max_output_and_cleans_failures(
         runner.write_serialized_result("failed replacement\n", output)
 
     assert output.read_text(encoding="utf-8") == serialized_result
-    assert hashlib.sha256(output.read_bytes()).hexdigest() == expected_digest
+    assert json.loads(output.read_text(encoding="utf-8"))["intended_action_digest"] == "a" * 64
     assert list(tmp_path.iterdir()) == [output]
 
 
@@ -4013,7 +4010,6 @@ def test_bound_publication_supports_near_name_max_output_and_cleans_failures(
             "intended_action_digest": "b" * 64,
         }
     )
-    expected_digest = hashlib.sha256(serialized_result.encode()).hexdigest()
 
     with runner.bind_output_directory(tmp_path) as bound_directory:
         runner.validate_bound_output_leaf(bound_directory, output.name)
@@ -4026,7 +4022,6 @@ def test_bound_publication_supports_near_name_max_output_and_cleans_failures(
         assert written_path == output
         assert output.read_text(encoding="utf-8") == serialized_result
         assert json.loads(output.read_text(encoding="utf-8"))["intended_action_digest"] == "b" * 64
-        assert hashlib.sha256(output.read_bytes()).hexdigest() == expected_digest
         assert list(tmp_path.iterdir()) == [output]
 
         def fail_rename(*_args, **_kwargs) -> None:
@@ -4044,7 +4039,7 @@ def test_bound_publication_supports_near_name_max_output_and_cleans_failures(
             )
 
     assert output.read_text(encoding="utf-8") == serialized_result
-    assert hashlib.sha256(output.read_bytes()).hexdigest() == expected_digest
+    assert json.loads(output.read_text(encoding="utf-8"))["intended_action_digest"] == "b" * 64
     assert list(tmp_path.iterdir()) == [output]
 
 
