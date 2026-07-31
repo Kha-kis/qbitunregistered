@@ -77,6 +77,7 @@ SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 IMPORTABLE_EXTENSION_ERROR = "repository contains an importable native extension in a protected package tree"
 REDIRECTING_PACKAGE_ENTRY_ERROR = "repository contains a redirecting entry in a protected package tree"
 IGNORED_PYTHON_SOURCE_ERROR = "repository contains an ignored Python source in a protected package tree"
+NONCANONICAL_INDEX_INPUT_ERROR = "repository contains hidden or noncanonical evaluator inputs"
 ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
 _SECRET_ASSIGNMENT_PATTERN = re.compile(r"(?i)\b(api[\s_-]?key|password|passwd|token|secret)\b\s*[:=]\s*[^\r\n]*")
 _SECRET_JSON_PATTERN = re.compile(r"""(?ix)
@@ -676,11 +677,81 @@ def _reject_ignored_python_sources(repository_root: Path) -> None:
         raise PairedGauntletError(IGNORED_PYTHON_SOURCE_ERROR)
 
 
+def _is_evaluator_index_input(relative_path: bytes) -> bool:
+    return (
+        relative_path == b"benchmarks/__init__.py"
+        or relative_path in {name.encode("ascii") for name in DEPENDENCY_FILES}
+        or (
+            relative_path.startswith(b"benchmarks/gauntlet/")
+            and (relative_path.endswith(b".py") or relative_path == b"benchmarks/gauntlet/quality-bar.toml")
+        )
+    )
+
+
+def _reject_noncanonical_index_inputs(repository_root: Path) -> None:
+    """Reject evaluator inputs hidden from ordinary Git identity checks."""
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--cached",
+                "-v",
+                "--stage",
+                "-z",
+                "--",
+                "benchmarks/__init__.py",
+                "benchmarks/gauntlet",
+                *DEPENDENCY_FILES,
+            ],
+            cwd=repository_root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise PairedGauntletError(NONCANONICAL_INDEX_INPUT_ERROR) from error
+    output = completed.stdout
+    if completed.returncode != 0 or len(output) > MAX_CHILD_ARTIFACT_BYTES or not output.endswith(b"\0") or b"\0\0" in output:
+        raise PairedGauntletError(NONCANONICAL_INDEX_INPUT_ERROR)
+
+    required = {
+        b"benchmarks/__init__.py",
+        b"benchmarks/gauntlet/quality-bar.toml",
+        *(name.encode("ascii") for name in DEPENDENCY_FILES),
+    }
+    seen: set[bytes] = set()
+    for record in output[:-1].split(b"\0"):
+        metadata, separator, relative_path = record.partition(b"\t")
+        fields = metadata.split()
+        if separator != b"\t":
+            raise PairedGauntletError(NONCANONICAL_INDEX_INPUT_ERROR)
+        if not _is_evaluator_index_input(relative_path):
+            continue
+        if len(fields) != 4 or len(fields[0]) != 1:
+            raise PairedGauntletError(NONCANONICAL_INDEX_INPUT_ERROR)
+        index_status, mode, object_id, stage = fields
+        if (
+            relative_path in seen
+            or index_status != b"H"
+            or mode not in {b"100644", b"100755"}
+            or stage != b"0"
+            or re.fullmatch(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})", object_id) is None
+        ):
+            raise PairedGauntletError(NONCANONICAL_INDEX_INPUT_ERROR)
+        seen.add(relative_path)
+        required.discard(relative_path)
+    if required:
+        raise PairedGauntletError(NONCANONICAL_INDEX_INPUT_ERROR)
+
+
 def _require_clean_identity(repository_root: Path) -> RepositoryIdentity:
     identity = capture_repository_identity(repository_root)
     if not identity.known or identity.clean is not True:
         raise PairedGauntletError("paired repositories must have clean, complete Git identities")
     _reject_ignored_python_sources(repository_root)
+    _reject_noncanonical_index_inputs(repository_root)
     return identity
 
 
@@ -745,6 +816,7 @@ def _require_unchanged_identity(
     except RepositoryIdentityError as error:
         raise PairedGauntletError("paired repository identity changed during evaluation") from error
     _reject_ignored_python_sources(repository_root)
+    _reject_noncanonical_index_inputs(repository_root)
 
 
 def _retain_stderr_tail(
@@ -1019,6 +1091,7 @@ def run_paired_gauntlet(
             child_root = roots[role]
             _reject_unsafe_package_entries_in_roots((child_root,))
             _reject_ignored_python_sources(child_root)
+            _reject_noncanonical_index_inputs(child_root)
             try:
                 child_result = _run_child(
                     child_root,
@@ -1036,6 +1109,7 @@ def run_paired_gauntlet(
                     dependency_environment_identity,
                 )
                 _reject_ignored_python_sources(child_root)
+                _reject_noncanonical_index_inputs(child_root)
             try:
                 result = sanitize_child_result(child_result, quality_bar)
             except PairedEvidenceError as error:

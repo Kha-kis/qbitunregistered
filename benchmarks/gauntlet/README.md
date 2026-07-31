@@ -27,7 +27,10 @@ a custom `--compare` path and always loads
 `benchmarks/gauntlet/quality-bar.toml` from the invoking checkout. The artifact
 records the three clean identities plus evaluator, quality-bar, and dependency
 digests, and the orchestrator rechecks all identities and digests after the
-run. Protected package trees may not contain ignored Python sources, symbolic
+run. All evaluator, quality-bar, and dependency-lock inputs must be regular
+stage-0 index entries without skip-worktree or assume-unchanged flags; the
+coordinator verifies this before and after every child. Protected package trees
+may not contain ignored Python sources, symbolic
 links, Windows junctions, or other reparse points that can redirect imports.
 Ignored-source detection honors repository, worktree, and configured global Git
 excludes. The coordinator checks ignored sources, redirects, and native

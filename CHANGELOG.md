@@ -26,8 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output names with bounded staging names, reject
   protected-package imports not backed by immutable blob bytes from regular,
   canonically visible Git index entries, revalidate staged source identities
-  around execution, suppress contextless overflowed child diagnostics, and bind
-  installed dependency contents across every crossover child.
+  around execution, reject hidden or non-stage-0 evaluator, quality-bar, and
+  dependency inputs in every worktree, suppress contextless overflowed child
+  diagnostics, and bind installed dependency contents across every crossover
+  child.
 
 ## [2.2.1] - 2026-07-29
 

@@ -692,7 +692,10 @@ dependency directories for all eight crossover children. Each child verifies
 that fingerprint immediately before and after evaluator execution, while the
 coordinator independently rechecks it after every child. The paired artifact's
 dependency digest combines that environment fingerprint with the identical
-`pyproject.toml` and `uv.lock` inputs from all three worktrees.
+`pyproject.toml` and `uv.lock` inputs from all three worktrees. The coordinator
+also requires evaluator sources, the quality bar, and both dependency inputs to
+remain regular stage-0 index entries without skip-worktree or assume-unchanged
+flags in every worktree.
 
 ## Extension Points
 

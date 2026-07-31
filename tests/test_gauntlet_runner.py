@@ -165,6 +165,35 @@ def _initialize_gauntlet_test_repository(repository_root: Path) -> None:
     _commit_gauntlet_test_repository(repository_root)
 
 
+def _initialize_paired_test_repository(repository_root: Path) -> None:
+    """Create a committed repository containing every paired evaluator input."""
+    _initialize_gauntlet_test_repository(repository_root)
+    gauntlet_root = repository_root / "benchmarks" / "gauntlet"
+    (gauntlet_root / "__init__.py").write_text("", encoding="utf-8")
+    (gauntlet_root / "quality-bar.toml").write_bytes(QUALITY_BAR_PATH.read_bytes())
+    (repository_root / "pyproject.toml").write_text("[project]\nname = 'test'\n", encoding="utf-8")
+    (repository_root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "benchmarks/gauntlet", "pyproject.toml", "uv.lock"],
+        cwd=repository_root,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Gauntlet Test",
+            "-c",
+            "user.email=gauntlet@example.invalid",
+            "commit",
+            "-qm",
+            "paired evaluator inputs",
+        ],
+        cwd=repository_root,
+        check=True,
+    )
+
+
 def _commit_gauntlet_test_repository(repository_root: Path) -> None:
     """Initialize Git and commit the protected Python source trees."""
     subprocess.run(["git", "init", "-q", str(repository_root)], check=True)
@@ -588,6 +617,7 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "f" * 64)
     monkeypatch.setattr("benchmarks.gauntlet.paired._dependency_import_paths", lambda: dependency_paths)
     monkeypatch.setattr("benchmarks.gauntlet.paired._reject_ignored_python_sources", lambda _root: None)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._reject_noncanonical_index_inputs", lambda _root: None)
 
     def fake_run_child(root: Path, **kwargs):
         role = "control" if root == control_root else "candidate"
@@ -671,7 +701,7 @@ def test_paired_runner_rejects_ignored_python_sources_before_child(
     control_root = tmp_path / "control"
     candidate_root = tmp_path / "candidate"
     for repository_root in (orchestrator_root, control_root, candidate_root):
-        _initialize_gauntlet_test_repository(repository_root)
+        _initialize_paired_test_repository(repository_root)
 
     ignored_relative_path = Path("benchmarks") / "gauntlet" / "private-credential-source.py"
     ignore_pattern = f"/{ignored_relative_path.as_posix()}\n"
@@ -736,6 +766,70 @@ def test_paired_runner_rejects_ignored_python_sources_before_child(
     child.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("index_option", "expected_tag"),
+    (
+        ("--skip-worktree", "S"),
+        ("--assume-unchanged", "h"),
+    ),
+)
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "benchmarks/gauntlet/quality-bar.toml",
+        "pyproject.toml",
+        "uv.lock",
+    ),
+)
+def test_paired_runner_rejects_identical_index_hidden_evaluator_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    index_option: str,
+    expected_tag: str,
+    relative_path: str,
+) -> None:
+    orchestrator_root = tmp_path / "orchestrator"
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    for repository_root in (orchestrator_root, control_root, candidate_root):
+        _initialize_paired_test_repository(repository_root)
+        _set_test_index_flag(
+            repository_root,
+            relative_path,
+            index_option,
+            expected_tag,
+        )
+        hidden_input = repository_root / relative_path
+        hidden_input.write_bytes(hidden_input.read_bytes() + b"\n# identical hidden edit\n")
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert status.stdout == ""
+        assert capture_repository_identity(repository_root).clean is True
+
+    child = Mock(side_effect=AssertionError("paired child unexpectedly started"))
+    monkeypatch.setattr(paired, "_run_child", child)
+
+    with pytest.raises(PairedGauntletError) as error_info:
+        run_paired_gauntlet(
+            control_root,
+            candidate_root,
+            orchestrator_root=orchestrator_root,
+            profile="quick",
+            seed=20_260_729,
+            samples=DEFAULT_SAMPLES,
+        )
+
+    assert str(error_info.value) == paired.NONCANONICAL_INDEX_INPUT_ERROR
+    assert relative_path not in str(error_info.value)
+    assert str(tmp_path) not in str(error_info.value)
+    child.assert_not_called()
+
+
 @requires_descriptor_no_follow
 @pytest.mark.parametrize("child_fails", [False, True])
 def test_paired_runner_rechecks_importable_extensions_after_each_child(
@@ -763,6 +857,7 @@ def test_paired_runner_rechecks_importable_extensions_after_each_child(
     monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "f" * 64)
     monkeypatch.setattr("benchmarks.gauntlet.paired._dependency_import_paths", lambda: ("dependencies",))
     monkeypatch.setattr("benchmarks.gauntlet.paired._reject_ignored_python_sources", lambda _root: None)
+    monkeypatch.setattr("benchmarks.gauntlet.paired._reject_noncanonical_index_inputs", lambda _root: None)
     monkeypatch.setattr(
         "benchmarks.gauntlet.paired._current_dependency_environment_digest",
         lambda _paths: "a" * 64,
@@ -820,6 +915,7 @@ def test_paired_runner_rejects_dependency_environment_tampering_between_children
     monkeypatch.setattr(paired, "_named_files_digest", lambda *_args: "f" * 64)
     monkeypatch.setattr(paired, "_dependency_import_paths", lambda: (str(dependency_root),))
     monkeypatch.setattr(paired, "_reject_ignored_python_sources", lambda _root: None)
+    monkeypatch.setattr(paired, "_reject_noncanonical_index_inputs", lambda _root: None)
     real_load_quality_bar = paired._load_canonical_quality_bar
     loaded_quality_bars: list[Path] = []
     digested_quality_bars: list[Path] = []
