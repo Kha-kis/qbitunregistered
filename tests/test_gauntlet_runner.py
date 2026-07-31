@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 import math
@@ -87,6 +88,42 @@ requires_bound_publication = pytest.mark.skipif(
     not runner._supports_bound_publication(),
     reason="safe paired publication requires descriptor-relative filesystem operations",
 )
+
+
+def _near_name_max_ascii_basename(directory: Path) -> str:
+    """Probe a long legal ASCII basename for the test filesystem."""
+    suffix = ".json"
+    maximum_length = 255
+    pathconf = getattr(os, "pathconf", None)
+    if pathconf is not None:
+        try:
+            reported_maximum = pathconf(directory, "PC_NAME_MAX")
+        except (OSError, ValueError):
+            pass
+        else:
+            if reported_maximum > 0:
+                maximum_length = min(reported_maximum, 4096)
+
+    last_error: OSError | None = None
+    for length in range(maximum_length, 127, -1):
+        basename = ("r" * (length - len(suffix))) + suffix
+        probe = directory / basename
+        try:
+            descriptor = os.open(
+                probe,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except OSError as error:
+            last_error = error
+            continue
+        try:
+            os.close(descriptor)
+        finally:
+            probe.unlink(missing_ok=True)
+        return basename
+
+    pytest.fail(f"could not establish a long legal ASCII basename: {last_error}")
 
 
 @pytest.fixture
@@ -3926,6 +3963,88 @@ def test_explicit_output_cleans_staging_file_when_fsync_fails(
         runner.write_serialized_result("replacement artifact\n", output)
 
     assert output.read_text(encoding="utf-8") == "previous artifact\n"
+    assert list(tmp_path.iterdir()) == [output]
+
+
+def test_explicit_publication_supports_near_name_max_output_and_cleans_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / _near_name_max_ascii_basename(tmp_path)
+    output.write_text("previous artifact\n", encoding="utf-8")
+    serialized_result = runner.serialize_result(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "intended_action_digest": "a" * 64,
+        }
+    )
+    expected_digest = hashlib.sha256(serialized_result.encode()).hexdigest()
+
+    written_path = runner.write_serialized_result(serialized_result, output)
+
+    assert written_path == output
+    assert output.read_text(encoding="utf-8") == serialized_result
+    assert json.loads(output.read_text(encoding="utf-8"))["intended_action_digest"] == "a" * 64
+    assert hashlib.sha256(output.read_bytes()).hexdigest() == expected_digest
+    assert list(tmp_path.iterdir()) == [output]
+
+    def fail_replace(_source: Path, _destination: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(runner.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        runner.write_serialized_result("failed replacement\n", output)
+
+    assert output.read_text(encoding="utf-8") == serialized_result
+    assert hashlib.sha256(output.read_bytes()).hexdigest() == expected_digest
+    assert list(tmp_path.iterdir()) == [output]
+
+
+@requires_bound_publication
+def test_bound_publication_supports_near_name_max_output_and_cleans_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / _near_name_max_ascii_basename(tmp_path)
+    output.write_text("previous artifact\n", encoding="utf-8")
+    serialized_result = runner.serialize_result(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "intended_action_digest": "b" * 64,
+        }
+    )
+    expected_digest = hashlib.sha256(serialized_result.encode()).hexdigest()
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        runner.validate_bound_output_leaf(bound_directory, output.name)
+        written_path = runner.write_serialized_result(
+            serialized_result,
+            output,
+            bound_directory=bound_directory,
+        )
+
+        assert written_path == output
+        assert output.read_text(encoding="utf-8") == serialized_result
+        assert json.loads(output.read_text(encoding="utf-8"))["intended_action_digest"] == "b" * 64
+        assert hashlib.sha256(output.read_bytes()).hexdigest() == expected_digest
+        assert list(tmp_path.iterdir()) == [output]
+
+        def fail_rename(*_args, **_kwargs) -> None:
+            raise OSError("rename failed")
+
+        monkeypatch.setattr(runner.os, "rename", fail_rename)
+        with pytest.raises(
+            GauntletSafetyError,
+            match="could not publish the bound result safely",
+        ):
+            runner.write_serialized_result(
+                "failed replacement\n",
+                output,
+                bound_directory=bound_directory,
+            )
+
+    assert output.read_text(encoding="utf-8") == serialized_result
+    assert hashlib.sha256(output.read_bytes()).hexdigest() == expected_digest
     assert list(tmp_path.iterdir()) == [output]
 
 

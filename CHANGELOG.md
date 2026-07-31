@@ -20,11 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Paired gauntlet runs now report malformed canonical quality bars without
   tracebacks or private paths, reject directory and special-file output targets
-  before evaluation, cleanly report publication races, reject protected-package
-  imports not backed by immutable blob bytes from regular, canonically visible
-  Git index entries, revalidate staged source identities around execution,
-  suppress contextless overflowed child diagnostics, and bind installed
-  dependency contents across every crossover child.
+  before evaluation, cleanly report publication races, publish legal
+  maximum-length explicit output names with bounded staging names, reject
+  protected-package imports not backed by immutable blob bytes from regular,
+  canonically visible Git index entries, revalidate staged source identities
+  around execution, suppress contextless overflowed child diagnostics, and bind
+  installed dependency contents across every crossover child.
 
 ## [2.2.1] - 2026-07-29
 

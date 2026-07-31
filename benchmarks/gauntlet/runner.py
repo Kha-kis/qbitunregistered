@@ -47,6 +47,7 @@ SCHEMA_VERSION = 3
 EVALUATOR_VERSION = "1.3.0"
 DEFAULT_SEED = 20_260_729
 DEFAULT_SAMPLES = 5
+_RESULT_STAGING_PREFIX = ".qbit-gauntlet-"
 
 
 class GauntletSafetyError(RuntimeError):
@@ -779,7 +780,7 @@ def _write_bound_result(
                 raise
         temporary_descriptor, temporary_name = _open_unique_bound_file(
             bound_directory,
-            prefix=f".{output_name}.",
+            prefix=_RESULT_STAGING_PREFIX,
             suffix=".tmp",
         )
         with os.fdopen(temporary_descriptor, mode="w", encoding="utf-8") as temporary_file:
@@ -852,7 +853,7 @@ def write_serialized_result(
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
-            prefix=f".{output_path.name}.",
+            prefix=_RESULT_STAGING_PREFIX,
             suffix=".tmp",
             dir=output_path.parent,
             delete=False,
