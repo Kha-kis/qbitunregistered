@@ -798,6 +798,8 @@ def _write_bound_result(
             )
         except OSError as error:
             raise GauntletSafetyError("could not publish the bound result safely") from error
+        if not _bound_directory_is_safe(bound_directory):
+            raise GauntletSafetyError("validated result directory changed during publication")
         published = True
     finally:
         try:

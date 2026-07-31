@@ -4116,6 +4116,67 @@ def test_bound_publication_rejects_repeated_retarget_matching_fd_identity(
     assert list(unsafe_results.iterdir()) == []
 
 
+@requires_bound_publication
+@pytest.mark.parametrize("output_state", ["omitted", "missing", "existing"])
+def test_bound_publication_rejects_directory_move_after_descriptor_relative_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_state: str,
+) -> None:
+    candidate_root = tmp_path / "candidate"
+    _initialize_gauntlet_test_repository(candidate_root)
+    identity_before = capture_repository_identity(candidate_root)
+    assert identity_before.clean is True
+    outside_results = tmp_path / "outside-results"
+    outside_results.mkdir()
+    moved_results = candidate_root / "published-results"
+    output = outside_results / "result.json"
+    if output_state == "existing":
+        output.write_text("previous artifact\n", encoding="utf-8")
+    real_rename = os.rename
+
+    def publish_then_move_directory(source, destination, **kwargs):
+        real_rename(source, destination, **kwargs)
+        real_rename(outside_results, moved_results)
+
+    monkeypatch.setattr(runner.os, "rename", publish_then_move_directory)
+
+    with runner.bind_output_directory(
+        outside_results,
+        protected_roots=(candidate_root,),
+    ) as bound_directory:
+        with pytest.raises(
+            GauntletSafetyError,
+            match=r"^validated result directory changed during publication$",
+        ):
+            if output_state == "omitted":
+                runner.write_serialized_result(
+                    "unaccepted artifact\n",
+                    default_directory=outside_results,
+                    bound_directory=bound_directory,
+                )
+            else:
+                runner.validate_bound_output_leaf(bound_directory, output.name)
+                runner.write_serialized_result(
+                    "unaccepted artifact\n",
+                    output,
+                    bound_directory=bound_directory,
+                )
+
+    assert not outside_results.exists()
+    if output_state == "omitted":
+        assert list(moved_results.iterdir()) == []
+        assert capture_repository_identity(candidate_root) == identity_before
+    else:
+        moved_output = moved_results / output.name
+        assert list(moved_results.iterdir()) == [moved_output]
+        assert moved_output.read_text(encoding="utf-8") == "unaccepted artifact\n"
+        identity_after = capture_repository_identity(candidate_root)
+        assert identity_after.commit == identity_before.commit
+        assert identity_after.clean is False
+        assert identity_after.diff_sha256 != identity_before.diff_sha256
+
+
 def test_bound_publication_fails_closed_without_descriptor_relative_support(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
