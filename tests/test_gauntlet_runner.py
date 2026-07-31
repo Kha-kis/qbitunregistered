@@ -688,6 +688,38 @@ def test_paired_runner_rejects_noncanonical_samples_before_setup(
     unexpected_setup.assert_not_called()
 
 
+def test_paired_runner_rejects_noncanonical_seed_before_dependency_or_child_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = RepositoryIdentity("a" * 40, True, "b" * 64)
+    unexpected_dependency_work = Mock(side_effect=AssertionError("dependency work unexpectedly started"))
+    unexpected_child = Mock(side_effect=AssertionError("paired child unexpectedly started"))
+    monkeypatch.setattr(paired, "_require_clean_identity", lambda _root: identity)
+    monkeypatch.setattr(paired, "_reject_unsafe_package_entries_in_roots", lambda _roots: None)
+    monkeypatch.setattr(paired, "_named_files_digest", unexpected_dependency_work)
+    monkeypatch.setattr(paired, "_dependency_import_paths", unexpected_dependency_work)
+    monkeypatch.setattr(paired, "_current_dependency_environment_digest", unexpected_dependency_work)
+    monkeypatch.setattr(paired, "_run_child", unexpected_child)
+    canonical_seed = load_quality_bar(QUALITY_BAR_PATH).profiles["quick"].seed
+
+    with pytest.raises(
+        PairedGauntletError,
+        match=r"^paired seed must match the canonical profile seed$",
+    ):
+        run_paired_gauntlet(
+            tmp_path / "control",
+            tmp_path / "candidate",
+            orchestrator_root=REPOSITORY_ROOT,
+            profile="quick",
+            seed=canonical_seed + 1,
+            samples=DEFAULT_SAMPLES,
+        )
+
+    unexpected_dependency_work.assert_not_called()
+    unexpected_child.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "exclude_source",
     ("gitignore", "repository_exclude", "configured_global_exclude"),
@@ -4249,10 +4281,14 @@ def test_bound_publication_supports_near_name_max_output_and_cleans_failures(
         assert json.loads(output.read_text(encoding="utf-8"))["intended_action_digest"] == "b" * 64
         assert list(tmp_path.iterdir()) == [output]
 
-        def fail_rename(*_args, **_kwargs) -> None:
-            raise OSError("rename failed")
+        real_rename = os.rename
 
-        monkeypatch.setattr(runner.os, "rename", fail_rename)
+        def fail_publication_rename(source, destination, **kwargs) -> None:
+            if str(source).endswith(".tmp"):
+                raise OSError("rename failed")
+            real_rename(source, destination, **kwargs)
+
+        monkeypatch.setattr(runner.os, "rename", fail_publication_rename)
         with pytest.raises(
             GauntletSafetyError,
             match="could not publish the bound result safely",
@@ -4343,7 +4379,7 @@ def test_bound_publication_rejects_repeated_retarget_matching_fd_identity(
 
 @requires_bound_publication
 @pytest.mark.parametrize("output_state", ["omitted", "missing", "existing"])
-def test_bound_publication_rejects_directory_move_after_descriptor_relative_rename(
+def test_bound_publication_rolls_back_directory_move_after_descriptor_relative_rename(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     output_state: str,
@@ -4362,7 +4398,8 @@ def test_bound_publication_rejects_directory_move_after_descriptor_relative_rena
 
     def publish_then_move_directory(source, destination, **kwargs):
         real_rename(source, destination, **kwargs)
-        real_rename(outside_results, moved_results)
+        if str(source).endswith(".tmp"):
+            real_rename(outside_results, moved_results)
 
     monkeypatch.setattr(runner.os, "rename", publish_then_move_directory)
 
@@ -4389,17 +4426,71 @@ def test_bound_publication_rejects_directory_move_after_descriptor_relative_rena
                 )
 
     assert not outside_results.exists()
-    if output_state == "omitted":
+    if output_state in {"omitted", "missing"}:
         assert list(moved_results.iterdir()) == []
         assert capture_repository_identity(candidate_root) == identity_before
     else:
         moved_output = moved_results / output.name
         assert list(moved_results.iterdir()) == [moved_output]
-        assert moved_output.read_text(encoding="utf-8") == "unaccepted artifact\n"
+        assert moved_output.read_text(encoding="utf-8") == "previous artifact\n"
         identity_after = capture_repository_identity(candidate_root)
         assert identity_after.commit == identity_before.commit
         assert identity_after.clean is False
         assert identity_after.diff_sha256 != identity_before.diff_sha256
+
+
+@requires_bound_publication
+@pytest.mark.parametrize("output_state", ["missing", "existing"])
+def test_bound_publication_preserves_concurrent_replacement_after_directory_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_state: str,
+) -> None:
+    candidate_root = tmp_path / "candidate"
+    _initialize_gauntlet_test_repository(candidate_root)
+    outside_results = tmp_path / "outside-results"
+    outside_results.mkdir()
+    moved_results = candidate_root / "published-results"
+    output = outside_results / "result.json"
+    if output_state == "existing":
+        output.write_text("previous artifact\n", encoding="utf-8")
+    real_rename = os.rename
+
+    def publish_move_and_replace(source, destination, **kwargs):
+        real_rename(source, destination, **kwargs)
+        if not str(source).endswith(".tmp"):
+            return
+        real_rename(outside_results, moved_results)
+        concurrent_output = moved_results / "concurrent-result"
+        concurrent_output.write_text("concurrent artifact\n", encoding="utf-8")
+        real_rename(concurrent_output, moved_results / output.name)
+
+    monkeypatch.setattr(runner.os, "rename", publish_move_and_replace)
+
+    with runner.bind_output_directory(
+        outside_results,
+        protected_roots=(candidate_root,),
+    ) as bound_directory:
+        runner.validate_bound_output_leaf(bound_directory, output.name)
+        with pytest.raises(
+            GauntletSafetyError,
+            match=r"^bound result changed before rollback$",
+        ):
+            runner.write_serialized_result(
+                "unaccepted artifact\n",
+                output,
+                bound_directory=bound_directory,
+            )
+
+    moved_output = moved_results / output.name
+    assert moved_output.read_text(encoding="utf-8") == "concurrent artifact\n"
+    backups = [path for path in moved_results.iterdir() if path.name.endswith(".backup")]
+    if output_state == "existing":
+        assert len(backups) == 1
+        assert backups[0].read_text(encoding="utf-8") == "previous artifact\n"
+    else:
+        assert backups == []
+    assert all(not path.name.endswith(".tmp") for path in moved_results.iterdir())
 
 
 def test_bound_publication_fails_closed_without_descriptor_relative_support(

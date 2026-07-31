@@ -27,9 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protected-package imports not backed by immutable blob bytes from regular,
   canonically visible Git index entries, revalidate staged source identities
   around execution, reject hidden or non-stage-0 evaluator, quality-bar, and
-  dependency inputs in every worktree, suppress contextless overflowed child
-  diagnostics, and bind installed dependency contents across every crossover
-  child.
+  dependency inputs in every worktree, reject noncanonical paired seeds before
+  dependency or child work, roll back explicit output publication if its bound
+  directory moves under a protected root, suppress contextless overflowed
+  child diagnostics, and bind installed dependency contents across every
+  crossover child.
 
 ## [2.2.1] - 2026-07-29
 

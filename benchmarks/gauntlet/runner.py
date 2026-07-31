@@ -641,6 +641,8 @@ def serialize_result(result: Mapping[str, object]) -> str:
 _BOUND_PUBLICATION_SUPPORTED = (
     hasattr(os, "O_DIRECTORY")
     and bool(getattr(os, "O_NOFOLLOW", 0))
+    and os.link in os.supports_dir_fd
+    and os.link in os.supports_follow_symlinks
     and os.open in os.supports_dir_fd
     and os.rename in os.supports_dir_fd
     and os.stat in os.supports_dir_fd
@@ -756,6 +758,82 @@ def _unlink_bound_file(bound_directory: BoundOutputDirectory, name: str) -> None
         raise GauntletSafetyError("could not clean up a bound result file") from error
 
 
+def _bound_file_identity(
+    bound_directory: BoundOutputDirectory,
+    name: str,
+) -> tuple[int, int, int] | None:
+    try:
+        file_stat = os.stat(
+            name,
+            dir_fd=bound_directory.descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise GauntletSafetyError("could not verify a bound result file") from error
+    return file_stat.st_dev, file_stat.st_ino, stat.S_IFMT(file_stat.st_mode)
+
+
+def _backup_bound_output(
+    bound_directory: BoundOutputDirectory,
+    output_name: str,
+) -> str | None:
+    """Hard-link an existing explicit output for fail-closed restoration."""
+    for _attempt in range(100):
+        backup_name = f"{_RESULT_STAGING_PREFIX}{secrets.token_hex(16)}.backup"
+        try:
+            os.link(
+                output_name,
+                backup_name,
+                src_dir_fd=bound_directory.descriptor,
+                dst_dir_fd=bound_directory.descriptor,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            continue
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            raise GauntletSafetyError("could not preserve the existing bound result") from error
+        return backup_name
+    raise GauntletSafetyError("could not preserve the existing bound result")
+
+
+def _rollback_bound_output(
+    bound_directory: BoundOutputDirectory,
+    output_name: str,
+    backup_name: str | None,
+    *,
+    output_replaced: bool,
+    published_identity: tuple[int, int, int] | None,
+) -> None:
+    """Remove an unaccepted publication and restore any prior output."""
+    if backup_name is None:
+        if output_replaced:
+            if published_identity is None or _bound_file_identity(bound_directory, output_name) != published_identity:
+                raise GauntletSafetyError("bound result changed before rollback")
+            _unlink_bound_file(bound_directory, output_name)
+        return
+    if not output_replaced:
+        backup_identity = _bound_file_identity(bound_directory, backup_name)
+        if backup_identity is None or _bound_file_identity(bound_directory, output_name) != backup_identity:
+            raise GauntletSafetyError("bound result changed before rollback")
+        _unlink_bound_file(bound_directory, backup_name)
+        return
+    if published_identity is None or _bound_file_identity(bound_directory, output_name) != published_identity:
+        raise GauntletSafetyError("bound result changed before rollback")
+    try:
+        os.rename(
+            backup_name,
+            output_name,
+            src_dir_fd=bound_directory.descriptor,
+            dst_dir_fd=bound_directory.descriptor,
+        )
+    except OSError as error:
+        raise GauntletSafetyError("could not restore the existing bound result") from error
+
+
 def _write_bound_result(
     serialized_result: str,
     bound_directory: BoundOutputDirectory,
@@ -765,6 +843,9 @@ def _write_bound_result(
         raise GauntletSafetyError("validated result directory changed before publication")
     remove_output_on_failure = output_name is None
     temporary_name: str | None = None
+    backup_name: str | None = None
+    output_replaced = False
+    published_identity: tuple[int, int, int] | None = None
     published = False
     try:
         if output_name is None:
@@ -787,8 +868,22 @@ def _write_bound_result(
             temporary_file.write(serialized_result)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
+            temporary_stat = os.fstat(temporary_file.fileno())
+            published_identity = (
+                temporary_stat.st_dev,
+                temporary_stat.st_ino,
+                stat.S_IFMT(temporary_stat.st_mode),
+            )
         if not _bound_directory_is_safe(bound_directory):
             raise GauntletSafetyError("validated result directory changed during publication")
+        if not remove_output_on_failure:
+            assert output_name is not None
+            backup_name = _backup_bound_output(bound_directory, output_name)
+            if not _bound_directory_is_safe(bound_directory):
+                raise GauntletSafetyError("validated result directory changed during publication")
+        assert published_identity is not None
+        if _bound_file_identity(bound_directory, temporary_name) != published_identity:
+            raise GauntletSafetyError("bound result staging file changed during publication")
         try:
             os.rename(
                 temporary_name,
@@ -798,16 +893,31 @@ def _write_bound_result(
             )
         except OSError as error:
             raise GauntletSafetyError("could not publish the bound result safely") from error
+        output_replaced = True
+        if _bound_file_identity(bound_directory, output_name) != published_identity:
+            raise GauntletSafetyError("bound result changed during publication")
         if not _bound_directory_is_safe(bound_directory):
             raise GauntletSafetyError("validated result directory changed during publication")
+        if backup_name is not None:
+            _unlink_bound_file(bound_directory, backup_name)
+            backup_name = None
         published = True
     finally:
         try:
             if temporary_name is not None:
                 _unlink_bound_file(bound_directory, temporary_name)
         finally:
-            if remove_output_on_failure and not published and output_name is not None:
-                _unlink_bound_file(bound_directory, output_name)
+            if not published and output_name is not None:
+                if remove_output_on_failure:
+                    _unlink_bound_file(bound_directory, output_name)
+                else:
+                    _rollback_bound_output(
+                        bound_directory,
+                        output_name,
+                        backup_name,
+                        output_replaced=output_replaced,
+                        published_identity=published_identity,
+                    )
     assert output_name is not None
     return bound_directory.path / output_name
 

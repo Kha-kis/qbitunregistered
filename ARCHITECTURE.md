@@ -684,8 +684,9 @@ bootstrap. A one-use process-local state binds the exact protected finder,
 sanitized import path, source location, and site/safe-path interpreter flags
 before coordinator imports proceed. Cache environment variables remain
 operational inputs, not authentication markers, so direct module execution
-cannot spoof the launcher boundary. Ordinary non-paired module execution is
-unchanged.
+cannot spoof the launcher boundary. The coordinator also rejects a noncanonical
+profile seed before dependency fingerprinting or child execution. Ordinary
+non-paired module execution is unchanged.
 
 One content-and-relative-path fingerprint binds the ordered installed
 dependency directories for all eight crossover children. Each child verifies
@@ -696,6 +697,14 @@ dependency digest combines that environment fingerprint with the identical
 also requires evaluator sources, the quality bar, and both dependency inputs to
 remain regular stage-0 index entries without skip-worktree or assume-unchanged
 flags in every worktree.
+
+Explicit paired-result publication keeps any existing leaf in a
+descriptor-relative backup until the bound output directory passes its
+post-rename protected-root check. A failed check removes the unaccepted result
+and restores the old leaf; a previously missing destination returns to missing.
+The rollback first requires the destination to retain the staged file's bound
+identity. A concurrent replacement is preserved, along with the old-leaf backup
+when one exists, and publication fails closed.
 
 ## Extension Points
 

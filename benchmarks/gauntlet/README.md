@@ -23,7 +23,8 @@ Both paths must be distinct, clean Git worktrees. The invoking checkout must
 also be clean. All three checkouts must have byte-identical evaluator sources,
 including the executable `benchmarks/__init__.py` parent package initializer,
 canonical quality-bar bytes, `pyproject.toml`, and `uv.lock`. Paired mode rejects
-a custom `--compare` path and always loads
+a custom `--compare` path and any seed other than the selected profile's
+canonical seed, and always loads
 `benchmarks/gauntlet/quality-bar.toml` from the invoking checkout. The artifact
 records the three clean identities plus evaluator, quality-bar, and dependency
 digests, and the orchestrator rechecks all identities and digests after the
@@ -55,6 +56,11 @@ staging, cleanup, and replacement use names relative to that descriptor so an
 ancestor symlink retarget cannot redirect the artifact. Paired execution fails
 closed before staging when the platform lacks the required descriptor-relative
 filesystem operations or trustworthy kernel descriptor-path introspection. The
+publisher preserves an existing explicit output under a descriptor-relative
+backup until the final directory check succeeds, restoring it or removing a
+new output if the bound directory moves during publication. Rollback is
+conditioned on the output still matching the staged file's bound identity; a
+concurrent replacement and any prior-output backup are preserved. The
 parent directory for an explicit paired `--output` must already exist so it can
 be safely bound. The output leaf must be missing, a regular file, or a symbolic
 link; directories and special files are rejected before evaluation. Ordinary

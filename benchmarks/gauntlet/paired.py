@@ -1048,6 +1048,10 @@ def run_paired_gauntlet(
     _reject_unsafe_package_entries_in_roots(repository_roots)
     canonical_quality_bar = orchestrator_root / "benchmarks" / "gauntlet" / "quality-bar.toml"
     quality_bar = _load_canonical_quality_bar(canonical_quality_bar)
+    if profile not in quality_bar.profiles:
+        raise PairedGauntletError("paired profile is not present in the quality bar")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed != quality_bar.profiles[profile].seed:
+        raise PairedGauntletError("paired seed must match the canonical profile seed")
     quality_bar_digest = _file_digest(
         canonical_quality_bar,
         "canonical quality bar",
@@ -1074,8 +1078,6 @@ def run_paired_gauntlet(
         != 1
     ):
         raise PairedGauntletError("orchestrator and paired worktrees do not have identical dependency locks")
-    if profile not in quality_bar.profiles:
-        raise PairedGauntletError("paired profile is not present in the quality bar")
     dependency_paths = _dependency_import_paths()
     dependency_environment_identity = _current_dependency_environment_digest(dependency_paths)
     bound_dependency_digest = _bound_dependency_digest(
