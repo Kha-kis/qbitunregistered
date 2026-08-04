@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 import math
@@ -33,6 +34,7 @@ from benchmarks.gauntlet.baseline import (
     QualityBarError,
     compare_result,
     load_quality_bar,
+    load_quality_bar_bytes,
 )
 from benchmarks.gauntlet.fixture_factory import (
     FULL_PROFILE,
@@ -420,6 +422,14 @@ def _valid_quick_result() -> dict[str, Any]:
     }
 
 
+def test_quality_bar_bytes_loader_matches_path_loader_and_rejects_invalid_utf8() -> None:
+    source = QUALITY_BAR_PATH.read_bytes()
+
+    assert load_quality_bar_bytes(source) == load_quality_bar(QUALITY_BAR_PATH)
+    with pytest.raises(QualityBarError, match="could not load"):
+        load_quality_bar_bytes(b"\xff")
+
+
 def _paired_runs(
     *,
     control_runtimes: tuple[float, float, float, float] = (2.0, 2.0, 2.0, 2.0),
@@ -455,6 +465,20 @@ def _paired_runs(
         )
         runs.append({"position": position, "role": role, "result": result})
     return runs
+
+
+def _verified_quality_bar_fixture(
+    revision: str = "e" * 40,
+    source_bytes: bytes | None = None,
+) -> paired._VerifiedQualityBarSource:
+    """Build one commit-pinned canonical quality-bar record for mocked runs."""
+    resolved_source = QUALITY_BAR_PATH.read_bytes() if source_bytes is None else source_bytes
+    return paired._VerifiedQualityBarSource(
+        revision=revision,
+        mode="100644",
+        oid=hashlib.sha256(resolved_source).hexdigest(),
+        source_bytes=resolved_source,
+    )
 
 
 def _installed_dependency_index(
@@ -683,6 +707,18 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
         "verified_import_bootstrap_source",
         lambda _root, _commit: b"# immutable bootstrap\n",
     )
+    quality_bar_source = _verified_quality_bar_fixture()
+    quality_bar_verifications: list[tuple[Path, str]] = []
+
+    def verify_quality_bar(root: Path, commit: str) -> paired._VerifiedQualityBarSource:
+        quality_bar_verifications.append((root, commit))
+        return quality_bar_source
+
+    monkeypatch.setattr(
+        paired,
+        "_verified_canonical_quality_bar",
+        verify_quality_bar,
+    )
 
     def fake_run_child(root: Path, **kwargs):
         role = "control" if root == control_root else "candidate"
@@ -694,6 +730,16 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
         return copy.deepcopy(expected_runs[len(calls) - 1]["result"])
 
     monkeypatch.setattr("benchmarks.gauntlet.paired._run_child", fake_run_child)
+    compare_paired_results_original = paired.compare_paired_results
+
+    def compare_after_revalidation(
+        runs: list[paired.PairedRun],
+        quality_bar: QualityBar,
+    ) -> paired.PairingComparison:
+        assert len(quality_bar_verifications) == 2
+        return compare_paired_results_original(runs, quality_bar)
+
+    monkeypatch.setattr(paired, "compare_paired_results", compare_after_revalidation)
     result = run_paired_gauntlet(
         control_root,
         candidate_root,
@@ -712,6 +758,11 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
         dependency_environment_identity,
     )
     assert len(result["quality_bar_digest"]) == 64
+    assert result["quality_bar_digest"] == hashlib.sha256(quality_bar_source.source_bytes).hexdigest()
+    assert quality_bar_verifications == [
+        (REPOSITORY_ROOT, identities[REPOSITORY_ROOT].commit),
+        (REPOSITORY_ROOT, identities[REPOSITORY_ROOT].commit),
+    ]
     assert len(result["evaluator_digest"]) == 64
     assert result["thresholds"] == {
         "runtime_control_fraction_max": 0.50,
@@ -764,6 +815,11 @@ def test_paired_runner_rejects_noncanonical_seed_before_dependency_or_child_work
     unexpected_child = Mock(side_effect=AssertionError("paired child unexpectedly started"))
     monkeypatch.setattr(paired, "_require_clean_identity", lambda _root: identity)
     monkeypatch.setattr(paired, "_reject_unsafe_package_entries_in_roots", lambda _roots: None)
+    monkeypatch.setattr(
+        paired,
+        "_verified_canonical_quality_bar",
+        lambda _root, _commit: _verified_quality_bar_fixture(identity.commit),
+    )
     monkeypatch.setattr(paired, "_named_files_digest", unexpected_dependency_work)
     monkeypatch.setattr(paired, "_dependency_import_paths", unexpected_dependency_work)
     monkeypatch.setattr(paired, "_current_dependency_environment_digest", unexpected_dependency_work)
@@ -966,6 +1022,11 @@ def test_paired_runner_rechecks_importable_extensions_after_each_child(
         "benchmarks.gauntlet.paired._current_dependency_environment_digest",
         lambda _paths: "a" * 64,
     )
+    monkeypatch.setattr(
+        paired,
+        "_verified_canonical_quality_bar",
+        lambda _root, _commit: _verified_quality_bar_fixture(),
+    )
     sanitize_result = Mock(side_effect=AssertionError("unsafe child evidence was accepted"))
     monkeypatch.setattr("benchmarks.gauntlet.paired.sanitize_child_result", sanitize_result)
 
@@ -1026,20 +1087,20 @@ def test_paired_runner_rejects_dependency_environment_tampering_between_children
         lambda _root, _commit: b"# immutable bootstrap\n",
     )
     real_load_quality_bar = paired._load_canonical_quality_bar
-    loaded_quality_bars: list[Path] = []
-    digested_quality_bars: list[Path] = []
+    quality_bar_source = _verified_quality_bar_fixture()
+    loaded_quality_bars: list[bytes] = []
+    verified_quality_bars: list[tuple[Path, str]] = []
 
-    def load_canonical_quality_bar(path: Path) -> QualityBar:
-        loaded_quality_bars.append(path)
-        return real_load_quality_bar(path)
+    def load_canonical_quality_bar(source: bytes) -> QualityBar:
+        loaded_quality_bars.append(source)
+        return real_load_quality_bar(source)
 
-    def digest_canonical_quality_bar(path: Path, description: str) -> str:
-        assert description == "canonical quality bar"
-        digested_quality_bars.append(path)
-        return "b" * 64
+    def verified_canonical_quality_bar(root: Path, commit: str) -> paired._VerifiedQualityBarSource:
+        verified_quality_bars.append((root, commit))
+        return quality_bar_source
 
     monkeypatch.setattr(paired, "_load_canonical_quality_bar", load_canonical_quality_bar)
-    monkeypatch.setattr(paired, "_file_digest", digest_canonical_quality_bar)
+    monkeypatch.setattr(paired, "_verified_canonical_quality_bar", verified_canonical_quality_bar)
     monkeypatch.delattr(paired.os, "O_NOFOLLOW", raising=False)
 
     def tamper_after_first_child(root: Path, **_kwargs) -> dict[str, object]:
@@ -1063,8 +1124,8 @@ def test_paired_runner_rejects_dependency_environment_tampering_between_children
         )
 
     assert calls == [control_root]
-    assert loaded_quality_bars == [QUALITY_BAR_PATH]
-    assert digested_quality_bars == [QUALITY_BAR_PATH]
+    assert loaded_quality_bars == [quality_bar_source.source_bytes]
+    assert verified_quality_bars == [(REPOSITORY_ROOT, identities[REPOSITORY_ROOT].commit)]
 
 
 @requires_descriptor_no_follow
@@ -1074,6 +1135,11 @@ def test_paired_runner_rejects_same_or_different_evaluator_worktrees(
 ) -> None:
     identity = RepositoryIdentity("a" * 40, True, "b" * 64)
     monkeypatch.setattr("benchmarks.gauntlet.paired._require_clean_identity", lambda _root: identity)
+    monkeypatch.setattr(
+        paired,
+        "_verified_canonical_quality_bar",
+        lambda _root, _commit: _verified_quality_bar_fixture(identity.commit),
+    )
     quality_bar = load_quality_bar(QUALITY_BAR_PATH)
 
     with pytest.raises(PairedGauntletError, match="isolated"):
@@ -1125,6 +1191,11 @@ def test_paired_runner_rejects_different_parent_package_initializers_before_chil
     )
     identity = RepositoryIdentity("a" * 40, True, "b" * 64)
     monkeypatch.setattr("benchmarks.gauntlet.paired._require_clean_identity", lambda _root: identity)
+    monkeypatch.setattr(
+        paired,
+        "_verified_canonical_quality_bar",
+        lambda _root, _commit: _verified_quality_bar_fixture(identity.commit),
+    )
     monkeypatch.setattr("benchmarks.gauntlet.paired._named_files_digest", lambda *_args: "d" * 64)
     child_calls: list[Path] = []
 
@@ -1285,6 +1356,11 @@ def test_paired_runner_rejects_dependency_and_orchestrator_identity_mismatch(
     monkeypatch.setattr(
         "benchmarks.gauntlet.paired._evaluator_digest",
         lambda _root: "c" * 64,
+    )
+    monkeypatch.setattr(
+        paired,
+        "_verified_canonical_quality_bar",
+        lambda _root, _commit: _verified_quality_bar_fixture(identity.commit),
     )
     monkeypatch.setattr(
         "benchmarks.gauntlet.paired._named_files_digest",
@@ -1636,6 +1712,87 @@ def test_import_bootstrap_accepts_canonical_nul_terminated_stage_records(
     assert sources["qbitunregistered"].mode == "100755"
     assert sources["qbitunregistered"].oid == "b" * 64
     assert sources["qbitunregistered"].source_bytes == b"INDEX_SOURCE = True\n"
+
+
+def test_verified_quality_bar_uses_one_commit_pinned_buffer_during_worktree_rewrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = tmp_path / "repository"
+    _initialize_paired_test_repository(repository_root)
+    expected_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    quality_bar_path = repository_root / paired._QUALITY_BAR_RELATIVE_PATH
+    canonical_bytes = quality_bar_path.read_bytes()
+    weakened_bytes = canonical_bytes.replace(
+        b"relative_range_max = 0.50",
+        b"relative_range_max = 9.00",
+        1,
+    )
+    assert weakened_bytes != canonical_bytes
+
+    verified_source = paired._verified_canonical_quality_bar(
+        repository_root,
+        expected_commit,
+    )
+    replacement_oid = (
+        subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            input=weakened_bytes,
+        )
+        .stdout.strip()
+        .decode("ascii")
+    )
+    subprocess.run(
+        ["git", "replace", verified_source.oid, replacement_oid],
+        cwd=repository_root,
+        check=True,
+    )
+    assert (
+        subprocess.run(
+            ["git", "cat-file", "blob", verified_source.oid],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+        ).stdout
+        == weakened_bytes
+    )
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "redirected.git"))
+    quality_bar_path.write_bytes(weakened_bytes)
+    rebound_source = paired._verified_canonical_quality_bar(
+        repository_root,
+        expected_commit,
+    )
+    parsed = paired._load_canonical_quality_bar(rebound_source.source_bytes)
+    quality_bar_path.write_bytes(canonical_bytes)
+
+    assert rebound_source == verified_source
+    assert parsed.profiles["quick"].relative_range_max == 0.50
+    assert hashlib.sha256(rebound_source.source_bytes).hexdigest() == hashlib.sha256(canonical_bytes).hexdigest()
+
+    quality_bar_path.write_bytes(weakened_bytes)
+    monkeypatch.delenv("GIT_DIR")
+    subprocess.run(
+        ["git", "add", paired._QUALITY_BAR_RELATIVE_PATH],
+        cwd=repository_root,
+        check=True,
+    )
+    with pytest.raises(
+        PairedGauntletError,
+        match=f"^{paired._QUALITY_BAR_VERIFICATION_ERROR}$",
+    ):
+        paired._verified_canonical_quality_bar(
+            repository_root,
+            expected_commit,
+        )
 
 
 @pytest.mark.parametrize("staged_change", ("mode", "oid"))
@@ -3304,14 +3461,15 @@ def test_paired_cli_translates_invalid_canonical_quality_bar_without_paths(
     quality_bar_path = tmp_path / "private" / "quality-bar.toml"
     quality_bar_path.parent.mkdir()
     quality_bar_path.write_text(quality_bar_text, encoding="utf-8")
+    quality_bar_source = quality_bar_path.read_bytes()
 
     with pytest.raises(PairedGauntletError) as domain_error_info:
-        paired._load_canonical_quality_bar(quality_bar_path)
+        paired._load_canonical_quality_bar(quality_bar_source)
 
     assert isinstance(domain_error_info.value.__cause__, QualityBarError)
 
     def load_invalid_quality_bar(*_args, **_kwargs):
-        paired._load_canonical_quality_bar(quality_bar_path)
+        paired._load_canonical_quality_bar(quality_bar_source)
 
     bound_directory = object()
     monkeypatch.setattr(
@@ -3346,18 +3504,17 @@ def test_paired_cli_translates_invalid_canonical_quality_bar_without_paths(
     ],
 )
 def test_paired_quality_bar_boundary_preserves_unexpected_errors(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     unexpected_error: BaseException,
     expected_type: type[BaseException],
 ) -> None:
-    def fail_unexpectedly(_path: Path):
+    def fail_unexpectedly(_source: bytes):
         raise unexpected_error
 
-    monkeypatch.setattr(paired, "load_quality_bar", fail_unexpectedly)
+    monkeypatch.setattr(paired, "load_quality_bar_bytes", fail_unexpectedly)
 
     with pytest.raises(expected_type) as error_info:
-        paired._load_canonical_quality_bar(tmp_path / "quality-bar.toml")
+        paired._load_canonical_quality_bar(b"quality-bar")
 
     assert error_info.value is unexpected_error
 

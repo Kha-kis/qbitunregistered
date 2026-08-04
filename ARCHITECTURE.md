@@ -717,6 +717,12 @@ also requires evaluator sources, the quality bar, and both dependency inputs to
 remain regular stage-0 index entries without skip-worktree or assume-unchanged
 flags in every worktree.
 
+The invoking checkout's quality bar is captured as a regular, visible stage-0
+blob that must exactly match the originally recorded evaluator commit. One
+immutable byte buffer supplies both validated thresholds and the artifact
+digest; the complete blob provenance is resolved again immediately before
+comparison and publication.
+
 Explicit paired-result publication atomically renames any existing leaf into a
 reserved descriptor-relative backup, revalidates the detached leaf type, then
 hard-links the fsynced staging inode into the absent destination without

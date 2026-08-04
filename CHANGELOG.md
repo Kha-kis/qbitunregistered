@@ -43,7 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Output containment now also protects each checkout's canonical Git
   administration and common directories, including external metadata shared by
   linked worktrees, and requires the sanitized protected-directory set to remain
-  stable through bound publication.
+  stable through bound publication. Paired thresholds and their recorded digest
+  now come from the same stage-0 blob pinned to the invoking checkout's captured
+  commit, with exact provenance revalidated before comparison and publication.
 - The source launcher now verifies its downstream import bootstrap against the
   matching regular, visible stage-0 `HEAD` and index blob, rejects modified
   worktree bytes and inherited Git repository redirection before execution, and

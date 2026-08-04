@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 from typing import Literal, TypedDict, cast
@@ -25,7 +26,7 @@ from benchmarks.gauntlet.baseline import (
     QualityBar,
     QualityBarError,
     compare_result,
-    load_quality_bar,
+    load_quality_bar_bytes,
 )
 from benchmarks.gauntlet.identity import (
     RepositoryIdentity,
@@ -82,6 +83,9 @@ REDIRECTING_PACKAGE_ENTRY_ERROR = "repository contains a redirecting entry in a 
 IGNORED_PYTHON_SOURCE_ERROR = "repository contains an ignored Python source in a protected package tree"
 NONCANONICAL_INDEX_INPUT_ERROR = "repository contains hidden or noncanonical evaluator inputs"
 ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
+_QUALITY_BAR_RELATIVE_PATH = "benchmarks/gauntlet/quality-bar.toml"
+_REGULAR_BLOB_MODES = frozenset({b"100644", b"100755"})
+_QUALITY_BAR_VERIFICATION_ERROR = "paired canonical quality bar could not be verified"
 _SECRET_ASSIGNMENT_PATTERN = re.compile(r"(?i)\b(api[\s_-]?key|password|passwd|token|secret)\b\s*[:=]\s*[^\r\n]*")
 _SECRET_JSON_PATTERN = re.compile(r"""(?ix)
     (
@@ -159,6 +163,16 @@ class PairedResult(TypedDict):
     thresholds: dict[str, float]
     runs: list[PairedRun]
     comparison: PairingComparison
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedQualityBarSource:
+    """One quality-bar blob bound to an exact revision and stage-0 index."""
+
+    revision: str
+    mode: str
+    oid: str
+    source_bytes: bytes
 
 
 def _gate(
@@ -523,16 +537,6 @@ def _read_regular_file(
     if not stable_identity or len(payload) != before.st_size or len(payload) > maximum_bytes:
         raise PairedGauntletError(f"{description} changed or exceeded its size limit")
     return payload
-
-
-def _file_digest(path: Path, description: str) -> str:
-    return hashlib.sha256(
-        _read_regular_file(
-            path,
-            maximum_bytes=MAX_CHILD_ARTIFACT_BYTES,
-            description=description,
-        )
-    ).hexdigest()
 
 
 def _named_files_digest(repository_root: Path, names: Sequence[str]) -> str:
@@ -1025,13 +1029,117 @@ def _identity_tuple(identity: RepositoryIdentity) -> tuple[str, bool, str]:
     return identity.commit, True, identity.diff_sha256
 
 
-def _load_canonical_quality_bar(path: Path) -> QualityBar:
+def _load_canonical_quality_bar(source: bytes) -> QualityBar:
     try:
-        return load_quality_bar(path)
+        return load_quality_bar_bytes(source)
     except QualityBarError as error:
         raise PairedGauntletError(
             "paired canonical quality bar is malformed or does not match the evaluator schema"
         ) from error
+
+
+def _quality_bar_git_output(repository_root: Path, arguments: Sequence[str]) -> bytes:
+    """Return strict Git output without inherited repository selection."""
+    try:
+        completed = subprocess.run(
+            ["git", "--no-replace-objects", *arguments],
+            cwd=repository_root,
+            check=False,
+            env={key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR) from error
+    if completed.returncode != 0 or completed.stderr:
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR)
+    return completed.stdout
+
+
+def _single_git_record(output: bytes) -> tuple[bytes, bytes]:
+    """Parse one exact NUL-terminated Git metadata-and-path record."""
+    if not output.endswith(b"\0") or output.count(b"\0") != 1:
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR)
+    try:
+        metadata, path = output[:-1].split(b"\t", 1)
+    except ValueError as error:
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR) from error
+    if not metadata or not path:
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR)
+    return metadata, path
+
+
+def _verified_canonical_quality_bar(
+    repository_root: Path,
+    expected_commit: str,
+) -> _VerifiedQualityBarSource:
+    """Return quality-bar bytes bound to the captured commit and stage-0 blob."""
+    if len(expected_commit) not in {40, 64} or any(character not in "0123456789abcdef" for character in expected_commit):
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR)
+
+    encoded_path = _QUALITY_BAR_RELATIVE_PATH.encode("ascii")
+    index_metadata, index_path = _single_git_record(
+        _quality_bar_git_output(
+            repository_root,
+            (
+                "ls-files",
+                "--cached",
+                "-v",
+                "--stage",
+                "-z",
+                "--",
+                _QUALITY_BAR_RELATIVE_PATH,
+            ),
+        )
+    )
+    index_fields = index_metadata.split(b" ")
+    if len(index_fields) != 4 or any(not field for field in index_fields):
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR)
+    index_status, index_mode, index_oid, index_stage = index_fields
+    if (
+        index_path != encoded_path
+        or index_status != b"H"
+        or index_mode not in _REGULAR_BLOB_MODES
+        or index_stage != b"0"
+        or len(index_oid) not in {40, 64}
+        or any(character not in b"0123456789abcdef" for character in index_oid)
+    ):
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR)
+
+    head_metadata, head_path = _single_git_record(
+        _quality_bar_git_output(
+            repository_root,
+            (
+                "ls-tree",
+                "--full-tree",
+                "-z",
+                expected_commit,
+                "--",
+                _QUALITY_BAR_RELATIVE_PATH,
+            ),
+        )
+    )
+    head_fields = head_metadata.split(b" ")
+    if len(head_fields) != 3 or any(not field for field in head_fields):
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR)
+    head_mode, head_type, head_oid = head_fields
+    if head_path != encoded_path or head_type != b"blob" or head_mode != index_mode or head_oid != index_oid:
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR)
+    try:
+        mode = index_mode.decode("ascii")
+        oid = index_oid.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR) from error
+    source_bytes = _quality_bar_git_output(repository_root, ("cat-file", "blob", oid))
+    if len(source_bytes) > MAX_CHILD_ARTIFACT_BYTES:
+        raise PairedGauntletError(_QUALITY_BAR_VERIFICATION_ERROR)
+    return _VerifiedQualityBarSource(
+        revision=expected_commit,
+        mode=mode,
+        oid=oid,
+        source_bytes=source_bytes,
+    )
 
 
 def run_paired_gauntlet(
@@ -1056,16 +1164,16 @@ def run_paired_gauntlet(
     candidate_identity = _require_clean_identity(candidate_root)
     repository_roots = (orchestrator_root, control_root, candidate_root)
     _reject_unsafe_package_entries_in_roots(repository_roots)
-    canonical_quality_bar = orchestrator_root / "benchmarks" / "gauntlet" / "quality-bar.toml"
-    quality_bar = _load_canonical_quality_bar(canonical_quality_bar)
+    quality_bar_source = _verified_canonical_quality_bar(
+        orchestrator_root,
+        orchestrator_identity.commit,
+    )
+    quality_bar = _load_canonical_quality_bar(quality_bar_source.source_bytes)
     if profile not in quality_bar.profiles:
         raise PairedGauntletError("paired profile is not present in the quality bar")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed != quality_bar.profiles[profile].seed:
         raise PairedGauntletError("paired seed must match the canonical profile seed")
-    quality_bar_digest = _file_digest(
-        canonical_quality_bar,
-        "canonical quality bar",
-    )
+    quality_bar_digest = hashlib.sha256(quality_bar_source.source_bytes).hexdigest()
     orchestrator_digest = _evaluator_digest(orchestrator_root)
     control_digest = _evaluator_digest(control_root)
     candidate_digest = _evaluator_digest(candidate_root)
@@ -1165,6 +1273,10 @@ def run_paired_gauntlet(
     _require_unchanged_identity(control_identity, control_root)
     _require_unchanged_identity(candidate_identity, candidate_root)
     _reject_unsafe_package_entries_in_roots(repository_roots)
+    current_quality_bar_source = _verified_canonical_quality_bar(
+        orchestrator_root,
+        orchestrator_identity.commit,
+    )
     if (
         _evaluator_digest(orchestrator_root) != orchestrator_digest
         or _evaluator_digest(control_root) != control_digest
@@ -1172,7 +1284,7 @@ def run_paired_gauntlet(
         or _named_files_digest(orchestrator_root, DEPENDENCY_FILES) != orchestrator_dependency_digest
         or _named_files_digest(control_root, DEPENDENCY_FILES) != control_dependency_digest
         or _named_files_digest(candidate_root, DEPENDENCY_FILES) != candidate_dependency_digest
-        or _file_digest(canonical_quality_bar, "canonical quality bar") != quality_bar_digest
+        or current_quality_bar_source != quality_bar_source
     ):
         raise PairedGauntletError("evaluator, quality bar, or dependency identity changed during execution")
     comparison = compare_paired_results(paired_runs, quality_bar)

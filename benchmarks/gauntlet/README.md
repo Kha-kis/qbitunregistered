@@ -25,7 +25,10 @@ including the executable `benchmarks/__init__.py` parent package initializer,
 canonical quality-bar bytes, `pyproject.toml`, and `uv.lock`. Paired mode rejects
 a custom `--compare` path and any seed other than the selected profile's
 canonical seed, and always loads
-`benchmarks/gauntlet/quality-bar.toml` from the invoking checkout. The artifact
+`benchmarks/gauntlet/quality-bar.toml` from the invoking checkout's regular,
+visible stage-0 blob at its originally captured commit. Threshold parsing and
+the recorded digest use that same immutable byte buffer, which is reverified
+before comparison and artifact publication. The artifact
 records the three clean identities plus evaluator, quality-bar, and dependency
 digests, and the orchestrator rechecks all identities and digests after the
 run. All evaluator, quality-bar, and dependency-lock inputs must be regular
