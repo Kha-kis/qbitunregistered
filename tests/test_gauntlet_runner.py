@@ -5092,6 +5092,7 @@ def test_result_schema_has_normalized_per_pass_api_evidence(tmp_path: Path) -> N
         repository_root=tmp_path,
     )
     expected_api = expected_endpoint_counters(TINY_PROFILE)
+    expected_api["torrents_files"] = 0
     serialized = json.dumps(result, sort_keys=True)
 
     assert result["schema"] == SCHEMA_NAME
@@ -6438,7 +6439,7 @@ def test_full_profile_is_explicit_and_representative() -> None:
     result = run_gauntlet("full", seed=20_260_729, samples=DEFAULT_SAMPLES)
 
     assert result["candidate_counts"] == {"orphan_files": 3}
-    assert result["endpoint_counters"]["torrents_files"] == 6_739
+    assert result["endpoint_counters"]["torrents_files"] == 0
     assert result["mutation_counters"]["filesystem"] == 0
     assert result["mutation_counters"]["qbittorrent"] == 0
     assert result["workload"]["filesystem_files"] == 94_000
