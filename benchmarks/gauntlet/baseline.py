@@ -233,14 +233,8 @@ def _baseline_measurement(value: object, description: str) -> BaselineMeasuremen
     )
 
 
-def load_quality_bar(path: Path) -> QualityBar:
-    """Load and fully validate one stdlib-TOML quality bar."""
-    try:
-        with path.open("rb") as quality_bar_file:
-            document = tomllib.load(quality_bar_file)
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise QualityBarError("could not load gauntlet quality bar") from error
-
+def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:
+    """Build one fully validated quality bar from a parsed TOML document."""
     schema_version = _integer(document.get("schema_version"), "schema_version", minimum=1)
     evaluator_schema_version = _integer(
         document.get("evaluator_schema_version"),
@@ -343,6 +337,24 @@ def load_quality_bar(path: Path) -> QualityBar:
         measurement_policy=dict(measurement_policy),
         profiles=profiles,
     )
+
+
+def load_quality_bar_bytes(source: bytes) -> QualityBar:
+    """Parse and fully validate one UTF-8 stdlib-TOML quality-bar buffer."""
+    try:
+        document = tomllib.loads(source.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise QualityBarError("could not load gauntlet quality bar") from error
+    return _validated_quality_bar(document)
+
+
+def load_quality_bar(path: Path) -> QualityBar:
+    """Load and fully validate one stdlib-TOML quality bar."""
+    try:
+        source = path.read_bytes()
+    except OSError as error:
+        raise QualityBarError("could not load gauntlet quality bar") from error
+    return load_quality_bar_bytes(source)
 
 
 def _gate(

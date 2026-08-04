@@ -16,6 +16,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   separately traced peak memory, stable candidate identity, TOML quality-bar
   comparison, and explicit fail-closed regression coverage.
 
+### Fixed
+
+- Paired gauntlet runs now report malformed canonical quality bars without
+  tracebacks or private paths, reject directory and special-file output targets
+  before evaluation, fail closed when a bound output directory moves after
+  publication, require validated in-process launcher isolation rather than
+  caller-controlled cache markers, publish legal maximum-length explicit
+  output names with bounded staging names, reject
+  protected-package imports not backed by immutable blob bytes from regular,
+  canonically visible Git index entries, require the complete protected Python
+  path, mode, and object-ID map to match `HEAD` before blob reads, revalidate
+  staged source identities around execution, reject hidden or non-stage-0
+  evaluator, quality-bar, and dependency inputs in every worktree, reject
+  noncanonical paired seeds before dependency or child work, roll back explicit
+  output publication if its bound
+  directory moves under a protected root, install explicit artifacts without
+  clobbering a concurrently created leaf, revalidate detached output types,
+  verify allocator-owned reservations before no-clobber installation,
+  atomically capture explicit and allocator-owned rollback targets before
+  cleanup, retain prior-output recovery links after failed publication, suppress
+  contextless overflowed child diagnostics, and bind installed dependency
+  contents across every crossover child. Each measured child now executes its
+  originally recorded commit's verified bootstrap blob through isolated Python
+  standard input and pins downstream protected imports to that same revision.
+  Output containment now also protects each checkout's canonical Git
+  administration and common directories, including external metadata shared by
+  linked worktrees, and requires the sanitized protected-directory set to remain
+  stable through bound publication. Paired thresholds and their recorded digest
+  now come from the same stage-0 blob pinned to the invoking checkout's captured
+  commit, with exact provenance revalidated before comparison and publication.
+  Digest-bound measured children now exclude installed dependency directories
+  from import resolution and reject modules preloaded from them, while retaining
+  the installed-tree fingerprint for paired-environment comparability. Ordinary
+  non-paired launcher dependency imports are unchanged.
+- The source launcher now verifies its downstream import bootstrap against the
+  matching regular, visible stage-0 `HEAD` and index blob, rejects modified
+  worktree bytes and inherited Git repository redirection before execution, and
+  runs the immutable blob through isolated Python standard input while safely
+  accepting Git's deterministic whole-file CRLF checkout representation and
+  Windows' distinct path and descriptor `st_ctime` meanings. It also resolves
+  sanitized worktree-specific and common Git directories before creating its
+  isolated bytecode cache, preventing cache writes inside external metadata.
+  The entry contract now requires `python -I -S -B`; dependency roots are
+  reconstructed from a stable, bounded virtual-environment configuration and
+  explicit platform paths without processing `.pth` files, `sitecustomize`, or
+  other `site` hooks.
+
 ## [2.2.1] - 2026-07-29
 
 ### Fixed

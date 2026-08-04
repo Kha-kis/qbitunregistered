@@ -7,18 +7,19 @@ import json
 import logging
 import os
 import platform
+import secrets
 import stat
 import statistics
 import tempfile
 import time
 import tracemalloc
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NotRequired, Protocol, TypedDict, cast
+from typing import Iterator, NotRequired, Protocol, TypedDict, cast
 
 from benchmarks.gauntlet.fixture_factory import (
-    MUTATION_COUNTER_KEYS,
     PROFILES,
     EndpointBudget,
     GauntletFixture,
@@ -43,13 +44,23 @@ from qbitunregistered.operations.orphaned import (
 
 SCHEMA_NAME = "qbitunregistered.gauntlet.result"
 SCHEMA_VERSION = 3
-EVALUATOR_VERSION = "1.1.0"
+EVALUATOR_VERSION = "1.3.0"
 DEFAULT_SEED = 20_260_729
 DEFAULT_SAMPLES = 5
+_RESULT_STAGING_PREFIX = ".qbit-gauntlet-"
 
 
 class GauntletSafetyError(RuntimeError):
     """Raised when an evaluator run observes mutation or unstable evidence."""
+
+
+@dataclass(frozen=True, slots=True)
+class BoundOutputDirectory:
+    """An identity-checked directory descriptor for safe result publication."""
+
+    path: Path
+    descriptor: int
+    protected_roots: tuple[Path, ...]
 
 
 class _Digest(Protocol):
@@ -627,23 +638,441 @@ def serialize_result(result: Mapping[str, object]) -> str:
     return json.dumps(result, indent=2, sort_keys=True) + "\n"
 
 
-def write_serialized_result(serialized_result: str, output: Path | None = None) -> Path:
-    """Write prepared JSON to an explicit path or unique system temporary file."""
+_BOUND_PUBLICATION_SUPPORTED = (
+    hasattr(os, "O_DIRECTORY")
+    and bool(getattr(os, "O_NOFOLLOW", 0))
+    and os.link in os.supports_dir_fd
+    and os.link in os.supports_follow_symlinks
+    and os.open in os.supports_dir_fd
+    and os.rename in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks
+    and os.unlink in os.supports_dir_fd
+    and Path("/proc/self/fd").is_dir()
+)
+
+
+def _supports_bound_publication() -> bool:
+    return _BOUND_PUBLICATION_SUPPORTED
+
+
+def _directory_identity(file_stat: os.stat_result) -> tuple[int, int]:
+    return file_stat.st_dev, file_stat.st_ino
+
+
+def _bound_descriptor_path(bound_directory: BoundOutputDirectory) -> Path | None:
+    try:
+        return (Path("/proc/self/fd") / str(bound_directory.descriptor)).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _bound_directory_is_safe(bound_directory: BoundOutputDirectory) -> bool:
+    try:
+        descriptor_stat = os.fstat(bound_directory.descriptor)
+        path_stat = os.stat(bound_directory.path, follow_symlinks=False)
+    except OSError:
+        return False
+    descriptor_path = _bound_descriptor_path(bound_directory)
+    if descriptor_path is None or descriptor_path != bound_directory.path:
+        return False
+    return (
+        stat.S_ISDIR(descriptor_stat.st_mode)
+        and stat.S_ISDIR(path_stat.st_mode)
+        and _directory_identity(descriptor_stat) == _directory_identity(path_stat)
+        and all(not descriptor_path.is_relative_to(root) for root in bound_directory.protected_roots)
+    )
+
+
+@contextmanager
+def bind_output_directory(
+    directory: Path,
+    *,
+    protected_roots: tuple[Path, ...] = (),
+) -> Iterator[BoundOutputDirectory]:
+    """Bind result publication to one identity-checked directory descriptor."""
+    if not _supports_bound_publication():
+        raise GauntletSafetyError("safe descriptor-relative result publication is unavailable")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(directory, flags)
+    except OSError as error:
+        raise GauntletSafetyError("could not bind the validated result directory") from error
+    bound_directory = BoundOutputDirectory(directory, descriptor, protected_roots)
+    try:
+        if not _bound_directory_is_safe(bound_directory):
+            raise GauntletSafetyError("validated result directory changed before publication")
+        yield bound_directory
+    finally:
+        os.close(descriptor)
+
+
+def _open_unique_bound_file(
+    bound_directory: BoundOutputDirectory,
+    *,
+    prefix: str,
+    suffix: str,
+) -> tuple[int, str]:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    for _attempt in range(100):
+        name = f"{prefix}{secrets.token_hex(16)}{suffix}"
+        try:
+            descriptor = os.open(name, flags, 0o600, dir_fd=bound_directory.descriptor)
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise GauntletSafetyError("could not create a bound result file") from error
+        return descriptor, name
+    raise GauntletSafetyError("could not allocate a unique bound result file")
+
+
+def validate_bound_output_leaf(
+    bound_directory: BoundOutputDirectory,
+    output_name: str,
+) -> None:
+    """Require a safely replaceable output leaf without following symlinks."""
+    if not output_name or output_name != Path(output_name).name:
+        raise GauntletSafetyError("bound result output name is invalid")
+    if not _bound_directory_is_safe(bound_directory):
+        raise GauntletSafetyError("validated result directory changed before evaluation")
+    try:
+        output_stat = os.stat(
+            output_name,
+            dir_fd=bound_directory.descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise GauntletSafetyError("could not validate the result output safely") from error
+    if not (stat.S_ISREG(output_stat.st_mode) or stat.S_ISLNK(output_stat.st_mode)):
+        raise GauntletSafetyError("result output must be missing, a regular file, or a symbolic link")
+
+
+def _unlink_bound_file(bound_directory: BoundOutputDirectory, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=bound_directory.descriptor)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise GauntletSafetyError("could not clean up a bound result file") from error
+
+
+def _bound_file_identity(
+    bound_directory: BoundOutputDirectory,
+    name: str,
+) -> tuple[int, int, int] | None:
+    try:
+        file_stat = os.stat(
+            name,
+            dir_fd=bound_directory.descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise GauntletSafetyError("could not verify a bound result file") from error
+    return file_stat.st_dev, file_stat.st_ino, stat.S_IFMT(file_stat.st_mode)
+
+
+def _bound_output_identity_is_replaceable(identity: tuple[int, int, int]) -> bool:
+    return identity[2] in {stat.S_IFREG, stat.S_IFLNK}
+
+
+def _restore_bound_backup(
+    bound_directory: BoundOutputDirectory,
+    backup_name: str,
+    output_name: str,
+    backup_identity: tuple[int, int, int],
+) -> None:
+    """Restore one detached output while retaining its recovery link."""
+    try:
+        os.link(
+            backup_name,
+            output_name,
+            src_dir_fd=bound_directory.descriptor,
+            dst_dir_fd=bound_directory.descriptor,
+            follow_symlinks=False,
+        )
+    except FileExistsError as error:
+        raise GauntletSafetyError("bound result changed before rollback") from error
+    except OSError as error:
+        raise GauntletSafetyError("could not restore the existing bound result") from error
+    if _bound_file_identity(bound_directory, output_name) != backup_identity:
+        raise GauntletSafetyError("bound result changed during rollback")
+
+
+def _backup_bound_output(
+    bound_directory: BoundOutputDirectory,
+    output_name: str,
+) -> str | None:
+    """Atomically detach an existing explicit output into a reserved backup."""
+    backup_descriptor, backup_name = _open_unique_bound_file(
+        bound_directory,
+        prefix=_RESULT_STAGING_PREFIX,
+        suffix=".backup",
+    )
+    try:
+        os.close(backup_descriptor)
+    except BaseException:
+        _unlink_bound_file(bound_directory, backup_name)
+        raise
+    try:
+        os.rename(
+            output_name,
+            backup_name,
+            src_dir_fd=bound_directory.descriptor,
+            dst_dir_fd=bound_directory.descriptor,
+        )
+    except FileNotFoundError:
+        _unlink_bound_file(bound_directory, backup_name)
+        return None
+    except OSError as error:
+        _unlink_bound_file(bound_directory, backup_name)
+        raise GauntletSafetyError("could not preserve the existing bound result") from error
+    return backup_name
+
+
+def _rollback_bound_output(
+    bound_directory: BoundOutputDirectory,
+    output_name: str,
+    backup_name: str | None,
+    *,
+    output_replaced: bool,
+    expected_output_identity: tuple[int, int, int] | None,
+) -> None:
+    """Remove an unaccepted publication and restore any prior output."""
+    if output_replaced:
+        captured_name = _backup_bound_output(bound_directory, output_name)
+        if captured_name is None:
+            raise GauntletSafetyError("bound result changed before rollback")
+        captured_identity = _bound_file_identity(bound_directory, captured_name)
+        if captured_identity is None:
+            raise GauntletSafetyError("bound result changed before rollback")
+        if expected_output_identity is None or captured_identity != expected_output_identity:
+            _restore_bound_backup(
+                bound_directory,
+                captured_name,
+                output_name,
+                captured_identity,
+            )
+            raise GauntletSafetyError("bound result changed before rollback")
+        _unlink_bound_file(bound_directory, captured_name)
+    elif backup_name is not None and _bound_file_identity(bound_directory, output_name) is not None:
+        raise GauntletSafetyError("bound result changed before rollback")
+    if backup_name is None:
+        return
+    backup_identity = _bound_file_identity(bound_directory, backup_name)
+    if backup_identity is None:
+        raise GauntletSafetyError("bound result changed before rollback")
+    _restore_bound_backup(
+        bound_directory,
+        backup_name,
+        output_name,
+        backup_identity,
+    )
+
+
+def _write_bound_result(
+    serialized_result: str,
+    bound_directory: BoundOutputDirectory,
+    output_name: str | None,
+) -> Path:
+    if not _bound_directory_is_safe(bound_directory):
+        raise GauntletSafetyError("validated result directory changed before publication")
+    remove_output_on_failure = output_name is None
+    temporary_name: str | None = None
+    backup_name: str | None = None
+    output_replaced = False
+    published_identity: tuple[int, int, int] | None = None
+    expected_output_identity: tuple[int, int, int] | None = None
+    published = False
+    try:
+        if output_name is None:
+            output_descriptor, output_name = _open_unique_bound_file(
+                bound_directory,
+                prefix="qbitunregistered-gauntlet-",
+                suffix=".json",
+            )
+            try:
+                output_stat = os.fstat(output_descriptor)
+            except BaseException:
+                try:
+                    os.close(output_descriptor)
+                finally:
+                    _backup_bound_output(bound_directory, output_name)
+                raise
+            expected_output_identity = (
+                output_stat.st_dev,
+                output_stat.st_ino,
+                stat.S_IFMT(output_stat.st_mode),
+            )
+            output_replaced = True
+            os.close(output_descriptor)
+        temporary_descriptor, temporary_name = _open_unique_bound_file(
+            bound_directory,
+            prefix=_RESULT_STAGING_PREFIX,
+            suffix=".tmp",
+        )
+        with os.fdopen(temporary_descriptor, mode="w", encoding="utf-8") as temporary_file:
+            temporary_file.write(serialized_result)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+            temporary_stat = os.fstat(temporary_file.fileno())
+            published_identity = (
+                temporary_stat.st_dev,
+                temporary_stat.st_ino,
+                stat.S_IFMT(temporary_stat.st_mode),
+            )
+        if not _bound_directory_is_safe(bound_directory):
+            raise GauntletSafetyError("validated result directory changed during publication")
+        if remove_output_on_failure:
+            assert output_name is not None
+            reservation_backup_name = _backup_bound_output(bound_directory, output_name)
+            if reservation_backup_name is None:
+                output_replaced = False
+                raise GauntletSafetyError("bound result output changed during publication")
+            output_replaced = False
+            reservation_identity = _bound_file_identity(bound_directory, reservation_backup_name)
+            if reservation_identity is None:
+                raise GauntletSafetyError("bound result changed during publication")
+            if reservation_identity != expected_output_identity:
+                _restore_bound_backup(
+                    bound_directory,
+                    reservation_backup_name,
+                    output_name,
+                    reservation_identity,
+                )
+                raise GauntletSafetyError("bound result output changed during publication")
+            _unlink_bound_file(bound_directory, reservation_backup_name)
+            expected_output_identity = None
+        else:
+            assert output_name is not None
+            backup_name = _backup_bound_output(bound_directory, output_name)
+            if backup_name is not None:
+                backup_identity = _bound_file_identity(bound_directory, backup_name)
+                if backup_identity is None:
+                    raise GauntletSafetyError("bound result changed during publication")
+                if not _bound_output_identity_is_replaceable(backup_identity):
+                    _restore_bound_backup(
+                        bound_directory,
+                        backup_name,
+                        output_name,
+                        backup_identity,
+                    )
+                    backup_name = None
+                    raise GauntletSafetyError("result output changed to a nonreplaceable entry during publication")
+        if not _bound_directory_is_safe(bound_directory):
+            raise GauntletSafetyError("validated result directory changed during publication")
+        assert published_identity is not None
+        if _bound_file_identity(bound_directory, temporary_name) != published_identity:
+            raise GauntletSafetyError("bound result staging file changed during publication")
+        try:
+            os.link(
+                temporary_name,
+                output_name,
+                src_dir_fd=bound_directory.descriptor,
+                dst_dir_fd=bound_directory.descriptor,
+                follow_symlinks=False,
+            )
+        except FileExistsError as error:
+            raise GauntletSafetyError("bound result output changed during publication") from error
+        except OSError as error:
+            raise GauntletSafetyError("could not publish the bound result safely") from error
+        output_replaced = True
+        expected_output_identity = published_identity
+        if not _bound_directory_is_safe(bound_directory):
+            raise GauntletSafetyError("validated result directory changed during publication")
+        if _bound_file_identity(bound_directory, output_name) != published_identity:
+            raise GauntletSafetyError("bound result changed during publication")
+        if temporary_name is not None:
+            _unlink_bound_file(bound_directory, temporary_name)
+            temporary_name = None
+        # This read is the acceptance point; retain any prior-output backup until it succeeds.
+        if _bound_file_identity(bound_directory, output_name) != published_identity:
+            raise GauntletSafetyError("bound result changed during publication")
+        if backup_name is not None:
+            _unlink_bound_file(bound_directory, backup_name)
+            backup_name = None
+        published = True
+    finally:
+        try:
+            if temporary_name is not None:
+                _unlink_bound_file(bound_directory, temporary_name)
+        finally:
+            if not published and output_name is not None:
+                _rollback_bound_output(
+                    bound_directory,
+                    output_name,
+                    backup_name,
+                    output_replaced=output_replaced,
+                    expected_output_identity=expected_output_identity,
+                )
+    assert output_name is not None
+    return bound_directory.path / output_name
+
+
+def write_serialized_result(
+    serialized_result: str,
+    output: Path | None = None,
+    *,
+    default_directory: Path | None = None,
+    bound_directory: BoundOutputDirectory | None = None,
+) -> Path:
+    """Write JSON to an explicit path or a unique file in the temporary directory."""
+    if bound_directory is not None:
+        if output is not None:
+            if output.parent != bound_directory.path or output.name != Path(output.name).name:
+                raise GauntletSafetyError("bound result path does not match its validated directory")
+            output_name: str | None = output.name
+        else:
+            if default_directory != bound_directory.path:
+                raise GauntletSafetyError("bound default result directory does not match validation")
+            output_name = None
+        return _write_bound_result(serialized_result, bound_directory, output_name)
+
+    remove_output_on_failure = output is None
     if output is None:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix="qbitunregistered-gauntlet-",
             suffix=".json",
+            dir=default_directory,
         )
         output_path = Path(temporary_name)
         try:
             os.close(descriptor)
-        except OSError:
+        except BaseException:
             output_path.unlink(missing_ok=True)
             raise
     else:
-        output_path = output.expanduser().resolve()
+        expanded_output = output.expanduser()
+        output_path = expanded_output.parent.resolve() / expanded_output.name
         output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(serialized_result, encoding="utf-8")
+
+    temporary_path: Path | None = None
+    published = False
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=_RESULT_STAGING_PREFIX,
+            suffix=".tmp",
+            dir=output_path.parent,
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(serialized_result)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, output_path)
+        published = True
+    finally:
+        try:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        finally:
+            if remove_output_on_failure and not published:
+                output_path.unlink(missing_ok=True)
     return output_path
 
 
@@ -653,10 +1082,12 @@ def write_result(result: Mapping[str, object], output: Path | None = None) -> Pa
 
 
 __all__ = [
+    "BoundOutputDirectory",
     "DEFAULT_SAMPLES",
     "DEFAULT_SEED",
     "EVALUATOR_VERSION",
     "GauntletSafetyError",
+    "bind_output_directory",
     "evaluate_fixture",
     "run_gauntlet",
     "serialize_result",

@@ -668,6 +668,96 @@ for tag, hashes in torrents_by_tag.items():
   - Tagging operations
   - Cache operations
 
+## Evaluator Isolation
+
+The repository-local paired gauntlet is an evaluator-only boundary and never
+contacts a live qBittorrent instance. Its source launcher binds first-party
+imports to the selected clean worktree, rejects symbolic links and Windows
+reparse points throughout protected package trees, and keeps installed
+dependencies behind the standard library on `sys.path`. The coordinator checks
+protected trees before and after the crossover; each isolated child closes the
+preflight-to-import gap by checking immediately before imports and after
+evaluation.
+
+The operator-selected source launcher is the entry trust root and requires the
+`python -I -S -B` startup semantics, including isolated, no-site, safe-path,
+and no-bytecode interpreter flags; additional flags are permitted. It discovers
+virtual-environment package roots from the lexical interpreter path and a bounded, stable,
+nonredirecting `pyvenv.cfg`, then uses explicit `sysconfig` virtual-environment
+paths plus hook-free system-site path construction when configured. Only
+canonical existing `site-packages` or `dist-packages` directories are retained;
+the launcher never invokes `site.main()` or `site.addsitedir()`, so dependency
+discovery cannot execute `.pth` files or `sitecustomize`. Before it starts the
+import bootstrap, it requires the bootstrap to be the same regular, visible
+stage-0 blob in `HEAD` and the index, compares stable worktree bytes with that
+immutable blob or its deterministic whole-file LF-to-CRLF checkout form, and
+executes only the immutable bytes through isolated Python's standard input. Git
+repository-selection variables are removed from both the
+launcher validation and the child environment. This prevents an ordinary or
+staged bootstrap modification from executing before repository identity and
+protected-source validation begin. The bootstrap then requires the complete
+canonical protected Python path, mode, and object-ID map in the index to equal
+`HEAD` before it reads or imports any protected blob.
+
+Before every measured child, the coordinator captures `import_bootstrap.py`
+from the immutable blob map for that role's originally recorded commit and
+supplies those bytes through isolated Python standard input. The child pins all
+downstream protected imports and finder revalidations to the same commit, and
+the coordinator repeats repository and bootstrap validation after the child.
+No measured process executes the mutable worktree bootstrap path.
+
+The paired coordinator accepts execution only from the validated import
+bootstrap. A one-use process-local state binds the exact protected finder,
+sanitized import path, source location, and site/safe-path interpreter flags
+before coordinator imports proceed. Cache environment variables remain
+operational inputs, not authentication markers, so direct module execution
+cannot spoof the launcher boundary. The coordinator also rejects a noncanonical
+profile seed before dependency fingerprinting or child execution. Ordinary
+non-paired module execution is unchanged.
+
+One content-and-relative-path fingerprint binds the ordered installed
+dependency directories for all eight crossover children. Each child verifies
+that fingerprint immediately before and after evaluator execution, while the
+coordinator independently rechecks it after every child. The paired artifact's
+dependency digest combines that environment fingerprint with the identical
+`pyproject.toml` and `uv.lock` inputs from all three worktrees. The coordinator
+also requires evaluator sources, the quality bar, and both dependency inputs to
+remain regular stage-0 index entries without skip-worktree or assume-unchanged
+flags in every worktree. Digest-bound measured children reject modules already
+loaded from those dependency directories and exclude the directories from
+`sys.path`; their measured import closure is the standard library plus the
+immutable protected-source finder. The environment fingerprint therefore
+records and compares the installed tree but does not claim package provenance.
+Ordinary non-paired launcher execution retains its installed-dependency import
+behavior.
+
+The invoking checkout's quality bar is captured as a regular, visible stage-0
+blob that must exactly match the originally recorded evaluator commit. One
+immutable byte buffer supplies both validated thresholds and the artifact
+digest; the complete blob provenance is resolved again immediately before
+comparison and publication.
+
+Explicit paired-result publication atomically renames any existing leaf into a
+reserved descriptor-relative backup, revalidates the detached leaf type, then
+hard-links the fsynced staging inode into the absent destination without
+clobbering a concurrent entry. Allocator-owned output names use the same
+verified detach and no-clobber installation after reserving a unique name. The
+protected-directory set includes every canonical worktree root plus its Git
+administration and common directories, including external metadata shared by
+linked worktrees. A sanitized, batched Git query establishes those paths before
+evaluation, and exact final re-resolution must match before publication. The
+source-only launcher intentionally performs its own minimal sanitized metadata
+query before creating the parent bytecode cache; importing coordinator code at
+that pre-verification trust boundary would defeat the launcher isolation. The
+backup remains until the bound output directory and published leaf pass their
+post-publication checks. Rollback atomically detaches explicit and
+allocator-owned public leaves before discarding an unaccepted staging inode and
+restores an old leaf only through a descriptor-relative no-clobber link. A
+concurrent replacement and uniquely
+named recovery links remain preserved after rollback; restored prior-output
+backups are not unlinked based on a stale public-name identity check. Any
+uncertainty makes publication fail closed.
+
 ## Extension Points
 
 ### Adding New Operations

@@ -2,11 +2,43 @@
 
 from __future__ import annotations
 
+import sys
+
+_COORDINATOR_BOOTSTRAP_MODULE = "_qbitunregistered_gauntlet_coordinator_bootstrap"
+_COORDINATOR_LAUNCH_ERROR = "paired gauntlet must be started with benchmarks/gauntlet/launcher.py"
+
+
+def _paired_arguments_requested(arguments: Sequence[str]) -> bool:
+    return any(argument.startswith("--paired-") for argument in arguments)
+
+
+def _require_isolated_coordinator() -> None:
+    flags = sys.flags
+    bootstrap_state = sys.modules.get(_COORDINATOR_BOOTSTRAP_MODULE)
+    accept = getattr(bootstrap_state, "accept", None)
+    if (
+        not flags.no_site
+        or not flags.no_user_site
+        or not flags.safe_path
+        or not callable(accept)
+        or accept(__file__) is not True
+    ):
+        raise SystemExit(_COORDINATOR_LAUNCH_ERROR)
+
+
+_EARLY_COORDINATOR_ISOLATION_VERIFIED = _paired_arguments_requested(sys.argv[1:])
+if _EARLY_COORDINATOR_ISOLATION_VERIFIED:
+    _require_isolated_coordinator()
+
 import argparse
+import os
+import subprocess
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
 from benchmarks.gauntlet.identity import (
+    RepositoryIdentityError,
     capture_repository_identity,
     require_same_identity,
 )
@@ -14,6 +46,9 @@ from benchmarks.gauntlet.identity import (
 PROFILE_NAMES = ("quick", "full")
 DEFAULT_QUALITY_BAR = Path(__file__).with_name("quality-bar.toml")
 COMPARISON_FAILED_EXIT = 2
+ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
+_REPOSITORY_METADATA_ERROR = "gauntlet repository metadata could not be resolved safely"
+_REPOSITORY_METADATA_CHANGED_ERROR = "gauntlet repository metadata changed or became unsafe during execution"
 
 
 def _positive_integer(value: str) -> int:
@@ -37,7 +72,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         type=Path,
-        help="JSON output path outside the repository; defaults to a unique system temporary file.",
+        help=(
+            "JSON output path outside the repository; defaults to a unique system temporary file. "
+            "Paired mode requires an existing parent directory."
+        ),
     )
     parser.add_argument(
         "--compare",
@@ -46,33 +84,321 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Compare with a TOML quality bar; the repository quality bar is used when no path is supplied.",
     )
+    parser.add_argument(
+        "--paired-control",
+        type=Path,
+        help="Clean control worktree for a contemporaneous ABBA+BAAB crossover.",
+    )
+    parser.add_argument(
+        "--paired-candidate",
+        type=Path,
+        help="Clean candidate worktree for a contemporaneous ABBA+BAAB crossover.",
+    )
     return parser
 
 
-def _outside_repository(path: Path, repository_root: Path) -> bool:
+def _resolve_output(path: Path) -> tuple[Path, Path]:
     try:
-        return not path.expanduser().resolve().is_relative_to(repository_root)
-    except (OSError, RuntimeError, ValueError):
-        return False
+        expanded_path = path.expanduser()
+        publication_path = expanded_path.parent.resolve() / expanded_path.name
+        return publication_path, publication_path.resolve()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SystemExit("gauntlet output path could not be resolved") from error
+
+
+def _repository_git_directories(repository_root: Path) -> tuple[Path, ...]:
+    """Return canonical Git admin and common directories for one checkout."""
+    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-dir",
+                "--git-common-dir",
+            ],
+            cwd=repository_root,
+            env=environment,
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SystemExit(_REPOSITORY_METADATA_ERROR) from error
+
+    encoded_directories = completed.stdout.splitlines()
+    if (
+        completed.returncode != 0
+        or completed.stderr
+        or len(encoded_directories) != 2
+        or any(not value or b"\0" in value for value in encoded_directories)
+    ):
+        raise SystemExit(_REPOSITORY_METADATA_ERROR)
+
+    directories: list[Path] = []
+    for encoded_directory in encoded_directories:
+        directory = Path(os.fsdecode(encoded_directory))
+        if not directory.is_absolute():
+            raise SystemExit(_REPOSITORY_METADATA_ERROR)
+        try:
+            canonical_directory = directory.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SystemExit(_REPOSITORY_METADATA_ERROR) from error
+        if not canonical_directory.is_dir():
+            raise SystemExit(_REPOSITORY_METADATA_ERROR)
+        if canonical_directory not in directories:
+            directories.append(canonical_directory)
+    return tuple(directories)
+
+
+def _repository_protected_roots(repository_roots: Sequence[Path]) -> tuple[Path, ...]:
+    """Return canonical worktree and Git metadata directories to protect."""
+    protected_roots: list[Path] = []
+    for repository_root in repository_roots:
+        try:
+            canonical_root = repository_root.expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SystemExit(_REPOSITORY_METADATA_ERROR) from error
+        if not canonical_root.is_dir():
+            raise SystemExit(_REPOSITORY_METADATA_ERROR)
+        for protected_root in (canonical_root, *_repository_git_directories(canonical_root)):
+            if protected_root not in protected_roots:
+                protected_roots.append(protected_root)
+    return tuple(protected_roots)
+
+
+def _revalidate_repository_protected_roots(
+    repository_roots: Sequence[Path],
+    expected_protected_roots: tuple[Path, ...],
+) -> tuple[Path, ...]:
+    """Fail closed when any protected worktree or Git directory changes."""
+    try:
+        protected_roots = _repository_protected_roots(repository_roots)
+    except SystemExit:
+        raise SystemExit(_REPOSITORY_METADATA_CHANGED_ERROR) from None
+    if protected_roots != expected_protected_roots:
+        raise SystemExit(_REPOSITORY_METADATA_CHANGED_ERROR)
+    return protected_roots
+
+
+def _output_is_outside_repositories(
+    publication_path: Path,
+    target_path: Path,
+    repository_roots: Sequence[Path],
+) -> bool:
+    return all(
+        not output_path.is_relative_to(repository_root)
+        for output_path in (publication_path, target_path)
+        for repository_root in repository_roots
+    )
+
+
+def _revalidate_output(
+    path: Path,
+    expected_publication_path: Path,
+    expected_target_path: Path,
+    repository_roots: Sequence[Path],
+) -> Path:
+    publication_path, target_path = _resolve_output(path)
+    if (
+        publication_path != expected_publication_path
+        or target_path != expected_target_path
+        or not _output_is_outside_repositories(
+            publication_path,
+            target_path,
+            repository_roots,
+        )
+    ):
+        raise SystemExit("gauntlet output destination changed or became unsafe during execution")
+    return publication_path
+
+
+def _resolve_default_output_directory() -> Path:
+    try:
+        return Path(tempfile.gettempdir()).resolve()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SystemExit("gauntlet default output directory could not be resolved") from error
+
+
+def _revalidate_default_output_directory(
+    expected_directory: Path,
+    repository_roots: Sequence[Path],
+) -> None:
+    output_directory = _resolve_default_output_directory()
+    if output_directory != expected_directory or not _output_is_outside_repositories(
+        output_directory,
+        output_directory,
+        repository_roots,
+    ):
+        raise SystemExit("gauntlet output destination changed or became unsafe during execution")
+
+
+def _require_isolated_parent_cache(repository_roots: Sequence[Path]) -> Path:
+    cache_name = os.environ.get(ISOLATED_PARENT_CACHE_ENV)
+    if not cache_name or sys.pycache_prefix is None:
+        raise SystemExit("paired gauntlet must be started with benchmarks/gauntlet/launcher.py")
+    try:
+        cache_root = Path(cache_name).resolve()
+        active_cache_root = Path(sys.pycache_prefix).resolve()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SystemExit("paired gauntlet bytecode cache could not be resolved") from error
+    if (
+        cache_root != active_cache_root
+        or not cache_root.is_dir()
+        or not _output_is_outside_repositories(
+            cache_root,
+            cache_root,
+            repository_roots,
+        )
+    ):
+        raise SystemExit("paired gauntlet bytecode cache is missing, mismatched, or unsafe")
+    return cache_root
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one evaluator profile, optionally compare it, and write JSON."""
     repository_root = Path(__file__).resolve().parents[2]
+    repository_roots: tuple[Path, ...] = (repository_root,)
+    protected_roots = _repository_protected_roots(repository_roots)
     identity_before_imports = capture_repository_identity(repository_root)
     arguments = build_parser().parse_args(argv)
-    if arguments.output is not None and not _outside_repository(
-        arguments.output,
-        repository_root,
-    ):
-        raise SystemExit("gauntlet output must be outside the repository")
+    resolved_output: Path | None = None
+    resolved_output_target: Path | None = None
+    default_output_directory: Path | None = None
+    if arguments.output is not None:
+        resolved_output, resolved_output_target = _resolve_output(arguments.output)
+        if not _output_is_outside_repositories(
+            resolved_output,
+            resolved_output_target,
+            protected_roots,
+        ):
+            raise SystemExit("gauntlet output must be outside the repository")
+    else:
+        default_output_directory = _resolve_default_output_directory()
+        if not _output_is_outside_repositories(
+            default_output_directory,
+            default_output_directory,
+            protected_roots,
+        ):
+            raise SystemExit("gauntlet output must be outside the repository")
+    paired_control: Path | None = arguments.paired_control
+    paired_candidate: Path | None = arguments.paired_candidate
+    paired_output = resolved_output
+    paired_output_target = resolved_output_target
+    paired_requested = paired_control is not None or paired_candidate is not None
+    if paired_requested and (paired_control is None or paired_candidate is None):
+        raise SystemExit("--paired-control and --paired-candidate must be supplied together")
+    if paired_requested:
+        if not _EARLY_COORDINATOR_ISOLATION_VERIFIED:
+            _require_isolated_coordinator()
+        assert paired_control is not None
+        assert paired_candidate is not None
+        try:
+            paired_control = paired_control.expanduser().resolve()
+            paired_candidate = paired_candidate.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SystemExit("paired gauntlet worktree paths could not be resolved") from error
+        repository_roots = (repository_root, paired_control, paired_candidate)
+        protected_roots = _repository_protected_roots(repository_roots)
+        _require_isolated_parent_cache(protected_roots)
+        if arguments.compare is not None:
+            try:
+                canonical_compare = arguments.compare.expanduser().resolve()
+                canonical_quality_bar = DEFAULT_QUALITY_BAR.resolve()
+            except (OSError, RuntimeError, ValueError):
+                raise SystemExit("paired gauntlet requires the invoking checkout's canonical quality bar") from None
+            if canonical_compare != canonical_quality_bar:
+                raise SystemExit("paired gauntlet requires the invoking checkout's canonical quality bar")
+        if paired_output is not None:
+            assert paired_output_target is not None
+            if not _output_is_outside_repositories(
+                paired_output,
+                paired_output_target,
+                protected_roots,
+            ):
+                raise SystemExit("paired gauntlet output must be outside both evaluated repositories")
+        else:
+            assert default_output_directory is not None
+            if not _output_is_outside_repositories(
+                default_output_directory,
+                default_output_directory,
+                protected_roots,
+            ):
+                raise SystemExit("paired gauntlet output must be outside both evaluated repositories")
 
     from benchmarks.gauntlet.baseline import compare_result, load_quality_bar
     from benchmarks.gauntlet.runner import (
+        GauntletSafetyError,
+        bind_output_directory,
         run_gauntlet,
         serialize_result,
+        validate_bound_output_leaf,
         write_serialized_result,
     )
+
+    if paired_requested:
+        from benchmarks.gauntlet.paired import PairedGauntletError, run_paired_gauntlet
+
+        assert paired_control is not None
+        assert paired_candidate is not None
+        publication_directory = paired_output.parent if paired_output is not None else default_output_directory
+        assert publication_directory is not None
+        try:
+            with bind_output_directory(
+                publication_directory,
+                protected_roots=protected_roots,
+            ) as bound_directory:
+                if paired_output is not None:
+                    validate_bound_output_leaf(bound_directory, paired_output.name)
+                paired_result = run_paired_gauntlet(
+                    paired_control,
+                    paired_candidate,
+                    orchestrator_root=repository_root,
+                    profile=arguments.profile,
+                    seed=arguments.seed,
+                    samples=arguments.samples,
+                )
+                serialized_result = serialize_result(paired_result)
+                require_same_identity(
+                    identity_before_imports,
+                    capture_repository_identity(repository_root),
+                )
+                protected_roots = _revalidate_repository_protected_roots(
+                    repository_roots,
+                    protected_roots,
+                )
+                if paired_output is not None:
+                    assert arguments.output is not None
+                    assert paired_output_target is not None
+                    paired_output = _revalidate_output(
+                        arguments.output,
+                        paired_output,
+                        paired_output_target,
+                        protected_roots,
+                    )
+                    output_path = write_serialized_result(
+                        serialized_result,
+                        paired_output,
+                        bound_directory=bound_directory,
+                    )
+                else:
+                    assert default_output_directory is not None
+                    _revalidate_default_output_directory(
+                        default_output_directory,
+                        protected_roots,
+                    )
+                    output_path = write_serialized_result(
+                        serialized_result,
+                        default_directory=default_output_directory,
+                        bound_directory=bound_directory,
+                    )
+        except (GauntletSafetyError, PairedGauntletError) as error:
+            raise SystemExit(str(error)) from None
+        except RepositoryIdentityError:
+            raise SystemExit("paired repository identity changed during evaluation") from None
+        print(output_path)
+        return 0 if paired_result["comparison"]["overall"] == "pass" else COMPARISON_FAILED_EXIT
 
     result = run_gauntlet(
         arguments.profile,
@@ -93,7 +419,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         identity_before_imports,
         capture_repository_identity(repository_root),
     )
-    output_path = write_serialized_result(serialized_result, arguments.output)
+    protected_roots = _revalidate_repository_protected_roots(
+        repository_roots,
+        protected_roots,
+    )
+    if resolved_output is not None:
+        assert arguments.output is not None
+        assert resolved_output_target is not None
+        resolved_output = _revalidate_output(
+            arguments.output,
+            resolved_output,
+            resolved_output_target,
+            protected_roots,
+        )
+    else:
+        assert default_output_directory is not None
+        _revalidate_default_output_directory(
+            default_output_directory,
+            protected_roots,
+        )
+    if resolved_output is None:
+        assert default_output_directory is not None
+        output_path = write_serialized_result(
+            serialized_result,
+            default_directory=default_output_directory,
+        )
+    else:
+        output_path = write_serialized_result(serialized_result, resolved_output)
     print(output_path)
     return exit_code
 
