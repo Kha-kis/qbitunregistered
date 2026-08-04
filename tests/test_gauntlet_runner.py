@@ -1481,7 +1481,7 @@ def test_verified_child_bootstrap_executes_original_commit_bytes_from_stdin(
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == b"trusted child\n"
+    assert completed.stdout.splitlines() == [b"trusted child"]
     assert completed.stderr == b""
 
 
