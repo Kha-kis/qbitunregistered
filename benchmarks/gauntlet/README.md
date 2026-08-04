@@ -71,7 +71,8 @@ operator-selected launcher file is the entry trust root: callers must invoke it
 from the intended clean checkout. Before executing downstream repository code,
 the launcher requires `import_bootstrap.py` to be the same regular, visible
 stage-0 blob in both `HEAD` and the index, verifies the stable worktree bytes
-against that immutable blob, and supplies the immutable blob bytes to isolated
+against that immutable blob (allowing only Git's deterministic whole-file CRLF
+checkout representation), and supplies the immutable blob bytes to isolated
 Python over standard input. It also removes inherited Python injection variables
 and Git repository-selection variables, and starts the coordinator with a fresh
 temporary bytecode cache before any repository package can be imported. The

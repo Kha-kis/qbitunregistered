@@ -2514,6 +2514,18 @@ def test_source_launcher_rejects_modified_worktree_bootstrap_before_execution(
     bootstrap_path = gauntlet_root / "import_bootstrap.py"
     bootstrap_path.write_bytes(Path(launcher.__file__).with_name("import_bootstrap.py").read_bytes())
     _commit_gauntlet_test_repository(repository_root)
+    subprocess.run(
+        ["git", "config", "core.autocrlf", "true"],
+        cwd=repository_root,
+        check=True,
+    )
+    bootstrap_path.unlink()
+    subprocess.run(
+        ["git", "checkout", "--", launcher.BOOTSTRAP_RELATIVE_PATH],
+        cwd=repository_root,
+        check=True,
+    )
+    assert b"\r\n" in bootstrap_path.read_bytes()
     clean_environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
     clean_environment["PYTHONDONTWRITEBYTECODE"] = "1"
 
@@ -2595,6 +2607,25 @@ def test_source_launcher_rejects_modified_worktree_bootstrap_before_execution(
     assert "Traceback" not in redirected.stderr
     assert str(repository_root) not in redirected.stderr
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("worktree_source", "trusted_source", "expected"),
+    [
+        (b"first\nsecond\n", b"first\nsecond\n", True),
+        (b"first\r\nsecond\r\n", b"first\nsecond\n", True),
+        (b"first\r\nsecond\n", b"first\nsecond\n", False),
+        (b"first\r\nchanged\r\n", b"first\nsecond\n", False),
+        (b"first\r\nsecond\r\n", b"first\r\nsecond\r\n", True),
+        (b"first\r\r\nsecond\r\r\n", b"first\r\nsecond\r\n", False),
+    ],
+)
+def test_bootstrap_checkout_bytes_allow_only_exact_or_whole_file_crlf(
+    worktree_source: bytes,
+    trusted_source: bytes,
+    expected: bool,
+) -> None:
+    assert launcher._bootstrap_checkout_matches(worktree_source, trusted_source) is expected
 
 
 @pytest.mark.parametrize(("child_returncode", "expected_returncode"), [(2, 2), (-15, 143)])

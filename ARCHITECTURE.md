@@ -682,8 +682,9 @@ evaluation.
 The operator-selected source launcher is the entry trust root. Before it starts
 the import bootstrap, it requires the bootstrap to be the same regular, visible
 stage-0 blob in `HEAD` and the index, compares stable worktree bytes with that
-immutable blob, and executes the immutable bytes through isolated Python's
-standard input. Git repository-selection variables are removed from both the
+immutable blob or its deterministic whole-file LF-to-CRLF checkout form, and
+executes only the immutable bytes through isolated Python's standard input. Git
+repository-selection variables are removed from both the
 launcher validation and the child environment. This prevents an ordinary or
 staged bootstrap modification from executing before repository identity and
 protected-source validation begin.

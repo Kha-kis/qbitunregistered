@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The source launcher now verifies its downstream import bootstrap against the
   matching regular, visible stage-0 `HEAD` and index blob, rejects modified
   worktree bytes and inherited Git repository redirection before execution, and
-  runs the immutable blob through isolated Python standard input.
+  runs the immutable blob through isolated Python standard input while safely
+  accepting Git's deterministic whole-file CRLF checkout representation.
 
 ## [2.2.1] - 2026-07-29
 

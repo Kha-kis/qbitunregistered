@@ -223,6 +223,15 @@ def _read_worktree_bootstrap(path: Path) -> bytes:  # noqa: C901
     return bytes(payload)
 
 
+def _bootstrap_checkout_matches(checkout_source: bytes, trusted_source: bytes) -> bool:
+    """Accept exact bytes or Git's whole-file LF-to-CRLF checkout form."""
+    if checkout_source == trusted_source:
+        return True
+    if b"\r" in trusted_source:
+        return False
+    return checkout_source == trusted_source.replace(b"\n", b"\r\n")
+
+
 def _trusted_bootstrap_source(repository_root: Path) -> bytes:
     """Bind the downstream bootstrap to clean HEAD and stage-0 blob bytes."""
     encoded_oid = _bootstrap_blob_identity(repository_root)
@@ -240,7 +249,8 @@ def _trusted_bootstrap_source(repository_root: Path) -> bytes:
     if len(source_bytes) != source_size:
         raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR)
     worktree_path = repository_root.joinpath(*BOOTSTRAP_RELATIVE_PATH.split("/"))
-    if _read_worktree_bootstrap(worktree_path) != source_bytes:
+    worktree_source = _read_worktree_bootstrap(worktree_path)
+    if not _bootstrap_checkout_matches(worktree_source, source_bytes):
         raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR)
     return source_bytes
 
