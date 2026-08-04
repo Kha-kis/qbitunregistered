@@ -61,7 +61,7 @@ a wheel and source distribution. To install a downloaded wheel instead of a
 source checkout:
 
 ```bash
-python -m pip install ./qbitunregistered-2.2.1-py3-none-any.whl
+python -m pip install ./qbitunregistered-2.3.0-py3-none-any.whl
 ```
 
 ## Upgrading
