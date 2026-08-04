@@ -3585,12 +3585,35 @@ def test_source_launcher_constructs_venv_paths_without_site_hooks(
     assert dependency_paths == tuple(expected)
 
 
+def test_source_launcher_system_fallback_ignores_windows_prefix_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interpreter_root = tmp_path / "interpreter"
+    executable = interpreter_root / "python.exe"
+    interpreter_root.mkdir()
+    package_root = interpreter_root / "Lib" / "site-packages"
+    package_root.mkdir(parents=True)
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+    monkeypatch.setattr(launcher.sys, "prefix", str(interpreter_root))
+    monkeypatch.setattr(launcher.sys, "exec_prefix", str(interpreter_root))
+    monkeypatch.setattr(
+        launcher.site,
+        "getsitepackages",
+        lambda _prefixes: [str(interpreter_root), str(package_root)],
+    )
+
+    assert launcher._dependency_import_paths() == (str(package_root.resolve()),)
+
+
 def test_source_launcher_system_fallback_requires_an_existing_package_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "interpreter" / "bin" / "python"
     executable.parent.mkdir(parents=True)
+    existing_prefix = tmp_path / "existing-prefix"
+    existing_prefix.mkdir()
     missing_site = tmp_path / "missing" / "site-packages"
     monkeypatch.setattr(launcher.sys, "executable", str(executable))
     monkeypatch.setattr(launcher.sys, "prefix", str(tmp_path / "interpreter"))
@@ -3598,7 +3621,7 @@ def test_source_launcher_system_fallback_requires_an_existing_package_root(
     monkeypatch.setattr(
         launcher.site,
         "getsitepackages",
-        lambda _prefixes: [str(missing_site)],
+        lambda _prefixes: [str(existing_prefix), str(missing_site)],
     )
 
     with pytest.raises(SystemExit) as raised:
@@ -3606,6 +3629,20 @@ def test_source_launcher_system_fallback_requires_an_existing_package_root(
 
     assert str(raised.value) == launcher.DEPENDENCY_PATH_ERROR
     assert str(missing_site) not in str(raised.value)
+
+
+def test_source_launcher_rejects_invalid_package_candidates_path_free(
+    tmp_path: Path,
+) -> None:
+    package_file = tmp_path / "private" / "site-packages"
+    package_file.parent.mkdir()
+    package_file.write_text("not a directory", encoding="utf-8")
+
+    for invalid_candidate in ("relative/site-packages", str(package_file)):
+        with pytest.raises(SystemExit) as raised:
+            launcher._canonical_package_directories((invalid_candidate,))
+        assert str(raised.value) == launcher.DEPENDENCY_PATH_ERROR
+        assert str(package_file) not in str(raised.value)
 
 
 def test_source_launcher_does_not_execute_site_hooks_or_write_dependency_tree(

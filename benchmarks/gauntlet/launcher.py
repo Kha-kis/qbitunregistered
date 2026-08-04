@@ -147,10 +147,10 @@ def _canonical_package_directories(candidates: Sequence[str]) -> tuple[str, ...]
                 resolved_path = path.resolve(strict=True)
             except FileNotFoundError:
                 continue
-            if not resolved_path.is_dir() or not SITE_DIRECTORY_NAMES.intersection(
-                part.casefold() for part in resolved_path.parts
-            ):
+            if not resolved_path.is_dir():
                 raise ValueError
+            if not SITE_DIRECTORY_NAMES.intersection(part.casefold() for part in resolved_path.parts):
+                continue
             resolved_value = str(resolved_path)
             if resolved_value not in dependency_paths:
                 dependency_paths.append(resolved_value)
