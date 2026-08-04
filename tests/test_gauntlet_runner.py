@@ -1740,6 +1740,7 @@ def test_verified_quality_bar_uses_one_commit_pinned_buffer_during_worktree_rewr
         repository_root,
         expected_commit,
     )
+    verified_source_digest = hashlib.sha256(verified_source.source_bytes).hexdigest()
     replacement_oid = (
         subprocess.run(
             ["git", "hash-object", "-w", "--stdin"],
@@ -1775,8 +1776,9 @@ def test_verified_quality_bar_uses_one_commit_pinned_buffer_during_worktree_rewr
     quality_bar_path.write_bytes(canonical_bytes)
 
     assert rebound_source == verified_source
+    assert rebound_source.source_bytes == verified_source.source_bytes
     assert parsed.profiles["quick"].relative_range_max == 0.50
-    assert hashlib.sha256(rebound_source.source_bytes).hexdigest() == hashlib.sha256(canonical_bytes).hexdigest()
+    assert hashlib.sha256(rebound_source.source_bytes).hexdigest() == verified_source_digest
 
     quality_bar_path.write_bytes(weakened_bytes)
     monkeypatch.delenv("GIT_DIR")
