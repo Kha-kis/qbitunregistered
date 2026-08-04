@@ -12,7 +12,7 @@ replaces that stale machine comparison with two contemporaneous measurements
 of each production revision:
 
 ```bash
-uv run python -I benchmarks/gauntlet/launcher.py \
+uv run python -I -S -B benchmarks/gauntlet/launcher.py \
   --profile full \
   --paired-control /path/to/clean-control-worktree \
   --paired-candidate /path/to/clean-candidate-worktree \
@@ -91,7 +91,16 @@ output retains automatic parent creation.
 
 Paired mode must start through the source-only launcher shown above. The
 operator-selected launcher file is the entry trust root: callers must invoke it
-from the intended clean checkout. Before executing downstream repository code,
+from the intended clean checkout with the `-I -S -B` startup semantics;
+additional interpreter flags are permitted.
+The launcher verifies isolated, no-site, safe-path, and no-bytecode flags before
+it continues. With automatic `site` initialization disabled, it locates an
+active virtual environment from the lexical interpreter path, reads only its
+bounded `include-system-site-packages` setting from a stable, regular
+`pyvenv.cfg`, and constructs canonical existing package directories with
+`sysconfig` and `site.getsitepackages()`. It never calls `site.main()` or
+`site.addsitedir()`, so `.pth` files and `sitecustomize` cannot run at this trust
+boundary. Before executing downstream repository code,
 the launcher requires `import_bootstrap.py` to be the same regular, visible
 stage-0 blob in both `HEAD` and the index, verifies the stable worktree bytes
 against that immutable blob (allowing only Git's deterministic whole-file CRLF

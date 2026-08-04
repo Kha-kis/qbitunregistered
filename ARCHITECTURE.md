@@ -679,8 +679,16 @@ protected trees before and after the crossover; each isolated child closes the
 preflight-to-import gap by checking immediately before imports and after
 evaluation.
 
-The operator-selected source launcher is the entry trust root. Before it starts
-the import bootstrap, it requires the bootstrap to be the same regular, visible
+The operator-selected source launcher is the entry trust root and requires the
+`python -I -S -B` startup semantics, including isolated, no-site, safe-path,
+and no-bytecode interpreter flags; additional flags are permitted. It discovers
+virtual-environment package roots from the lexical interpreter path and a bounded, stable,
+nonredirecting `pyvenv.cfg`, then uses explicit `sysconfig` virtual-environment
+paths plus hook-free system-site path construction when configured. Only
+canonical existing `site-packages` or `dist-packages` directories are retained;
+the launcher never invokes `site.main()` or `site.addsitedir()`, so dependency
+discovery cannot execute `.pth` files or `sitecustomize`. Before it starts the
+import bootstrap, it requires the bootstrap to be the same regular, visible
 stage-0 blob in `HEAD` and the index, compares stable worktree bytes with that
 immutable blob or its deterministic whole-file LF-to-CRLF checkout form, and
 executes only the immutable bytes through isolated Python's standard input. Git

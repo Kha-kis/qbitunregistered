@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import site
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -17,14 +19,17 @@ SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 BOOTSTRAP_RELATIVE_PATH = "benchmarks/gauntlet/import_bootstrap.py"
 BOOTSTRAP_VERIFICATION_ERROR = "gauntlet import bootstrap could not be verified"
 REPOSITORY_METADATA_ERROR = "gauntlet repository metadata could not be resolved safely"
+DEPENDENCY_PATH_ERROR = "gauntlet dependency import paths could not be resolved safely"
+STARTUP_ERROR = "gauntlet launcher must be started with python -I -S -B"
 _GIT_TIMEOUT_SECONDS = 10
 _MAX_BOOTSTRAP_BYTES = 1024 * 1024
+_MAX_PYVENV_CONFIG_BYTES = 64 * 1024
 _REGULAR_BLOB_MODES = frozenset({b"100644", b"100755"})
 
 
 def _require_isolated_startup() -> None:
-    if not sys.flags.isolated:
-        raise SystemExit("gauntlet launcher must be started with python -I")
+    if not (sys.flags.isolated and sys.flags.no_site and sys.flags.safe_path and sys.flags.dont_write_bytecode):
+        raise SystemExit(STARTUP_ERROR)
 
 
 def _paired_repository_roots(arguments: Sequence[str]) -> tuple[Path, ...]:
@@ -61,26 +66,119 @@ def _isolated_environment(
     return environment
 
 
-def _dependency_import_paths() -> tuple[str, ...]:
-    """Return ordinary installed-package paths without editable source roots."""
-    dependency_paths: list[str] = []
-    for value in sys.path:
-        if not value:
-            continue
+def _pyvenv_config_candidates(executable: Path) -> tuple[Path, Path]:
+    """Return CPython's lexical virtual-environment configuration locations."""
+    executable_directory = executable.parent
+    return (
+        executable_directory / "pyvenv.cfg",
+        executable_directory.parent / "pyvenv.cfg",
+    )
+
+
+def _find_pyvenv_config() -> Path | None:
+    """Find ``pyvenv.cfg`` beneath one canonical environment parent."""
+    executable = Path(sys.executable)
+    if not executable.is_absolute():
+        raise SystemExit(DEPENDENCY_PATH_ERROR)
+    for candidate in _pyvenv_config_candidates(executable):
         try:
-            path = Path(value)
-            resolved_path = path.resolve()
+            candidate_before = os.lstat(candidate)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise SystemExit(DEPENDENCY_PATH_ERROR) from error
+        try:
+            canonical_parent = candidate.parent.resolve(strict=True)
+            candidate_after = os.lstat(candidate)
         except (OSError, RuntimeError, ValueError) as error:
-            raise SystemExit("gauntlet dependency import path could not be resolved") from error
-        if (
-            path.is_absolute()
-            and resolved_path.is_dir()
-            and SITE_DIRECTORY_NAMES.intersection(part.casefold() for part in resolved_path.parts)
-        ):
+            raise SystemExit(DEPENDENCY_PATH_ERROR) from error
+        if _stable_file_identity(candidate_after) != _stable_file_identity(candidate_before):
+            raise SystemExit(DEPENDENCY_PATH_ERROR)
+        return canonical_parent / candidate.name
+    return None
+
+
+def _parse_include_system_site_packages(payload: bytes) -> bool:
+    """Parse only the bounded boolean needed from ``pyvenv.cfg``."""
+    try:
+        lines = payload.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        raise SystemExit(DEPENDENCY_PATH_ERROR) from error
+    values: list[str] = []
+    for line in lines:
+        key, separator, value = line.partition("=")
+        if separator and key.strip().casefold() == "include-system-site-packages":
+            values.append(value.strip().casefold())
+    if not values:
+        return False
+    if len(values) != 1 or values[0] not in {"true", "false"}:
+        raise SystemExit(DEPENDENCY_PATH_ERROR)
+    return values[0] == "true"
+
+
+def _venv_site_paths(prefix: Path) -> tuple[str, ...]:
+    """Construct the active platform's venv package directories explicitly."""
+    try:
+        paths = sysconfig.get_paths(
+            scheme="venv",
+            vars={"base": str(prefix), "platbase": str(prefix)},
+        )
+        return tuple(paths[key] for key in ("purelib", "platlib"))
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        raise SystemExit(DEPENDENCY_PATH_ERROR) from error
+
+
+def _system_site_paths(prefixes: Sequence[str]) -> tuple[str, ...]:
+    """Construct system package directories without processing site hooks."""
+    try:
+        return tuple(site.getsitepackages(list(prefixes)))
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as error:
+        raise SystemExit(DEPENDENCY_PATH_ERROR) from error
+
+
+def _canonical_package_directories(candidates: Sequence[str]) -> tuple[str, ...]:
+    dependency_paths: list[str] = []
+    try:
+        for value in candidates:
+            path = Path(value)
+            if not path.is_absolute():
+                raise ValueError
+            try:
+                resolved_path = path.resolve(strict=True)
+            except FileNotFoundError:
+                continue
+            if not resolved_path.is_dir() or not SITE_DIRECTORY_NAMES.intersection(
+                part.casefold() for part in resolved_path.parts
+            ):
+                raise ValueError
             resolved_value = str(resolved_path)
             if resolved_value not in dependency_paths:
                 dependency_paths.append(resolved_value)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise SystemExit(DEPENDENCY_PATH_ERROR) from error
+    if not dependency_paths:
+        raise SystemExit(DEPENDENCY_PATH_ERROR)
     return tuple(dependency_paths)
+
+
+def _dependency_import_paths() -> tuple[str, ...]:
+    """Return installed-package paths without importing site hooks."""
+    config_path = _find_pyvenv_config()
+    if config_path is None:
+        candidates = _system_site_paths((sys.prefix, sys.exec_prefix))
+        return _canonical_package_directories(candidates)
+
+    config_payload = _read_stable_regular_file(
+        config_path,
+        maximum_bytes=_MAX_PYVENV_CONFIG_BYTES,
+        error_message=DEPENDENCY_PATH_ERROR,
+    )
+    include_system = _parse_include_system_site_packages(config_payload)
+    environment_prefix = config_path.parent
+    venv_candidates = list(_venv_site_paths(environment_prefix))
+    if include_system:
+        venv_candidates.extend(_system_site_paths((sys.base_prefix, sys.base_exec_prefix)))
+    return _canonical_package_directories(venv_candidates)
 
 
 def _git_output(repository_root: Path, arguments: Sequence[str]) -> bytes:
@@ -246,22 +344,24 @@ def _cross_interface_file_identity(file_stat: os.stat_result) -> tuple[int, int,
     )
 
 
-def _read_worktree_bootstrap(path: Path) -> bytes:  # noqa: C901
+def _read_stable_regular_file(  # noqa: C901
+    path: Path,
+    *,
+    maximum_bytes: int,
+    error_message: str,
+) -> bytes:
+    """Read bounded bytes from a stable, regular, nonredirecting file."""
     try:
         path_before = os.lstat(path)
-        if (
-            _entry_is_redirecting(path_before)
-            or not stat.S_ISREG(path_before.st_mode)
-            or path_before.st_size > _MAX_BOOTSTRAP_BYTES
-        ):
-            raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR)
+        if _entry_is_redirecting(path_before) or not stat.S_ISREG(path_before.st_mode) or path_before.st_size > maximum_bytes:
+            raise SystemExit(error_message)
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(path, flags)
     except SystemExit:
         raise
     except OSError as error:
-        raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR) from error
+        raise SystemExit(error_message) from error
     try:
         descriptor_before = os.fstat(descriptor)
         if (
@@ -269,23 +369,23 @@ def _read_worktree_bootstrap(path: Path) -> bytes:  # noqa: C901
             or not stat.S_ISREG(descriptor_before.st_mode)
             or _cross_interface_file_identity(descriptor_before) != _cross_interface_file_identity(path_before)
         ):
-            raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR)
+            raise SystemExit(error_message)
         payload = bytearray()
-        while chunk := os.read(descriptor, min(64 * 1024, _MAX_BOOTSTRAP_BYTES + 1 - len(payload))):
+        while chunk := os.read(descriptor, min(64 * 1024, maximum_bytes + 1 - len(payload))):
             payload.extend(chunk)
-            if len(payload) > _MAX_BOOTSTRAP_BYTES:
-                raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR)
+            if len(payload) > maximum_bytes:
+                raise SystemExit(error_message)
         descriptor_after = os.fstat(descriptor)
         path_after = os.lstat(path)
     except SystemExit:
         raise
     except OSError as error:
-        raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR) from error
+        raise SystemExit(error_message) from error
     finally:
         try:
             os.close(descriptor)
         except OSError as error:
-            raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR) from error
+            raise SystemExit(error_message) from error
     expected_path_identity = _stable_file_identity(path_before)
     expected_descriptor_identity = _stable_file_identity(descriptor_before)
     if (
@@ -293,8 +393,16 @@ def _read_worktree_bootstrap(path: Path) -> bytes:  # noqa: C901
         or _stable_file_identity(path_after) != expected_path_identity
         or len(payload) != path_before.st_size
     ):
-        raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR)
+        raise SystemExit(error_message)
     return bytes(payload)
+
+
+def _read_worktree_bootstrap(path: Path) -> bytes:
+    return _read_stable_regular_file(
+        path,
+        maximum_bytes=_MAX_BOOTSTRAP_BYTES,
+        error_message=BOOTSTRAP_VERIFICATION_ERROR,
+    )
 
 
 def _bootstrap_checkout_matches(checkout_source: bytes, trusted_source: bytes) -> bool:

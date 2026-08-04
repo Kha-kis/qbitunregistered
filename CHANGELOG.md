@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows' distinct path and descriptor `st_ctime` meanings. It also resolves
   sanitized worktree-specific and common Git directories before creating its
   isolated bytecode cache, preventing cache writes inside external metadata.
+  The entry contract now requires `python -I -S -B`; dependency roots are
+  reconstructed from a stable, bounded virtual-environment configuration and
+  explicit platform paths without processing `.pth` files, `sitecustomize`, or
+  other `site` hooks.
 
 ## [2.2.1] - 2026-07-29
 

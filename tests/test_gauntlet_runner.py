@@ -2734,7 +2734,7 @@ def test_controlled_bootstrap_isolates_paired_dependencies_and_preserves_ordinar
     controlled_result = json.loads(controlled.stdout)
 
     launched = subprocess.run(
-        [sys.executable, "-I", str(gauntlet_root / "launcher.py")],
+        [sys.executable, "-I", "-S", "-B", str(gauntlet_root / "launcher.py")],
         cwd=repository_root,
         env={
             **clean_environment,
@@ -3020,7 +3020,7 @@ def test_source_launcher_ignores_timestamp_valid_parent_bytecode(
         "TMPDIR": str(cache_parent),
     }
     launched = subprocess.run(
-        [sys.executable, "-I", str(launcher_path)],
+        [sys.executable, "-I", "-S", "-B", str(launcher_path)],
         cwd=invocation_root,
         env=launched_environment,
         check=False,
@@ -3074,7 +3074,7 @@ def test_source_launcher_rejects_modified_worktree_bootstrap_before_execution(
     clean_environment["PYTHONDONTWRITEBYTECODE"] = "1"
 
     clean = subprocess.run(
-        [sys.executable, "-I", str(launcher_path)],
+        [sys.executable, "-I", "-S", "-B", str(launcher_path)],
         cwd=invocation_root,
         env=clean_environment,
         check=False,
@@ -3107,7 +3107,7 @@ def test_source_launcher_rejects_modified_worktree_bootstrap_before_execution(
     assert status.stdout == " M benchmarks/gauntlet/import_bootstrap.py\n"
 
     modified = subprocess.run(
-        [sys.executable, "-I", str(launcher_path)],
+        [sys.executable, "-I", "-S", "-B", str(launcher_path)],
         cwd=invocation_root,
         env=clean_environment,
         check=False,
@@ -3137,7 +3137,7 @@ def test_source_launcher_rejects_modified_worktree_bootstrap_before_execution(
     }
 
     redirected = subprocess.run(
-        [sys.executable, "-I", str(launcher_path)],
+        [sys.executable, "-I", "-S", "-B", str(launcher_path)],
         cwd=invocation_root,
         env=redirected_environment,
         check=False,
@@ -3345,12 +3345,330 @@ def test_source_launcher_strips_injection_spawns_once_and_cleans_cache(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_source_launcher_requires_isolated_interpreter() -> None:
-    if sys.flags.isolated:
-        pytest.skip("test runner already uses isolated interpreter mode")
+@pytest.mark.parametrize(
+    "missing_flag",
+    ["isolated", "no_site", "safe_path", "dont_write_bytecode"],
+)
+def test_source_launcher_requires_complete_startup_contract(
+    missing_flag: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flags = {
+        "isolated": 1,
+        "no_site": 1,
+        "safe_path": True,
+        "dont_write_bytecode": 1,
+    }
+    flags[missing_flag] = 0
+    monkeypatch.setattr(launcher.sys, "flags", SimpleNamespace(**flags))
 
-    with pytest.raises(SystemExit, match="must be started with python -I"):
+    with pytest.raises(SystemExit, match=r"python -I -S -B$"):
         launcher._require_isolated_startup()
+
+
+def test_source_launcher_accepts_additional_interpreter_flag_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        launcher.sys,
+        "flags",
+        SimpleNamespace(
+            isolated=1,
+            no_site=1,
+            safe_path=True,
+            dont_write_bytecode=1,
+            optimize=2,
+            verbose=1,
+        ),
+    )
+
+    launcher._require_isolated_startup()
+
+
+@pytest.mark.parametrize(
+    ("directory_name", "executable_name"),
+    [
+        ("bin", "python3.11"),
+        ("bin", "python3.12"),
+        ("bin", "python3.13"),
+        ("bin", "python3.14"),
+        ("Scripts", "python.exe"),
+    ],
+)
+def test_source_launcher_finds_pyvenv_config_from_lexical_executable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    directory_name: str,
+    executable_name: str,
+) -> None:
+    environment_root = tmp_path / "environment"
+    executable = environment_root / directory_name / executable_name
+    executable.parent.mkdir(parents=True)
+    config_path = environment_root / "pyvenv.cfg"
+    config_path.write_text("include-system-site-packages = false\n", encoding="utf-8")
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+
+    assert launcher._find_pyvenv_config() == config_path
+
+
+def test_source_launcher_binds_config_policy_to_pre_read_canonical_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lexical_root = tmp_path / "lexical-environment"
+    lexical_executable = lexical_root / "Scripts" / "python.exe"
+    lexical_executable.parent.mkdir(parents=True)
+    first_root = tmp_path / "first-environment"
+    second_root = tmp_path / "second-environment"
+    first_site = first_root / "Lib" / "site-packages"
+    first_site.mkdir(parents=True)
+    second_root.mkdir()
+    for root, setting in ((lexical_root, "false"), (first_root, "false"), (second_root, "true")):
+        (root / "pyvenv.cfg").write_text(
+            f"include-system-site-packages = {setting}\n",
+            encoding="utf-8",
+        )
+    resolved_parent = {"path": first_root}
+    original_resolve = Path.resolve
+    original_read = launcher._read_stable_regular_file
+    observed_prefixes: list[Path] = []
+
+    def retargetable_resolve(path: Path, strict: bool = False) -> Path:
+        if path == lexical_root:
+            return resolved_parent["path"]
+        return original_resolve(path, strict=strict)
+
+    def read_then_retarget(
+        path: Path,
+        *,
+        maximum_bytes: int,
+        error_message: str,
+    ) -> bytes:
+        assert path == first_root / "pyvenv.cfg"
+        payload = original_read(
+            path,
+            maximum_bytes=maximum_bytes,
+            error_message=error_message,
+        )
+        resolved_parent["path"] = second_root
+        return payload
+
+    def fake_get_paths(*, scheme=None, vars=None, expand=True):
+        del scheme, expand
+        assert vars is not None
+        prefix = Path(vars["base"])
+        observed_prefixes.append(prefix)
+        return {"purelib": str(first_site), "platlib": str(first_site)}
+
+    def unexpected_system_policy(_prefixes: list[str]) -> list[str]:
+        pytest.fail("the first environment's false system-site policy must remain bound")
+
+    monkeypatch.setattr(launcher.sys, "executable", str(lexical_executable))
+    monkeypatch.setattr(Path, "resolve", retargetable_resolve)
+    monkeypatch.setattr(launcher, "_read_stable_regular_file", read_then_retarget)
+    monkeypatch.setattr(launcher.sysconfig, "get_paths", fake_get_paths)
+    monkeypatch.setattr(launcher.site, "getsitepackages", unexpected_system_policy)
+
+    assert launcher._dependency_import_paths() == (str(first_site),)
+    assert resolved_parent["path"] == second_root
+    assert observed_prefixes == [first_root]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (b"home = /private/base\n", False),
+        (b"include-system-site-packages = false\n", False),
+        (b"INCLUDE-SYSTEM-SITE-PACKAGES = TRUE\n", True),
+        (b"include-system-site-packages = maybe\n", None),
+        (b"include-system-site-packages = true\n" b"include-system-site-packages = false\n", None),
+        (b"include-system-site-packages = \xff\n", None),
+    ],
+)
+def test_source_launcher_parses_only_one_valid_include_system_boolean(
+    payload: bytes,
+    expected: bool | None,
+) -> None:
+    if expected is not None:
+        assert launcher._parse_include_system_site_packages(payload) is expected
+    else:
+        with pytest.raises(SystemExit) as raised:
+            launcher._parse_include_system_site_packages(payload)
+        assert str(raised.value) == launcher.DEPENDENCY_PATH_ERROR
+        assert "private" not in str(raised.value)
+
+
+def test_source_launcher_rejects_redirecting_and_oversized_pyvenv_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment_root = tmp_path / "private-environment"
+    executable = environment_root / "bin" / "python"
+    executable.parent.mkdir(parents=True)
+    config_path = environment_root / "pyvenv.cfg"
+    target = tmp_path / "private-target"
+    target.write_text("include-system-site-packages = false\n", encoding="utf-8")
+    try:
+        config_path.symlink_to(target)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"platform cannot create a symbolic link: {error}")
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+
+    with pytest.raises(SystemExit) as redirected:
+        launcher._dependency_import_paths()
+    assert str(redirected.value) == launcher.DEPENDENCY_PATH_ERROR
+    assert str(environment_root) not in str(redirected.value)
+
+    config_path.unlink()
+    config_path.write_bytes(b"x" * (launcher._MAX_PYVENV_CONFIG_BYTES + 1))
+    with pytest.raises(SystemExit) as oversized:
+        launcher._dependency_import_paths()
+    assert str(oversized.value) == launcher.DEPENDENCY_PATH_ERROR
+    assert str(environment_root) not in str(oversized.value)
+
+
+@pytest.mark.parametrize("include_system", [False, True])
+def test_source_launcher_constructs_venv_paths_without_site_hooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    include_system: bool,
+) -> None:
+    environment_root = tmp_path / "environment"
+    executable = environment_root / "Scripts" / "python.exe"
+    executable.parent.mkdir(parents=True)
+    (environment_root / "pyvenv.cfg").write_text(
+        f"include-system-site-packages = {str(include_system).lower()}\n",
+        encoding="utf-8",
+    )
+    environment_site = environment_root / "Lib" / "site-packages"
+    system_site = tmp_path / "base" / "Lib" / "site-packages"
+    environment_site.mkdir(parents=True)
+    system_site.mkdir(parents=True)
+    sysconfig_calls: list[tuple[str | None, dict[str, str] | None]] = []
+    site_calls: list[list[str]] = []
+
+    def fake_get_paths(*, scheme=None, vars=None, expand=True):
+        del expand
+        sysconfig_calls.append((scheme, vars))
+        return {"purelib": str(environment_site), "platlib": str(environment_site)}
+
+    def fake_getsitepackages(prefixes: list[str] | None = None) -> list[str]:
+        assert prefixes is not None
+        site_calls.append(prefixes)
+        return [str(system_site), str(tmp_path / "missing" / "site-packages")]
+
+    def unexpected_site_hook(*_args, **_kwargs):
+        pytest.fail("site hook processing must remain disabled")
+
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+    monkeypatch.setattr(launcher.sys, "base_prefix", str(tmp_path / "base"))
+    monkeypatch.setattr(launcher.sys, "base_exec_prefix", str(tmp_path / "base"))
+    monkeypatch.setattr(launcher.sysconfig, "get_paths", fake_get_paths)
+    monkeypatch.setattr(launcher.site, "getsitepackages", fake_getsitepackages)
+    monkeypatch.setattr(launcher.site, "main", unexpected_site_hook)
+    monkeypatch.setattr(launcher.site, "addsitedir", unexpected_site_hook)
+
+    dependency_paths = launcher._dependency_import_paths()
+
+    assert sysconfig_calls == [
+        (
+            "venv",
+            {"base": str(environment_root.resolve()), "platbase": str(environment_root.resolve())},
+        )
+    ]
+    expected = [str(environment_site.resolve())]
+    if include_system:
+        expected.append(str(system_site.resolve()))
+        assert site_calls == [[str(tmp_path / "base"), str(tmp_path / "base")]]
+    else:
+        assert site_calls == []
+    assert dependency_paths == tuple(expected)
+
+
+def test_source_launcher_system_fallback_requires_an_existing_package_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "interpreter" / "bin" / "python"
+    executable.parent.mkdir(parents=True)
+    missing_site = tmp_path / "missing" / "site-packages"
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+    monkeypatch.setattr(launcher.sys, "prefix", str(tmp_path / "interpreter"))
+    monkeypatch.setattr(launcher.sys, "exec_prefix", str(tmp_path / "interpreter"))
+    monkeypatch.setattr(
+        launcher.site,
+        "getsitepackages",
+        lambda _prefixes: [str(missing_site)],
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        launcher._dependency_import_paths()
+
+    assert str(raised.value) == launcher.DEPENDENCY_PATH_ERROR
+    assert str(missing_site) not in str(raised.value)
+
+
+def test_source_launcher_does_not_execute_site_hooks_or_write_dependency_tree(
+    tmp_path: Path,
+) -> None:
+    environment_root = tmp_path / "environment"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(environment_root)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if os.name == "nt":
+        environment_python = environment_root / "Scripts" / "python.exe"
+        dependency_root = environment_root / "Lib" / "site-packages"
+    else:
+        environment_python = environment_root / "bin" / "python"
+        dependency_roots = list(environment_root.glob("lib/python*/site-packages"))
+        assert len(dependency_roots) == 1
+        dependency_root = dependency_roots[0]
+
+    pth_marker = tmp_path / "pth-hook-ran"
+    sitecustomize_marker = tmp_path / "sitecustomize-ran"
+    (dependency_root / "adversarial.pth").write_text(
+        "import pathlib; " f"pathlib.Path({str(pth_marker)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    (dependency_root / "sitecustomize.py").write_text(
+        "from pathlib import Path\n" f"Path({str(sitecustomize_marker)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    dependency_paths = (str(dependency_root.resolve()),)
+    original_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+
+    repository_root = tmp_path / "repository"
+    _write_import_bootstrap_fixture(repository_root, "print('hook-free launcher')\n")
+    assert launcher.__file__ is not None
+    launcher_path = repository_root / "benchmarks" / "gauntlet" / "launcher.py"
+    launcher_path.write_bytes(Path(launcher.__file__).read_bytes())
+    _commit_gauntlet_test_repository(repository_root)
+    cache_parent = tmp_path / "cache-parent"
+    cache_parent.mkdir()
+    clean_environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
+    clean_environment["TMPDIR"] = str(cache_parent)
+
+    completed = subprocess.run(
+        [str(environment_python), "-I", "-S", "-B", str(launcher_path)],
+        cwd=tmp_path,
+        env=clean_environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "hook-free launcher"
+    assert completed.stderr == ""
+    assert not pth_marker.exists()
+    assert not sitecustomize_marker.exists()
+    assert import_bootstrap.dependency_environment_digest(dependency_paths) == original_digest
+    assert list(cache_parent.iterdir()) == []
 
 
 def test_direct_paired_module_rejects_spoofed_cache_markers_before_root_shadow(
@@ -3474,6 +3792,8 @@ def test_source_launcher_reports_paired_failure_without_traceback_or_paths() -> 
         [
             sys.executable,
             "-I",
+            "-S",
+            "-B",
             str(Path(launcher.__file__)),
             "--paired-control",
             str(REPOSITORY_ROOT),
@@ -4128,6 +4448,8 @@ def test_paired_cli_compare_symlink_loop_fails_with_canonical_path_free_error(
         [
             sys.executable,
             "-I",
+            "-S",
+            "-B",
             str(REPOSITORY_ROOT / "benchmarks" / "gauntlet" / "launcher.py"),
             "--paired-control",
             str(control_root),
