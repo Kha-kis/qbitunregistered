@@ -981,13 +981,16 @@ def _write_bound_result(
             raise GauntletSafetyError("could not publish the bound result safely") from error
         output_replaced = True
         expected_output_identity = published_identity
-        if _bound_file_identity(bound_directory, output_name) != published_identity:
-            raise GauntletSafetyError("bound result changed during publication")
         if not _bound_directory_is_safe(bound_directory):
             raise GauntletSafetyError("validated result directory changed during publication")
+        if _bound_file_identity(bound_directory, output_name) != published_identity:
+            raise GauntletSafetyError("bound result changed during publication")
         if temporary_name is not None:
             _unlink_bound_file(bound_directory, temporary_name)
             temporary_name = None
+        # This read is the acceptance point; retain any prior-output backup until it succeeds.
+        if _bound_file_identity(bound_directory, output_name) != published_identity:
+            raise GauntletSafetyError("bound result changed during publication")
         if backup_name is not None:
             _unlink_bound_file(bound_directory, backup_name)
             backup_name = None

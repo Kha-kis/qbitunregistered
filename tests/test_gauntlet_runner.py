@@ -5854,6 +5854,73 @@ def test_bound_publication_preserves_leaf_created_or_replaced_between_backup_and
 
 
 @requires_bound_publication
+@pytest.mark.parametrize("output_state", ("missing", "existing"))
+@pytest.mark.parametrize("race_point", ("before_staging_cleanup", "after_staging_cleanup"))
+def test_bound_publication_revalidates_leaf_before_recovery_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_state: str,
+    race_point: str,
+) -> None:
+    output = tmp_path / "result.json"
+    if output_state == "existing":
+        output.write_text("previous artifact\n", encoding="utf-8")
+    real_bound_file_identity = runner._bound_file_identity
+    real_unlink_bound_file = runner._unlink_bound_file
+    output_identity_reads = 0
+    replaced = False
+
+    def replace_output() -> None:
+        nonlocal replaced
+        concurrent = tmp_path / "concurrent.json"
+        concurrent.write_text("concurrent artifact\n", encoding="utf-8")
+        os.replace(concurrent, output)
+        replaced = True
+
+    def replace_after_published_identity_read(
+        bound_directory: runner.BoundOutputDirectory,
+        name: str,
+    ) -> tuple[int, int, int] | None:
+        nonlocal output_identity_reads
+        identity = real_bound_file_identity(bound_directory, name)
+        if name == output.name and identity is not None:
+            output_identity_reads += 1
+            if race_point == "before_staging_cleanup" and output_identity_reads == 1:
+                replace_output()
+        return identity
+
+    def replace_after_staging_cleanup(
+        bound_directory: runner.BoundOutputDirectory,
+        name: str,
+    ) -> None:
+        real_unlink_bound_file(bound_directory, name)
+        if race_point == "after_staging_cleanup" and name.endswith(".tmp") and not replaced:
+            replace_output()
+
+    monkeypatch.setattr(runner, "_bound_file_identity", replace_after_published_identity_read)
+    monkeypatch.setattr(runner, "_unlink_bound_file", replace_after_staging_cleanup)
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        runner.validate_bound_output_leaf(bound_directory, output.name)
+        with pytest.raises(GauntletSafetyError):
+            runner.write_serialized_result(
+                "replacement artifact\n",
+                output,
+                bound_directory=bound_directory,
+            )
+
+    assert replaced is True
+    assert output.read_text(encoding="utf-8") == "concurrent artifact\n"
+    backups = [path for path in tmp_path.iterdir() if path.name.endswith(".backup")]
+    expected_recovery_contents = ["concurrent artifact\n"]
+    if output_state == "existing":
+        expected_recovery_contents.append("previous artifact\n")
+    assert sorted(path.read_text(encoding="utf-8") for path in backups) == sorted(expected_recovery_contents)
+    assert all(path.read_text(encoding="utf-8") != "replacement artifact\n" for path in tmp_path.iterdir())
+    assert all(not path.name.endswith(".tmp") for path in tmp_path.iterdir())
+
+
+@requires_bound_publication
 def test_bound_publication_restores_special_leaf_raced_before_backup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

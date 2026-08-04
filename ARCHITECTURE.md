@@ -749,11 +749,11 @@ evaluation, and exact final re-resolution must match before publication. The
 source-only launcher intentionally performs its own minimal sanitized metadata
 query before creating the parent bytecode cache; importing coordinator code at
 that pre-verification trust boundary would defeat the launcher isolation. The
-backup remains until the bound output directory passes its post-publication
-protected-root check. Rollback atomically detaches explicit and allocator-owned
-public leaves before discarding an unaccepted staging inode and restores an old
-leaf only through a
-descriptor-relative no-clobber link. A concurrent replacement and uniquely
+backup remains until the bound output directory and published leaf pass their
+post-publication checks. Rollback atomically detaches explicit and
+allocator-owned public leaves before discarding an unaccepted staging inode and
+restores an old leaf only through a descriptor-relative no-clobber link. A
+concurrent replacement and uniquely
 named recovery links remain preserved after rollback; restored prior-output
 backups are not unlinked based on a stale public-name identity check. Any
 uncertainty makes publication fail closed.

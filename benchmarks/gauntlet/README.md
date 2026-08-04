@@ -76,10 +76,10 @@ descriptor-relative backup, revalidates that the detached leaf remains a
 regular file or symbolic link, then installs the fsynced staging inode with a
 descriptor-relative no-clobber hard link. Allocator-owned output names likewise
 detach and verify their reserved inode before the same no-clobber install. The
-backup remains until the final directory check succeeds. Rollback atomically
-captures both explicit and allocator-owned public leaves before removing an
-unaccepted staging inode, and restores the prior output only into an absent
-name. A concurrent replacement,
+backup remains until the final directory and published-leaf checks succeed.
+Rollback atomically captures both explicit and allocator-owned public leaves
+before removing an unaccepted staging inode, and restores the prior output only
+into an absent name. A concurrent replacement,
 its uniquely named recovery link, and any restored prior-output backup remain
 preserved after a failed publication so a later replacement cannot erase the
 last recovery link. The
