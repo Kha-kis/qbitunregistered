@@ -55,8 +55,15 @@ Contemporaneous paired
 execution requires the platform to expose
 `O_NOFOLLOW` (or equivalent descriptor no-follow support); it fails closed when
 that capability is unavailable. An explicit output destination must also
-resolve to the same path outside all three repositories before and after the
-crossover. Publication is bound to an identity-checked directory descriptor;
+resolve to the same path outside all three worktrees and each checkout's
+canonical Git administration and common directories before and after the
+crossover. The coordinator obtains those metadata directories with inherited
+Git repository-selection variables removed, rejects ambiguous or unusable Git
+output, and requires the complete protected-directory set to remain unchanged.
+Before creating its isolated bytecode cache, the source launcher independently
+applies the same metadata protection to the selected cache parent.
+Publication is bound to an identity-checked directory descriptor carrying that
+same protected set;
 staging, cleanup, and replacement use names relative to that descriptor so an
 ancestor symlink retarget cannot redirect the artifact. Paired execution fails
 closed before staging when the platform lacks the required descriptor-relative

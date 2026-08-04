@@ -16,6 +16,7 @@ ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
 SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 BOOTSTRAP_RELATIVE_PATH = "benchmarks/gauntlet/import_bootstrap.py"
 BOOTSTRAP_VERIFICATION_ERROR = "gauntlet import bootstrap could not be verified"
+REPOSITORY_METADATA_ERROR = "gauntlet repository metadata could not be resolved safely"
 _GIT_TIMEOUT_SECONDS = 10
 _MAX_BOOTSTRAP_BYTES = 1024 * 1024
 _REGULAR_BLOB_MODES = frozenset({b"100644", b"100755"})
@@ -98,6 +99,61 @@ def _git_output(repository_root: Path, arguments: Sequence[str]) -> bytes:
     if completed.returncode != 0:
         raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR)
     return completed.stdout
+
+
+def _repository_git_directories(repository_root: Path) -> tuple[Path, ...]:
+    """Return canonical worktree-specific and shared Git directories."""
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "--no-replace-objects",
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-dir",
+                "--git-common-dir",
+            ],
+            cwd=repository_root,
+            check=False,
+            env={key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SystemExit(REPOSITORY_METADATA_ERROR) from error
+    output_lines = completed.stdout.splitlines()
+    if (
+        completed.returncode != 0
+        or completed.stderr
+        or len(output_lines) != 2
+        or any(not line or b"\0" in line for line in output_lines)
+    ):
+        raise SystemExit(REPOSITORY_METADATA_ERROR)
+    try:
+        git_directories = tuple(Path(os.fsdecode(line)) for line in output_lines)
+        if any(not path.is_absolute() for path in git_directories):
+            raise ValueError
+        resolved_directories = tuple(path.resolve(strict=True) for path in git_directories)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise SystemExit(REPOSITORY_METADATA_ERROR) from error
+    if any(not path.is_dir() for path in resolved_directories):
+        raise SystemExit(REPOSITORY_METADATA_ERROR)
+    return tuple(dict.fromkeys(resolved_directories))
+
+
+def _repository_protected_roots(repository_roots: Sequence[Path]) -> tuple[Path, ...]:
+    """Return canonical worktree and Git metadata roots without duplicates."""
+    protected_roots: list[Path] = []
+    try:
+        for repository_root in repository_roots:
+            resolved_root = repository_root.resolve(strict=True)
+            if not resolved_root.is_dir():
+                raise ValueError
+            protected_roots.extend((resolved_root, *_repository_git_directories(resolved_root)))
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SystemExit(REPOSITORY_METADATA_ERROR) from error
+    return tuple(dict.fromkeys(protected_roots))
 
 
 def _split_git_record(output: bytes) -> tuple[bytes, bytes]:
@@ -278,12 +334,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
     _require_isolated_startup()
     resolved_arguments = list(sys.argv[1:] if arguments is None else arguments)
     repository_root = Path(__file__).resolve().parents[2]
-    protected_roots = (
+    repository_roots = (
         repository_root,
         *_paired_repository_roots(resolved_arguments),
     )
+    protected_roots = _repository_protected_roots(repository_roots)
     try:
-        temporary_root = Path(tempfile.gettempdir()).resolve()
+        temporary_root = Path(tempfile.gettempdir()).resolve(strict=True)
     except (OSError, RuntimeError, ValueError) as error:
         raise SystemExit("gauntlet bytecode cache directory could not be resolved") from error
     if any(temporary_root.is_relative_to(root) for root in protected_roots):

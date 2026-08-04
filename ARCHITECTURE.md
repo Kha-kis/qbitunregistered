@@ -722,6 +722,13 @@ reserved descriptor-relative backup, revalidates the detached leaf type, then
 hard-links the fsynced staging inode into the absent destination without
 clobbering a concurrent entry. Allocator-owned output names use the same
 verified detach and no-clobber installation after reserving a unique name. The
+protected-directory set includes every canonical worktree root plus its Git
+administration and common directories, including external metadata shared by
+linked worktrees. A sanitized, batched Git query establishes those paths before
+evaluation, and exact final re-resolution must match before publication. The
+source-only launcher intentionally performs its own minimal sanitized metadata
+query before creating the parent bytecode cache; importing coordinator code at
+that pre-verification trust boundary would defeat the launcher isolation. The
 backup remains until the bound output directory passes its post-publication
 protected-root check. Rollback atomically detaches explicit and allocator-owned
 public leaves before discarding an unaccepted staging inode and restores an old

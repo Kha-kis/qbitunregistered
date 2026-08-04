@@ -40,12 +40,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contents across every crossover child. Each measured child now executes its
   originally recorded commit's verified bootstrap blob through isolated Python
   standard input and pins downstream protected imports to that same revision.
+  Output containment now also protects each checkout's canonical Git
+  administration and common directories, including external metadata shared by
+  linked worktrees, and requires the sanitized protected-directory set to remain
+  stable through bound publication.
 - The source launcher now verifies its downstream import bootstrap against the
   matching regular, visible stage-0 `HEAD` and index blob, rejects modified
   worktree bytes and inherited Git repository redirection before execution, and
   runs the immutable blob through isolated Python standard input while safely
   accepting Git's deterministic whole-file CRLF checkout representation and
-  Windows' distinct path and descriptor `st_ctime` meanings.
+  Windows' distinct path and descriptor `st_ctime` meanings. It also resolves
+  sanitized worktree-specific and common Git directories before creating its
+  isolated bytecode cache, preventing cache writes inside external metadata.
 
 ## [2.2.1] - 2026-07-29
 

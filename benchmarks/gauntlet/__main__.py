@@ -32,6 +32,7 @@ if _EARLY_COORDINATOR_ISOLATION_VERIFIED:
 
 import argparse
 import os
+import subprocess
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -46,6 +47,8 @@ PROFILE_NAMES = ("quick", "full")
 DEFAULT_QUALITY_BAR = Path(__file__).with_name("quality-bar.toml")
 COMPARISON_FAILED_EXIT = 2
 ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
+_REPOSITORY_METADATA_ERROR = "gauntlet repository metadata could not be resolved safely"
+_REPOSITORY_METADATA_CHANGED_ERROR = "gauntlet repository metadata changed or became unsafe during execution"
 
 
 def _positive_integer(value: str) -> int:
@@ -101,6 +104,82 @@ def _resolve_output(path: Path) -> tuple[Path, Path]:
         return publication_path, publication_path.resolve()
     except (OSError, RuntimeError, ValueError) as error:
         raise SystemExit("gauntlet output path could not be resolved") from error
+
+
+def _repository_git_directories(repository_root: Path) -> tuple[Path, ...]:
+    """Return canonical Git admin and common directories for one checkout."""
+    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-dir",
+                "--git-common-dir",
+            ],
+            cwd=repository_root,
+            env=environment,
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SystemExit(_REPOSITORY_METADATA_ERROR) from error
+
+    encoded_directories = completed.stdout.splitlines()
+    if (
+        completed.returncode != 0
+        or completed.stderr
+        or len(encoded_directories) != 2
+        or any(not value or b"\0" in value for value in encoded_directories)
+    ):
+        raise SystemExit(_REPOSITORY_METADATA_ERROR)
+
+    directories: list[Path] = []
+    for encoded_directory in encoded_directories:
+        directory = Path(os.fsdecode(encoded_directory))
+        if not directory.is_absolute():
+            raise SystemExit(_REPOSITORY_METADATA_ERROR)
+        try:
+            canonical_directory = directory.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SystemExit(_REPOSITORY_METADATA_ERROR) from error
+        if not canonical_directory.is_dir():
+            raise SystemExit(_REPOSITORY_METADATA_ERROR)
+        if canonical_directory not in directories:
+            directories.append(canonical_directory)
+    return tuple(directories)
+
+
+def _repository_protected_roots(repository_roots: Sequence[Path]) -> tuple[Path, ...]:
+    """Return canonical worktree and Git metadata directories to protect."""
+    protected_roots: list[Path] = []
+    for repository_root in repository_roots:
+        try:
+            canonical_root = repository_root.expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SystemExit(_REPOSITORY_METADATA_ERROR) from error
+        if not canonical_root.is_dir():
+            raise SystemExit(_REPOSITORY_METADATA_ERROR)
+        for protected_root in (canonical_root, *_repository_git_directories(canonical_root)):
+            if protected_root not in protected_roots:
+                protected_roots.append(protected_root)
+    return tuple(protected_roots)
+
+
+def _revalidate_repository_protected_roots(
+    repository_roots: Sequence[Path],
+    expected_protected_roots: tuple[Path, ...],
+) -> tuple[Path, ...]:
+    """Fail closed when any protected worktree or Git directory changes."""
+    try:
+        protected_roots = _repository_protected_roots(repository_roots)
+    except SystemExit:
+        raise SystemExit(_REPOSITORY_METADATA_CHANGED_ERROR) from None
+    if protected_roots != expected_protected_roots:
+        raise SystemExit(_REPOSITORY_METADATA_CHANGED_ERROR)
+    return protected_roots
 
 
 def _output_is_outside_repositories(
@@ -180,6 +259,8 @@ def _require_isolated_parent_cache(repository_roots: Sequence[Path]) -> Path:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one evaluator profile, optionally compare it, and write JSON."""
     repository_root = Path(__file__).resolve().parents[2]
+    repository_roots: tuple[Path, ...] = (repository_root,)
+    protected_roots = _repository_protected_roots(repository_roots)
     identity_before_imports = capture_repository_identity(repository_root)
     arguments = build_parser().parse_args(argv)
     resolved_output: Path | None = None
@@ -190,7 +271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not _output_is_outside_repositories(
             resolved_output,
             resolved_output_target,
-            (repository_root,),
+            protected_roots,
         ):
             raise SystemExit("gauntlet output must be outside the repository")
     else:
@@ -198,7 +279,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not _output_is_outside_repositories(
             default_output_directory,
             default_output_directory,
-            (repository_root,),
+            protected_roots,
         ):
             raise SystemExit("gauntlet output must be outside the repository")
     paired_control: Path | None = arguments.paired_control
@@ -218,7 +299,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             paired_candidate = paired_candidate.expanduser().resolve()
         except (OSError, RuntimeError, ValueError) as error:
             raise SystemExit("paired gauntlet worktree paths could not be resolved") from error
-        _require_isolated_parent_cache((repository_root, paired_control, paired_candidate))
+        repository_roots = (repository_root, paired_control, paired_candidate)
+        protected_roots = _repository_protected_roots(repository_roots)
+        _require_isolated_parent_cache(protected_roots)
         if arguments.compare is not None:
             try:
                 canonical_compare = arguments.compare.expanduser().resolve()
@@ -232,7 +315,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not _output_is_outside_repositories(
                 paired_output,
                 paired_output_target,
-                (paired_control, paired_candidate),
+                protected_roots,
             ):
                 raise SystemExit("paired gauntlet output must be outside both evaluated repositories")
         else:
@@ -240,7 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not _output_is_outside_repositories(
                 default_output_directory,
                 default_output_directory,
-                (paired_control, paired_candidate),
+                protected_roots,
             ):
                 raise SystemExit("paired gauntlet output must be outside both evaluated repositories")
 
@@ -264,7 +347,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             with bind_output_directory(
                 publication_directory,
-                protected_roots=(repository_root, paired_control, paired_candidate),
+                protected_roots=protected_roots,
             ) as bound_directory:
                 if paired_output is not None:
                     validate_bound_output_leaf(bound_directory, paired_output.name)
@@ -281,6 +364,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     identity_before_imports,
                     capture_repository_identity(repository_root),
                 )
+                protected_roots = _revalidate_repository_protected_roots(
+                    repository_roots,
+                    protected_roots,
+                )
                 if paired_output is not None:
                     assert arguments.output is not None
                     assert paired_output_target is not None
@@ -288,7 +375,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         arguments.output,
                         paired_output,
                         paired_output_target,
-                        (repository_root, paired_control, paired_candidate),
+                        protected_roots,
                     )
                     output_path = write_serialized_result(
                         serialized_result,
@@ -299,7 +386,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     assert default_output_directory is not None
                     _revalidate_default_output_directory(
                         default_output_directory,
-                        (repository_root, paired_control, paired_candidate),
+                        protected_roots,
                     )
                     output_path = write_serialized_result(
                         serialized_result,
@@ -332,6 +419,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         identity_before_imports,
         capture_repository_identity(repository_root),
     )
+    protected_roots = _revalidate_repository_protected_roots(
+        repository_roots,
+        protected_roots,
+    )
     if resolved_output is not None:
         assert arguments.output is not None
         assert resolved_output_target is not None
@@ -339,13 +430,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.output,
             resolved_output,
             resolved_output_target,
-            (repository_root,),
+            protected_roots,
         )
     else:
         assert default_output_directory is not None
         _revalidate_default_output_directory(
             default_output_directory,
-            (repository_root,),
+            protected_roots,
         )
     if resolved_output is None:
         assert default_output_directory is not None

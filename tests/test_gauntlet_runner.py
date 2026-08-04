@@ -133,6 +133,16 @@ def isolated_parent_cache(
     cache_root = tmp_path / "parent-pycache"
     cache_root.mkdir()
     monkeypatch.setattr(gauntlet_cli, "_require_isolated_coordinator", lambda: None)
+    monkeypatch.setattr(
+        gauntlet_cli,
+        "_repository_protected_roots",
+        lambda roots: tuple(path.expanduser().resolve() for path in roots),
+    )
+    monkeypatch.setattr(
+        gauntlet_cli,
+        "_revalidate_repository_protected_roots",
+        lambda _roots, expected: expected,
+    )
     monkeypatch.setenv(gauntlet_cli.ISOLATED_PARENT_CACHE_ENV, str(cache_root))
     monkeypatch.setattr(gauntlet_cli.sys, "pycache_prefix", str(cache_root))
     return cache_root
@@ -216,6 +226,46 @@ def _commit_gauntlet_test_repository(repository_root: Path) -> None:
         cwd=repository_root,
         check=True,
     )
+
+
+def _initialize_external_git_worktrees(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create two temporary worktrees whose shared Git directory is external."""
+    control_root = tmp_path / "control"
+    candidate_root = tmp_path / "candidate"
+    common_directory = tmp_path / "common.git"
+    subprocess.run(
+        [
+            "git",
+            "init",
+            "-q",
+            "--separate-git-dir",
+            str(common_directory),
+            str(control_root),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Gauntlet Test",
+            "-c",
+            "user.email=gauntlet@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "external metadata fixture",
+        ],
+        cwd=control_root,
+        check=True,
+    )
+    subprocess.run(["git", "branch", "candidate"], cwd=control_root, check=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-q", str(candidate_root), "candidate"],
+        cwd=control_root,
+        check=True,
+    )
+    return control_root, candidate_root, common_directory.resolve()
 
 
 def _write_import_bootstrap_fixture(
@@ -2809,6 +2859,74 @@ def test_source_launcher_rejects_modified_worktree_bootstrap_before_execution(
     assert not marker.exists()
 
 
+def test_source_launcher_resolves_git_directories_with_sanitized_crlf_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = tmp_path / "repository"
+    admin_directory = tmp_path / "admin"
+    common_directory = tmp_path / "common"
+    repository_root.mkdir()
+    admin_directory.mkdir()
+    common_directory.mkdir()
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "redirected.git"))
+    run = Mock(
+        return_value=Mock(
+            returncode=0,
+            stdout=os.fsencode(admin_directory) + b"\r\n" + os.fsencode(common_directory) + b"\r\n",
+            stderr=b"",
+        )
+    )
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+
+    assert launcher._repository_git_directories(repository_root) == (
+        admin_directory.resolve(),
+        common_directory.resolve(),
+    )
+    assert run.call_args.args[0] == [
+        "git",
+        "--no-replace-objects",
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-dir",
+        "--git-common-dir",
+    ]
+    assert all(not key.upper().startswith("GIT_") for key in run.call_args.kwargs["env"])
+
+    run.return_value = Mock(returncode=129, stdout=b"", stderr=b"unsupported option")
+    with pytest.raises(SystemExit) as error_info:
+        launcher._repository_git_directories(repository_root)
+    assert str(error_info.value) == launcher.REPOSITORY_METADATA_ERROR
+
+
+def test_source_launcher_rejects_git_metadata_cache_root_before_creating_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root, candidate_root, common_directory = _initialize_external_git_worktrees(tmp_path)
+    listing_before = tuple(sorted(str(path.relative_to(common_directory)) for path in common_directory.rglob("*")))
+    temporary_directory = Mock(side_effect=AssertionError("bytecode cache unexpectedly created"))
+    trusted_bootstrap = Mock(side_effect=AssertionError("bootstrap unexpectedly read"))
+    monkeypatch.setattr(launcher, "_require_isolated_startup", lambda: None)
+    monkeypatch.setattr(launcher.tempfile, "gettempdir", lambda: str(common_directory))
+    monkeypatch.setattr(launcher.tempfile, "TemporaryDirectory", temporary_directory)
+    monkeypatch.setattr(launcher, "_trusted_bootstrap_source", trusted_bootstrap)
+
+    with pytest.raises(SystemExit, match="bytecode cache directory must be outside"):
+        launcher.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+            ]
+        )
+
+    temporary_directory.assert_not_called()
+    trusted_bootstrap.assert_not_called()
+    assert tuple(sorted(str(path.relative_to(common_directory)) for path in common_directory.rglob("*"))) == listing_before
+
+
 @pytest.mark.parametrize("changed_interface", [None, "descriptor", "path"])
 def test_worktree_bootstrap_compares_ctime_only_within_stat_interface(
     monkeypatch: pytest.MonkeyPatch,
@@ -2889,6 +3007,11 @@ def test_source_launcher_strips_injection_spawns_once_and_cleans_cache(
         launcher,
         "_trusted_bootstrap_source",
         lambda _repository_root: trusted_bootstrap,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_repository_protected_roots",
+        lambda roots: tuple(path.resolve() for path in roots),
     )
     calls: list[list[str]] = []
 
@@ -3087,6 +3210,11 @@ def test_paired_cli_rejects_unisolated_or_mismatched_parent_cache(
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
     monkeypatch.setattr(gauntlet_cli, "_require_isolated_coordinator", lambda: None)
+    monkeypatch.setattr(
+        gauntlet_cli,
+        "_repository_protected_roots",
+        lambda roots: tuple(path.resolve() for path in roots),
+    )
     monkeypatch.setenv(gauntlet_cli.ISOLATED_PARENT_CACHE_ENV, str(cache_root))
     monkeypatch.setattr(
         gauntlet_cli.sys,
@@ -3342,6 +3470,224 @@ def test_paired_cli_does_not_swallow_unexpected_or_control_flow_errors(
     assert error_info.value is error
 
 
+def test_repository_protected_roots_include_normal_git_metadata_from_relative_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = tmp_path / "repository"
+    subprocess.run(["git", "init", "-q", str(repository_root)], check=True)
+    redirected_root = tmp_path / "redirected"
+    subprocess.run(["git", "init", "-q", str(redirected_root)], check=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GIT_DIR", str(redirected_root / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(redirected_root))
+
+    protected_roots = gauntlet_cli._repository_protected_roots((Path("repository"),))
+
+    assert protected_roots == (
+        repository_root.resolve(),
+        (repository_root / ".git").resolve(),
+    )
+
+
+def test_repository_git_directories_are_sanitized_strict_and_windows_portable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = tmp_path / "repository"
+    admin_directory = tmp_path / "admin"
+    common_directory = tmp_path / "common"
+    admin_alias = tmp_path / "admin-alias"
+    repository_root.mkdir()
+    admin_directory.mkdir()
+    common_directory.mkdir()
+    try:
+        admin_alias.symlink_to(admin_directory, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        admin_alias = admin_directory
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "redirected.git"))
+    monkeypatch.setenv("git_work_tree", str(tmp_path / "redirected-worktree"))
+    completed = Mock(
+        returncode=0,
+        stdout=os.fsencode(admin_alias) + b"\r\n" + os.fsencode(common_directory) + b"\r\n",
+        stderr=b"",
+    )
+    run = Mock(return_value=completed)
+    monkeypatch.setattr(gauntlet_cli.subprocess, "run", run)
+    assert gauntlet_cli._repository_git_directories(repository_root) == (
+        admin_directory.resolve(),
+        common_directory.resolve(),
+    )
+    command = run.call_args.args[0]
+    options = run.call_args.kwargs
+    assert command == [
+        "git",
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-dir",
+        "--git-common-dir",
+    ]
+    assert options["cwd"] == repository_root
+    assert all(not key.upper().startswith("GIT_") for key in options["env"])
+    assert options["capture_output"] is True
+    assert options["timeout"] == 10
+
+    valid_lines = os.fsencode(admin_directory) + b"\n" + os.fsencode(common_directory) + b"\n"
+    invalid_results = (
+        Mock(returncode=1, stdout=valid_lines, stderr=b""),
+        Mock(returncode=0, stdout=valid_lines, stderr=b"warning\n"),
+        Mock(returncode=0, stdout=os.fsencode(admin_directory) + b"\n", stderr=b""),
+        Mock(returncode=0, stdout=valid_lines + os.fsencode(admin_directory) + b"\n", stderr=b""),
+        Mock(returncode=0, stdout=b"relative.git\nrelative-common.git\n", stderr=b""),
+        Mock(returncode=0, stdout=b"\0invalid\n" + os.fsencode(common_directory) + b"\n", stderr=b""),
+        Mock(
+            returncode=0, stdout=os.fsencode(admin_directory) + b"\n" + os.fsencode(tmp_path / "missing") + b"\n", stderr=b""
+        ),
+    )
+    for invalid_result in invalid_results:
+        run.return_value = invalid_result
+        with pytest.raises(SystemExit) as error_info:
+            gauntlet_cli._repository_git_directories(repository_root)
+        assert str(error_info.value) == gauntlet_cli._REPOSITORY_METADATA_ERROR
+
+
+def test_paired_cli_rejects_output_inside_external_common_git_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root, candidate_root, common_directory = _initialize_external_git_worktrees(tmp_path)
+    cache_root = tmp_path / "parent-pycache"
+    cache_root.mkdir()
+    proposed_output = common_directory / "paired-result.json"
+    status_before = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=control_root,
+        check=True,
+        capture_output=True,
+    ).stdout
+    protected_roots = gauntlet_cli._repository_protected_roots((control_root, candidate_root))
+    child = Mock(side_effect=AssertionError("paired child unexpectedly started"))
+    monkeypatch.setattr(gauntlet_cli, "_require_isolated_coordinator", lambda: None)
+    monkeypatch.setenv(gauntlet_cli.ISOLATED_PARENT_CACHE_ENV, str(cache_root))
+    monkeypatch.setattr(gauntlet_cli.sys, "pycache_prefix", str(cache_root))
+    monkeypatch.setattr(paired, "run_paired_gauntlet", child)
+
+    with pytest.raises(SystemExit, match="outside both evaluated repositories"):
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--output",
+                str(proposed_output),
+            ]
+        )
+
+    child.assert_not_called()
+    assert common_directory in protected_roots
+    assert (common_directory / "worktrees" / candidate_root.name).resolve() in protected_roots
+    assert not proposed_output.exists()
+    assert (
+        subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            cwd=control_root,
+            check=True,
+            capture_output=True,
+        ).stdout
+        == status_before
+    )
+
+
+@requires_bound_publication
+def test_paired_cli_uses_stable_git_metadata_roots_for_bound_validation_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root, candidate_root, common_directory = _initialize_external_git_worktrees(tmp_path)
+    cache_root = tmp_path / "parent-pycache"
+    output_root = tmp_path / "output"
+    cache_root.mkdir()
+    output_root.mkdir()
+    output_path = output_root / "paired-result.json"
+    original_protected_roots = gauntlet_cli._repository_protected_roots
+    protected_root_calls: list[tuple[Path, ...]] = []
+    bound_roots: list[tuple[Path, ...]] = []
+
+    def record_protected_roots(repository_roots: tuple[Path, ...]) -> tuple[Path, ...]:
+        protected_root_calls.append(repository_roots)
+        return original_protected_roots(repository_roots)
+
+    def record_write(
+        _serialized_result: str,
+        output: Path | None = None,
+        *,
+        default_directory: Path | None = None,
+        bound_directory: runner.BoundOutputDirectory | None = None,
+    ) -> Path:
+        assert default_directory is None
+        assert bound_directory is not None
+        bound_roots.append(bound_directory.protected_roots)
+        assert output == output_path
+        return output_path
+
+    monkeypatch.setattr(gauntlet_cli, "_require_isolated_coordinator", lambda: None)
+    monkeypatch.setattr(gauntlet_cli, "_repository_protected_roots", record_protected_roots)
+    monkeypatch.setenv(gauntlet_cli.ISOLATED_PARENT_CACHE_ENV, str(cache_root))
+    monkeypatch.setattr(gauntlet_cli.sys, "pycache_prefix", str(cache_root))
+    monkeypatch.setattr(
+        paired,
+        "run_paired_gauntlet",
+        lambda *_args, **_kwargs: {"comparison": {"overall": "fail"}},
+    )
+    monkeypatch.setattr(runner, "write_serialized_result", record_write)
+
+    assert (
+        gauntlet_cli.main(
+            [
+                "--paired-control",
+                str(control_root),
+                "--paired-candidate",
+                str(candidate_root),
+                "--output",
+                str(output_path),
+            ]
+        )
+        == gauntlet_cli.COMPARISON_FAILED_EXIT
+    )
+
+    assert len(protected_root_calls) == 3
+    assert protected_root_calls[1] == protected_root_calls[2]
+    assert len(bound_roots) == 1
+    assert common_directory in bound_roots[0]
+    assert (common_directory / "worktrees" / candidate_root.name).resolve() in bound_roots[0]
+    assert not output_path.exists()
+
+
+def test_repository_protected_roots_revalidation_fails_closed_on_change_or_resolution_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = tmp_path / "repository"
+    repository_root.mkdir()
+    expected = (repository_root.resolve(), tmp_path / "original.git")
+    changed = (repository_root.resolve(), tmp_path / "changed.git")
+    monkeypatch.setattr(gauntlet_cli, "_repository_protected_roots", lambda _roots: changed)
+
+    with pytest.raises(SystemExit) as changed_error:
+        gauntlet_cli._revalidate_repository_protected_roots((repository_root,), expected)
+    assert str(changed_error.value) == gauntlet_cli._REPOSITORY_METADATA_CHANGED_ERROR
+
+    def fail_resolution(_roots: object) -> tuple[Path, ...]:
+        raise SystemExit(gauntlet_cli._REPOSITORY_METADATA_ERROR)
+
+    monkeypatch.setattr(gauntlet_cli, "_repository_protected_roots", fail_resolution)
+    with pytest.raises(SystemExit) as resolution_error:
+        gauntlet_cli._revalidate_repository_protected_roots((repository_root,), expected)
+    assert str(resolution_error.value) == gauntlet_cli._REPOSITORY_METADATA_CHANGED_ERROR
+    assert resolution_error.value.__cause__ is None
+
+
 def test_cli_rejects_output_symlink_entry_inside_invoking_repository(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3352,6 +3698,11 @@ def test_cli_rejects_output_symlink_entry_inside_invoking_repository(
         gauntlet_cli,
         "__file__",
         str(repository_root / "benchmarks" / "gauntlet" / "__main__.py"),
+    )
+    monkeypatch.setattr(
+        gauntlet_cli,
+        "_repository_protected_roots",
+        lambda roots: tuple(path.resolve() for path in roots),
     )
     identity = RepositoryIdentity("a" * 40, True, "b" * 64)
     monkeypatch.setattr(
@@ -3393,6 +3744,11 @@ def test_cli_rejects_default_output_directory_inside_invoking_repository(
         gauntlet_cli,
         "__file__",
         str(repository_root / "benchmarks" / "gauntlet" / "__main__.py"),
+    )
+    monkeypatch.setattr(
+        gauntlet_cli,
+        "_repository_protected_roots",
+        lambda roots: tuple(path.resolve() for path in roots),
     )
     monkeypatch.setattr(tempfile, "tempdir", str(repository_root))
     identity = RepositoryIdentity("a" * 40, True, "b" * 64)
@@ -3463,8 +3819,8 @@ def test_paired_cli_compare_symlink_loop_fails_with_canonical_path_free_error(
 ) -> None:
     control_root = tmp_path / "control-secret"
     candidate_root = tmp_path / "candidate-secret"
-    control_root.mkdir()
-    candidate_root.mkdir()
+    subprocess.run(["git", "init", "-q", str(control_root)], check=True)
+    subprocess.run(["git", "init", "-q", str(candidate_root)], check=True)
     first_link = tmp_path / "private-compare-a"
     second_link = tmp_path / "private-compare-b"
     try:
