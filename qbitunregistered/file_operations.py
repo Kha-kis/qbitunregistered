@@ -112,6 +112,12 @@ def invalidate_torrent_files(torrent_hash: str, *, cache_scope: int) -> None:
     get_cache().invalidate(f"torrent_files:{cache_scope}:{torrent_hash}")
 
 
+def cache_torrent_files(torrent_hash: str, files: list[Any], *, cache_scope: int) -> None:
+    """Store validated torrent file metadata for the rest of one execution."""
+    assert cache_scope is not None, "cache_scope must be provided (use id(client))"
+    get_cache().set_for_execution(f"torrent_files:{cache_scope}:{torrent_hash}", files)
+
+
 def fetch_torrent_files(
     client: QBittorrentClient,
     torrent_hash: str,

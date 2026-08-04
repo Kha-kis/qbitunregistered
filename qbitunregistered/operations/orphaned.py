@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import stat
 import time
@@ -13,6 +14,7 @@ from qbitunregistered.cache import cached
 from qbitunregistered.file_operations import (
     FileIdentity,
     SafetyCheckError,
+    cache_torrent_files,
     capture_file_identity,
     fetch_torrent_files,
     invalidate_torrent_files,
@@ -21,6 +23,8 @@ from qbitunregistered.file_operations import (
     verify_file_identity,
 )
 from qbitunregistered.types import QBittorrentClient
+
+_INCLUDED_FILES_MISSING = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,25 +119,63 @@ def _index_torrent_snapshot(torrents: object, *, context: str) -> dict[str, Any]
     return indexed
 
 
-def _refresh_torrent_snapshot(client: QBittorrentClient, *, context: str) -> dict[str, Any]:
+def _refresh_torrent_snapshot(
+    client: QBittorrentClient,
+    *,
+    context: str,
+    include_files: bool = False,
+) -> dict[str, Any]:
     """Return one validated current torrent snapshot, failing closed."""
     try:
-        torrents = client.torrents.info()
+        torrents = client.torrents.info(include_files=True) if include_files else client.torrents.info()
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as error:
-        raise SafetyCheckError(f"Could not refresh qBittorrent state {context}") from error
+        if not include_files:
+            raise SafetyCheckError(f"Could not refresh qBittorrent state {context}") from error
+        logging.warning(
+            "qBittorrent rejected the bulk file-metadata snapshot %s; retrying with the compatible torrent list.",
+            context,
+        )
+        try:
+            torrents = client.torrents.info()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as fallback_error:
+            raise SafetyCheckError(f"Could not refresh qBittorrent state {context}") from fallback_error
     return _index_torrent_snapshot(torrents, context=context)
+
+
+def _included_torrent_files(torrent: Any) -> object:
+    """Return embedded file metadata only when it is a response mapping key."""
+    if isinstance(torrent, Mapping) and "files" in torrent:
+        return torrent["files"]
+    return _INCLUDED_FILES_MISSING
+
+
+def _index_candidate_paths(candidate_paths: set[Path]) -> dict[str, Path | None]:
+    """Index canonical candidates, marking native path-key collisions ambiguous."""
+    candidate_lookup: dict[str, Path | None] = {}
+    for candidate_path in candidate_paths:
+        candidate_key = os.path.normcase(str(candidate_path))
+        if candidate_key not in candidate_lookup:
+            candidate_lookup[candidate_key] = candidate_path
+        elif candidate_lookup[candidate_key] != candidate_path:
+            candidate_lookup[candidate_key] = None
+    return candidate_lookup
 
 
 def _exact_torrent_owned_paths(  # noqa: C901
     client: QBittorrentClient,
     torrent: Any,
     resolved_save_paths: dict[str, Path],
+    candidate_lookup: Mapping[str, Path | None],
+    save_path_strings: dict[str, str],
     *,
     context: str,
     refresh_file_metadata: bool = False,
     tolerate_confirmed_removal: bool = False,
+    included_files: object = _INCLUDED_FILES_MISSING,
 ) -> set[Path]:
     """Return canonical owned paths or confirm that a failed torrent is gone."""
     torrent_hash = getattr(torrent, "hash", None)
@@ -143,25 +185,33 @@ def _exact_torrent_owned_paths(  # noqa: C901
     if not isinstance(save_path_value, str) or not save_path_value:
         raise SafetyCheckError(f"Torrent {torrent_hash} has no valid save path {context}")
 
-    try:
-        raw_files = fetch_torrent_files(
-            client,
-            torrent_hash,
-            cache_scope=id(client),
-            refresh=refresh_file_metadata,
-        )
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception as error:
-        if tolerate_confirmed_removal:
-            refreshed = _refresh_torrent_snapshot(
+    fetched_separately = included_files is _INCLUDED_FILES_MISSING
+    raw_files: object
+    if fetched_separately:
+        try:
+            raw_files = fetch_torrent_files(
                 client,
-                context=f"after file metadata failed for torrent {torrent_hash}",
+                torrent_hash,
+                cache_scope=id(client),
+                refresh=refresh_file_metadata,
             )
-            if torrent_hash not in refreshed:
-                logging.info("Torrent %s disappeared during orphan scanning; ignoring its unavailable metadata.", torrent_hash)
-                return set()
-        raise SafetyCheckError(f"Could not read file metadata for active torrent {torrent_hash} {context}") from error
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as error:
+            if tolerate_confirmed_removal:
+                refreshed = _refresh_torrent_snapshot(
+                    client,
+                    context=f"after file metadata failed for torrent {torrent_hash}",
+                )
+                if torrent_hash not in refreshed:
+                    logging.info(
+                        "Torrent %s disappeared during orphan scanning; ignoring its unavailable metadata.",
+                        torrent_hash,
+                    )
+                    return set()
+            raise SafetyCheckError(f"Could not read file metadata for active torrent {torrent_hash} {context}") from error
+    else:
+        raw_files = included_files
 
     if raw_files is None:
         raise SafetyCheckError(f"Torrent {torrent_hash} returned no file metadata {context}")
@@ -174,27 +224,47 @@ def _exact_torrent_owned_paths(  # noqa: C901
             description=f"Torrent {torrent_hash} save path",
         )
     save_path = resolved_save_paths[save_path_value]
+    if save_path_value not in save_path_strings:
+        save_path_strings[save_path_value] = str(save_path)
+    save_path_string = save_path_strings[save_path_value]
     owned_paths: set[Path] = set()
     for file_info in raw_files:
         name = file_info.get("name") if isinstance(file_info, Mapping) else getattr(file_info, "name", None)
         if not isinstance(name, str) or not name:
             raise SafetyCheckError(f"Torrent {torrent_hash} returned malformed file metadata {context}")
         try:
-            owned_path = (save_path / name).resolve()
+            metadata_path = Path(name)
+            metadata_parts = metadata_path.parts
+            if metadata_parts and not metadata_path.anchor and ".." not in metadata_parts:
+                candidate_key = os.path.normcase(os.path.join(save_path_string, str(metadata_path)))
+                candidate_path = candidate_lookup.get(candidate_key)
+                if candidate_path is not None:
+                    owned_paths.add(candidate_path)
+                    continue
+            lexical_path = save_path / metadata_path
+            owned_path = lexical_path.resolve()
         except (OSError, RuntimeError, ValueError) as error:
             raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path {context}") from error
-        if not owned_path.is_relative_to(save_path):
+        if owned_path == save_path or not owned_path.is_relative_to(save_path):
             raise SafetyCheckError(f"Torrent {torrent_hash} returned an unsafe file path {context}")
         owned_paths.add(owned_path)
+    if not fetched_separately:
+        cache_torrent_files(torrent_hash, list(raw_files), cache_scope=id(client))
     return owned_paths
 
 
-def _candidate_parent_paths(candidate_paths: set[Path]) -> set[Path]:
-    """Return candidate paths and ancestors for constant-time boundary checks."""
-    parents = set(candidate_paths)
+def _candidate_directory_boundaries(candidate_paths: set[Path]) -> set[Path]:
+    """Return candidate parent directories and ancestors for boundary checks."""
+    boundaries: set[Path] = set()
     for candidate_path in candidate_paths:
-        parents.update(candidate_path.parents)
-    return parents
+        current_path = candidate_path.parent
+        while current_path not in boundaries:
+            boundaries.add(current_path)
+            parent_path = current_path.parent
+            if parent_path == current_path:
+                break
+            current_path = parent_path
+    return boundaries
 
 
 def _validated_content_boundary(torrent: Any, save_path: Path) -> tuple[Path, int] | None:
@@ -211,15 +281,18 @@ def _validated_content_boundary(torrent: Any, save_path: Path) -> tuple[Path, in
             return None
         inspected_path = save_path
         content_stat = save_path.lstat()
-        if stat.S_ISLNK(content_stat.st_mode):
+        if stat.S_ISLNK(content_stat.st_mode) or bool(getattr(content_stat, "st_reparse_tag", 0)):
             return None
         for part in relative_content_path.parts:
             inspected_path /= part
             content_stat = inspected_path.lstat()
-            if stat.S_ISLNK(content_stat.st_mode):
+            if stat.S_ISLNK(content_stat.st_mode) or bool(getattr(content_stat, "st_reparse_tag", 0)):
                 return None
         resolved_content_path = content_path.resolve()
         if not resolved_content_path.is_relative_to(save_path):
+            return None
+        content_stat = resolved_content_path.lstat()
+        if stat.S_ISLNK(content_stat.st_mode) or bool(getattr(content_stat, "st_reparse_tag", 0)):
             return None
     except (OSError, RuntimeError, ValueError):
         return None
@@ -236,8 +309,10 @@ def _build_torrent_ownership(
     tolerate_confirmed_removal: bool,
 ) -> _TorrentOwnership:
     """Build exact ownership, using bulk boundaries only when they are conclusive."""
-    candidate_boundaries = _candidate_parent_paths(candidate_paths)
+    candidate_boundaries = _candidate_directory_boundaries(candidate_paths)
+    candidate_lookup = _index_candidate_paths(candidate_paths)
     resolved_save_paths: dict[str, Path] = {}
+    save_path_strings: dict[str, str] = {}
     owned_paths: set[Path] = set()
     active_save_paths: set[Path] = set()
     file_metadata_fetches = 0
@@ -268,15 +343,20 @@ def _build_torrent_ownership(
             if stat.S_ISDIR(content_mode) and content_path not in candidate_boundaries:
                 continue
 
-        file_metadata_fetches += 1
+        included_files = _included_torrent_files(torrent)
+        if included_files is _INCLUDED_FILES_MISSING:
+            file_metadata_fetches += 1
         owned_paths.update(
             _exact_torrent_owned_paths(
                 client,
                 torrent,
                 resolved_save_paths,
+                candidate_lookup,
+                save_path_strings,
                 context=context,
                 refresh_file_metadata=refresh_file_metadata,
                 tolerate_confirmed_removal=tolerate_confirmed_removal,
+                included_files=included_files,
             )
         )
 
@@ -402,6 +482,7 @@ def check_files_on_disk(  # noqa: C901
     files_excluded_by_pattern = 0
     files_excluded_by_dir = 0
     files_excluded_by_age = 0
+    canonical_directory_exclusions = bool(exclude_dir_paths or compiled_dir_patterns)
 
     # Scan managed roots recursively.
     for save_path in sorted(filtered_scan_roots, key=lambda path: len(path.parts)):
@@ -412,11 +493,10 @@ def check_files_on_disk(  # noqa: C901
                 files_excluded_by_dir += 1
                 continue
 
-            # Resolve path once at the start of the loop for performance
-            entry_resolved = entry.resolve()
-
             # Check if entry is in an excluded directory (early exit for better performance)
-            if exclude_dir_paths or compiled_dir_patterns:
+            entry_resolved: Path | None = None
+            if canonical_directory_exclusions:
+                entry_resolved = entry.resolve()
                 entry_str = str(entry_resolved)
 
                 # Check direct match first (O(1) lookup)
@@ -448,7 +528,7 @@ def check_files_on_disk(  # noqa: C901
 
                 if minimum_age_ns:
                     try:
-                        modified_ns = entry_resolved.stat().st_mtime_ns
+                        modified_ns = (entry_resolved if entry_resolved is not None else entry).stat().st_mtime_ns
                     except OSError as error:
                         raise SafetyCheckError(f"Could not verify orphan candidate age safely: {entry}") from error
                     if scan_started_ns - modified_ns < minimum_age_ns:
@@ -456,8 +536,9 @@ def check_files_on_disk(  # noqa: C901
                         continue
 
                 candidate_identity = _capture_current_orphan_identity(
-                    entry_resolved,
+                    entry_resolved if entry_resolved is not None else entry,
                     missing_log_message="Orphan candidate disappeared during discovery; omitting path: %s",
+                    canonicalize_symlink=True,
                 )
                 if candidate_identity is not None:
                     candidate_files.append((candidate_identity, str(entry)))
@@ -473,7 +554,11 @@ def check_files_on_disk(  # noqa: C901
     # A long filesystem walk can overlap additions, re-additions, file renames,
     # and save-path changes. Refresh ownership only after the walk, replacing
     # any metadata cached by an earlier operation in this execution.
-    current_torrents = _refresh_torrent_snapshot(client, context="after the orphan filesystem scan")
+    current_torrents = _refresh_torrent_snapshot(
+        client,
+        context="after the orphan filesystem scan",
+        include_files=True,
+    )
     ownership = _build_torrent_ownership(
         client,
         current_torrents,
@@ -509,14 +594,24 @@ def check_files_on_disk(  # noqa: C901
     )
 
 
-def _capture_current_orphan_identity(path: Path, *, missing_log_message: str) -> FileIdentity | None:
+def _capture_current_orphan_identity(
+    path: Path,
+    *,
+    missing_log_message: str,
+    canonicalize_symlink: bool = False,
+) -> FileIdentity | None:
     """Capture one unchanged regular file, or return ``None`` if it is absent."""
     try:
         discovered_stat = path.lstat()
+        if canonicalize_symlink and stat.S_ISLNK(discovered_stat.st_mode):
+            # Filesystem discovery historically reconciles canonical
+            # pathnames. Direct plan callers retain strict symlink rejection.
+            path = path.resolve()
+            discovered_stat = path.lstat()
     except FileNotFoundError:
         logging.info(missing_log_message, path)
         return None
-    except OSError as error:
+    except (OSError, RuntimeError) as error:
         raise SafetyCheckError(f"Could not inspect orphan candidate safely: {path}") from error
     identity = capture_file_identity(path)
     if not identity.matches(discovered_stat):
@@ -608,7 +703,11 @@ def _get_active_configured_save_roots(client: QBittorrentClient, *, use_cache: b
 
 def _revalidate_orphan_ownership(client: QBittorrentClient, plan: OrphanFilePlan) -> set[Path]:
     """Fail closed on new owners and return current canonical save roots."""
-    current_torrents = _refresh_torrent_snapshot(client, context="before orphan cleanup")
+    current_torrents = _refresh_torrent_snapshot(
+        client,
+        context="before orphan cleanup",
+        include_files=True,
+    )
     ownership = _build_torrent_ownership(
         client,
         current_torrents,
@@ -646,6 +745,28 @@ def _raise_incomplete_orphan_cleanup(
         f"Orphan cleanup incomplete: {completed_count} of {planned_count} planned files were {action}; "
         f"{incomplete_count} remain. See logs for details."
     )
+
+
+def _potential_empty_directories(
+    candidate_paths: set[Path],
+    *,
+    authorized_roots: set[Path],
+    active_save_paths: set[Path],
+) -> set[Path]:
+    """Return candidate parents strictly below active authorized roots."""
+    potential_empty_dirs: set[Path] = set()
+    for candidate_path in candidate_paths:
+        containing_roots = [root for root in authorized_roots if candidate_path.is_relative_to(root)]
+        if not containing_roots:
+            continue
+        authorized_root = max(containing_roots, key=lambda root: len(root.parts))
+        parent_dir = candidate_path.parent
+        while parent_dir != authorized_root and parent_dir not in active_save_paths:
+            if parent_dir in potential_empty_dirs:
+                break
+            potential_empty_dirs.add(parent_dir)
+            parent_dir = parent_dir.parent
+    return potential_empty_dirs
 
 
 def delete_orphaned_files(  # noqa: C901
@@ -731,16 +852,6 @@ def delete_orphaned_files(  # noqa: C901
             )
     active_save_paths = set(managed_scan_roots)
 
-    # Track directories that will become empty
-    potential_empty_dirs = set()
-
-    # Collect all parent directories for later cleanup
-    for file_path in orphaned_files_set:
-        parent_dir = file_path.parent
-        while parent_dir != parent_dir.parent:  # Add parent and all ancestor directories
-            potential_empty_dirs.add(parent_dir)
-            parent_dir = parent_dir.parent
-
     if dry_run:
         if torrents is None:
             try:
@@ -762,6 +873,12 @@ def delete_orphaned_files(  # noqa: C901
             )
     else:
         active_save_paths.update(_revalidate_orphan_ownership(client, resolved_plan))
+
+    potential_empty_dirs = _potential_empty_directories(
+        orphaned_files_set,
+        authorized_roots=managed_scan_roots,
+        active_save_paths=active_save_paths,
+    )
 
     if not dry_run:
         identity_failures: list[tuple[Path, str]] = []

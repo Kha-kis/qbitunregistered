@@ -334,6 +334,8 @@ walk do not claim files. Incomplete or malformed ownership data aborts cleanup
 instead of authorizing deletion, and real execution performs another uncached
 ownership check immediately before mutation. Refreshed metadata replaces the
 execution-cache entry so later operations reuse the current mapping.
+Large scans use execution-local candidate and directory indexes; they do not
+create a persistent database or carry filesystem evidence between runs.
 Candidates that disappear after discovery but before plan capture are
 omitted because no path remains to mutate; inaccessible, replaced, non-regular,
 or otherwise uncertain candidates still abort the plan. The scan carries each
