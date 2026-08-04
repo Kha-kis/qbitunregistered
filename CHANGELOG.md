@@ -25,13 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller-controlled cache markers, publish legal maximum-length explicit
   output names with bounded staging names, reject
   protected-package imports not backed by immutable blob bytes from regular,
-  canonically visible Git index entries, revalidate staged source identities
-  around execution, reject hidden or non-stage-0 evaluator, quality-bar, and
-  dependency inputs in every worktree, reject noncanonical paired seeds before
-  dependency or child work, roll back explicit output publication if its bound
-  directory moves under a protected root, suppress contextless overflowed
-  child diagnostics, and bind installed dependency contents across every
-  crossover child.
+  canonically visible Git index entries, require the complete protected Python
+  path, mode, and object-ID map to match `HEAD` before blob reads, revalidate
+  staged source identities around execution, reject hidden or non-stage-0
+  evaluator, quality-bar, and dependency inputs in every worktree, reject
+  noncanonical paired seeds before dependency or child work, roll back explicit
+  output publication if its bound
+  directory moves under a protected root, install explicit artifacts without
+  clobbering a concurrently created leaf, revalidate detached output types,
+  verify allocator-owned reservations before no-clobber installation,
+  atomically capture explicit and allocator-owned rollback targets before
+  cleanup, retain prior-output recovery links after failed publication, suppress
+  contextless overflowed child diagnostics, and bind installed dependency
+  contents across every crossover child.
 - The source launcher now verifies its downstream import bootstrap against the
   matching regular, visible stage-0 `HEAD` and index blob, rejects modified
   worktree bytes and inherited Git repository redirection before execution, and

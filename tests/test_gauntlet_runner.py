@@ -306,6 +306,16 @@ def _staged_source_record(
     return f"{tag} {mode} {oid} {stage}\t{relative_path}".encode()
 
 
+def _head_source_record(
+    relative_path: str,
+    *,
+    mode: str = "100644",
+    oid: str = "a" * 40,
+) -> bytes:
+    """Build one exact ``git ls-tree -r -z`` source record."""
+    return f"{mode} blob {oid}\t{relative_path}".encode()
+
+
 def _valid_quick_result() -> dict[str, Any]:
     quality_bar = load_quality_bar(QUALITY_BAR_PATH)
     profile = quality_bar.profiles["quick"]
@@ -1427,6 +1437,18 @@ def test_import_bootstrap_accepts_canonical_nul_terminated_stage_records(
     ) -> subprocess.CompletedProcess[bytes]:
         if arguments[1] == "ls-files":
             stdout = records
+        elif arguments[2] == "ls-tree":
+            stdout = b"\0".join(
+                (
+                    _head_source_record("benchmarks/__init__.py"),
+                    _head_source_record(
+                        "qbitunregistered/__init__.py",
+                        mode="100755",
+                        oid="b" * 64,
+                    ),
+                    b"",
+                )
+            )
         else:
             assert arguments[1:4] == ["--no-replace-objects", "cat-file", "blob"]
             stdout = b"INDEX_SOURCE = True\n"
@@ -1442,6 +1464,47 @@ def test_import_bootstrap_accepts_canonical_nul_terminated_stage_records(
     assert sources["qbitunregistered"].mode == "100755"
     assert sources["qbitunregistered"].oid == "b" * 64
     assert sources["qbitunregistered"].source_bytes == b"INDEX_SOURCE = True\n"
+
+
+@pytest.mark.parametrize("staged_change", ("mode", "oid"))
+def test_import_bootstrap_rejects_protected_index_source_differing_from_head_before_blob_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    staged_change: str,
+) -> None:
+    repository_root = tmp_path / "repository"
+    payload_path = repository_root / "qbitunregistered" / "payload.py"
+    _write_import_bootstrap_fixture(repository_root, "")
+    payload_path.write_text("ORIGIN = 'head'\n", encoding="utf-8")
+    _commit_gauntlet_test_repository(repository_root)
+    if staged_change == "mode":
+        subprocess.run(
+            ["git", "update-index", "--chmod=+x", "--", "qbitunregistered/payload.py"],
+            cwd=repository_root,
+            check=True,
+        )
+    else:
+        payload_path.write_text("ORIGIN = 'staged'\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "--", "qbitunregistered/payload.py"],
+            cwd=repository_root,
+            check=True,
+        )
+    blob_reads: list[str] = []
+
+    def record_blob_read(_repository_root: Path, oid: str) -> bytes:
+        blob_reads.append(oid)
+        return b""
+
+    monkeypatch.setattr(import_bootstrap, "_read_git_blob", record_blob_read)
+
+    with pytest.raises(
+        import_bootstrap.ProtectedPackageTreeError,
+        match=f"^{import_bootstrap.PROTECTED_IMPORT_ERROR}$",
+    ):
+        import_bootstrap._tracked_protected_sources(repository_root)
+
+    assert blob_reads == []
 
 
 def test_protected_loader_ignores_git_replacement_refs(
@@ -3494,7 +3557,7 @@ def test_paired_cli_translates_publication_race_and_cleans_staging(
         raise IsADirectoryError("publication target became a directory")
 
     monkeypatch.setattr(paired, "run_paired_gauntlet", record_paired_run)
-    monkeypatch.setattr(runner.os, "rename", substitute_directory_then_fail)
+    monkeypatch.setattr(runner.os, "link", substitute_directory_then_fail)
 
     with pytest.raises(SystemExit) as error_info:
         gauntlet_cli.main(
@@ -4213,6 +4276,116 @@ def test_bound_omitted_output_uses_unique_file_in_validated_directory(
 
 
 @requires_bound_publication
+def test_bound_omitted_output_preserves_concurrent_replacement_before_identity_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_bound_file_identity = runner._bound_file_identity
+    replaced = False
+
+    def replace_before_identity_check(
+        bound_directory: runner.BoundOutputDirectory,
+        name: str,
+    ) -> tuple[int, int, int] | None:
+        nonlocal replaced
+        if name.startswith("qbitunregistered-gauntlet-") and name.endswith(".json") and not replaced:
+            replacement = tmp_path / "concurrent-result"
+            replacement.write_text("concurrent artifact\n", encoding="utf-8")
+            os.replace(replacement, tmp_path / name)
+            replaced = True
+        return real_bound_file_identity(bound_directory, name)
+
+    monkeypatch.setattr(runner, "_bound_file_identity", replace_before_identity_check)
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        with pytest.raises(GauntletSafetyError):
+            runner.write_serialized_result(
+                "unaccepted artifact\n",
+                default_directory=tmp_path,
+                bound_directory=bound_directory,
+            )
+
+    assert replaced is True
+    outputs = [path for path in tmp_path.iterdir() if path.name.endswith(".json")]
+    assert len(outputs) == 1
+    assert outputs[0].read_text(encoding="utf-8") == "concurrent artifact\n"
+    backups = [path for path in tmp_path.iterdir() if path.name.endswith(".backup")]
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "concurrent artifact\n"
+    assert all(not path.name.endswith(".tmp") for path in tmp_path.iterdir())
+
+
+@requires_bound_publication
+def test_bound_omitted_output_does_not_clobber_replacement_before_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_link = os.link
+    replaced = False
+
+    def replace_before_staging_link(source, destination, **kwargs) -> None:
+        nonlocal replaced
+        if str(source).endswith(".tmp"):
+            replacement = tmp_path / "concurrent-result"
+            replacement.write_text("concurrent artifact\n", encoding="utf-8")
+            os.replace(replacement, tmp_path / destination)
+            replaced = True
+        real_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(runner.os, "link", replace_before_staging_link)
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        with pytest.raises(
+            GauntletSafetyError,
+            match=r"^bound result output changed during publication$",
+        ):
+            runner.write_serialized_result(
+                "unaccepted artifact\n",
+                default_directory=tmp_path,
+                bound_directory=bound_directory,
+            )
+
+    assert replaced is True
+    outputs = [path for path in tmp_path.iterdir() if path.name.endswith(".json")]
+    assert len(outputs) == 1
+    assert outputs[0].read_text(encoding="utf-8") == "concurrent artifact\n"
+    assert all(not path.name.endswith((".tmp", ".backup")) for path in tmp_path.iterdir())
+
+
+@requires_bound_publication
+def test_bound_omitted_output_retains_uncertain_leaf_when_identity_read_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_fstat = os.fstat
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+
+        def fail_allocator_fstat(descriptor: int) -> os.stat_result:
+            if descriptor != bound_directory.descriptor:
+                reservation = next(tmp_path.glob("qbitunregistered-gauntlet-*.json"))
+                replacement = tmp_path / "concurrent-result"
+                replacement.write_text("concurrent artifact\n", encoding="utf-8")
+                os.replace(replacement, reservation)
+                raise OSError("allocator fstat failed")
+            return real_fstat(descriptor)
+
+        monkeypatch.setattr(runner.os, "fstat", fail_allocator_fstat)
+
+        with pytest.raises(OSError, match=r"^allocator fstat failed$"):
+            runner.write_serialized_result(
+                "unaccepted artifact\n",
+                default_directory=tmp_path,
+                bound_directory=bound_directory,
+            )
+
+    assert all(not path.name.endswith((".json", ".tmp")) for path in tmp_path.iterdir())
+    backups = [path for path in tmp_path.iterdir() if path.name.endswith(".backup")]
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "concurrent artifact\n"
+
+
+@requires_bound_publication
 def test_bound_output_leaf_validation_allows_replaceable_entry_types(
     tmp_path: Path,
 ) -> None:
@@ -4465,14 +4638,14 @@ def test_bound_publication_supports_near_name_max_output_and_cleans_failures(
         assert json.loads(output.read_text(encoding="utf-8"))["intended_action_digest"] == "b" * 64
         assert list(tmp_path.iterdir()) == [output]
 
-        real_rename = os.rename
+        real_link = os.link
 
-        def fail_publication_rename(source, destination, **kwargs) -> None:
+        def fail_publication_link(source, destination, **kwargs) -> None:
             if str(source).endswith(".tmp"):
-                raise OSError("rename failed")
-            real_rename(source, destination, **kwargs)
+                raise OSError("link failed")
+            real_link(source, destination, **kwargs)
 
-        monkeypatch.setattr(runner.os, "rename", fail_publication_rename)
+        monkeypatch.setattr(runner.os, "link", fail_publication_link)
         with pytest.raises(
             GauntletSafetyError,
             match="could not publish the bound result safely",
@@ -4485,6 +4658,293 @@ def test_bound_publication_supports_near_name_max_output_and_cleans_failures(
 
     assert output.read_text(encoding="utf-8") == serialized_result
     assert json.loads(output.read_text(encoding="utf-8"))["intended_action_digest"] == "b" * 64
+    backups = [path for path in tmp_path.iterdir() if path.name.endswith(".backup")]
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == serialized_result
+    assert all(not path.name.endswith(".tmp") for path in tmp_path.iterdir())
+
+
+@requires_bound_publication
+@pytest.mark.parametrize("output_state", ("missing", "existing"))
+def test_bound_publication_preserves_leaf_created_or_replaced_between_backup_and_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_state: str,
+) -> None:
+    output = tmp_path / "result.json"
+    if output_state == "existing":
+        output.write_text("previous artifact\n", encoding="utf-8")
+    real_backup = runner._backup_bound_output
+
+    def backup_then_replace(
+        bound_directory: runner.BoundOutputDirectory,
+        output_name: str,
+    ) -> str | None:
+        backup_name = real_backup(bound_directory, output_name)
+        concurrent = tmp_path / "concurrent.json"
+        concurrent.write_text("concurrent artifact\n", encoding="utf-8")
+        os.replace(concurrent, output)
+        return backup_name
+
+    monkeypatch.setattr(runner, "_backup_bound_output", backup_then_replace)
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        runner.validate_bound_output_leaf(bound_directory, output.name)
+        with pytest.raises(GauntletSafetyError):
+            runner.write_serialized_result(
+                "replacement artifact\n",
+                output,
+                bound_directory=bound_directory,
+            )
+
+    assert output.read_text(encoding="utf-8") == "concurrent artifact\n"
+    backups = [path for path in tmp_path.iterdir() if path.name.endswith(".backup")]
+    if output_state == "existing":
+        assert len(backups) == 1
+        assert backups[0].read_text(encoding="utf-8") == "previous artifact\n"
+    else:
+        assert backups == []
+    assert all(not path.name.endswith(".tmp") for path in tmp_path.iterdir())
+
+
+@requires_bound_publication
+def test_bound_publication_restores_special_leaf_raced_before_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    make_fifo = getattr(os, "mkfifo", None)
+    if make_fifo is None:
+        pytest.skip("platform cannot create a FIFO")
+    output = tmp_path / "result.json"
+    output.write_text("previous artifact\n", encoding="utf-8")
+    real_backup = runner._backup_bound_output
+
+    def replace_with_fifo_then_backup(
+        bound_directory: runner.BoundOutputDirectory,
+        output_name: str,
+    ) -> str | None:
+        output.unlink()
+        try:
+            make_fifo(output)
+        except OSError as error:
+            pytest.skip(f"platform cannot create a FIFO: {error}")
+        return real_backup(bound_directory, output_name)
+
+    monkeypatch.setattr(runner, "_backup_bound_output", replace_with_fifo_then_backup)
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        runner.validate_bound_output_leaf(bound_directory, output.name)
+        with pytest.raises(
+            GauntletSafetyError,
+            match=r"^result output changed to a nonreplaceable entry during publication$",
+        ):
+            runner.write_serialized_result(
+                "replacement artifact\n",
+                output,
+                bound_directory=bound_directory,
+            )
+
+    assert stat.S_ISFIFO(output.lstat().st_mode)
+    backups = [path for path in tmp_path.iterdir() if path.name.endswith(".backup")]
+    assert len(backups) == 1
+    assert stat.S_ISFIFO(backups[0].lstat().st_mode)
+    assert all(not path.name.endswith(".tmp") for path in tmp_path.iterdir())
+
+
+@requires_bound_publication
+@pytest.mark.parametrize("output_state", ("missing", "existing"))
+def test_bound_explicit_publication_uses_descriptor_relative_no_clobber_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_state: str,
+) -> None:
+    output = tmp_path / "result.json"
+    if output_state == "existing":
+        output.write_text("previous artifact\n", encoding="utf-8")
+    real_rename = os.rename
+    real_link = os.link
+    rename_calls: list[tuple[str, str, int | None, int | None]] = []
+    link_calls: list[tuple[str, str, int | None, int | None, bool]] = []
+
+    def record_rename(
+        source: str,
+        destination: str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        rename_calls.append((source, destination, src_dir_fd, dst_dir_fd))
+        real_rename(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    def record_link(
+        source: str,
+        destination: str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        link_calls.append((source, destination, src_dir_fd, dst_dir_fd, follow_symlinks))
+        real_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(runner.os, "rename", record_rename)
+    monkeypatch.setattr(runner.os, "link", record_link)
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        runner.validate_bound_output_leaf(bound_directory, output.name)
+        written_path = runner.write_serialized_result(
+            "replacement artifact\n",
+            output,
+            bound_directory=bound_directory,
+        )
+
+    assert written_path == output
+    assert output.read_text(encoding="utf-8") == "replacement artifact\n"
+    assert len(rename_calls) == 1
+    detached_source, detached_destination, rename_source_fd, rename_destination_fd = rename_calls[0]
+    assert detached_source == output.name
+    assert detached_destination.endswith(".backup")
+    assert rename_source_fd == rename_destination_fd
+    assert rename_source_fd is not None
+    assert len(link_calls) == 1
+    staged_source, installed_destination, link_source_fd, link_destination_fd, follow_symlinks = link_calls[0]
+    assert staged_source.endswith(".tmp")
+    assert installed_destination == output.name
+    assert link_source_fd == link_destination_fd == rename_source_fd
+    assert follow_symlinks is False
+    assert list(tmp_path.iterdir()) == [output]
+
+
+@requires_bound_publication
+@pytest.mark.parametrize("output_state", ("missing", "existing"))
+def test_bound_explicit_publication_rolls_back_install_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_state: str,
+) -> None:
+    output = tmp_path / "result.json"
+    if output_state == "existing":
+        output.write_text("previous artifact\n", encoding="utf-8")
+    real_link = os.link
+
+    def fail_staging_link(source, destination, **kwargs) -> None:
+        if str(source).endswith(".tmp"):
+            raise OSError("link failed")
+        real_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(runner.os, "link", fail_staging_link)
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        runner.validate_bound_output_leaf(bound_directory, output.name)
+        with pytest.raises(
+            GauntletSafetyError,
+            match=r"^could not publish the bound result safely$",
+        ):
+            runner.write_serialized_result(
+                "replacement artifact\n",
+                output,
+                bound_directory=bound_directory,
+            )
+
+    if output_state == "existing":
+        assert output.read_text(encoding="utf-8") == "previous artifact\n"
+    else:
+        assert not output.exists()
+    backups = [path for path in tmp_path.iterdir() if path.name.endswith(".backup")]
+    if output_state == "existing":
+        assert len(backups) == 1
+        assert backups[0].read_text(encoding="utf-8") == "previous artifact\n"
+    else:
+        assert backups == []
+    assert all(not path.name.endswith(".tmp") for path in tmp_path.iterdir())
+
+
+@requires_bound_publication
+def test_bound_explicit_rollback_retains_prior_backup_after_restored_leaf_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "result.json"
+    output.write_text("previous artifact\n", encoding="utf-8")
+    real_link = os.link
+    real_bound_file_identity = runner._bound_file_identity
+    replaced = False
+
+    def fail_staging_link(source, destination, **kwargs) -> None:
+        if str(source).endswith(".tmp"):
+            raise OSError("link failed")
+        real_link(source, destination, **kwargs)
+
+    def replace_after_restored_identity_read(
+        bound_directory: runner.BoundOutputDirectory,
+        name: str,
+    ) -> tuple[int, int, int] | None:
+        nonlocal replaced
+        identity = real_bound_file_identity(bound_directory, name)
+        if name == output.name and identity is not None and not replaced:
+            replacement = tmp_path / "concurrent-result"
+            replacement.write_text("concurrent artifact\n", encoding="utf-8")
+            os.replace(replacement, output)
+            replaced = True
+        return identity
+
+    monkeypatch.setattr(runner.os, "link", fail_staging_link)
+    monkeypatch.setattr(runner, "_bound_file_identity", replace_after_restored_identity_read)
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        runner.validate_bound_output_leaf(bound_directory, output.name)
+        with pytest.raises(
+            GauntletSafetyError,
+            match=r"^could not publish the bound result safely$",
+        ):
+            runner.write_serialized_result(
+                "replacement artifact\n",
+                output,
+                bound_directory=bound_directory,
+            )
+
+    assert replaced is True
+    assert output.read_text(encoding="utf-8") == "concurrent artifact\n"
+    backups = [path for path in tmp_path.iterdir() if path.name.endswith(".backup")]
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "previous artifact\n"
+    assert all(not path.name.endswith(".tmp") for path in tmp_path.iterdir())
+
+
+@requires_bound_publication
+def test_bound_explicit_publication_preserves_output_when_staging_fsync_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "result.json"
+    output.write_text("previous artifact\n", encoding="utf-8")
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(runner.os, "fsync", fail_fsync)
+
+    with runner.bind_output_directory(tmp_path) as bound_directory:
+        runner.validate_bound_output_leaf(bound_directory, output.name)
+        with pytest.raises(OSError, match=r"^fsync failed$"):
+            runner.write_serialized_result(
+                "replacement artifact\n",
+                output,
+                bound_directory=bound_directory,
+            )
+
+    assert output.read_text(encoding="utf-8") == "previous artifact\n"
     assert list(tmp_path.iterdir()) == [output]
 
 
@@ -4503,14 +4963,14 @@ def test_bound_publication_ignores_ancestor_retarget_during_replace(
     except (NotImplementedError, OSError) as error:
         pytest.skip(f"platform cannot create a directory symbolic link: {error}")
     output = safe_directory / "result.json"
-    real_rename = os.rename
+    real_link = os.link
 
     def retarget_then_replace(source, destination, **kwargs):
         output_alias.unlink()
         output_alias.symlink_to(protected_directory, target_is_directory=True)
-        real_rename(source, destination, **kwargs)
+        real_link(source, destination, **kwargs)
 
-    monkeypatch.setattr(runner.os, "rename", retarget_then_replace)
+    monkeypatch.setattr(runner.os, "link", retarget_then_replace)
 
     with runner.bind_output_directory(safe_directory) as bound_directory:
         written_path = runner.write_serialized_result(
@@ -4579,13 +5039,20 @@ def test_bound_publication_rolls_back_directory_move_after_descriptor_relative_r
     if output_state == "existing":
         output.write_text("previous artifact\n", encoding="utf-8")
     real_rename = os.rename
+    real_link = os.link
 
     def publish_then_move_directory(source, destination, **kwargs):
         real_rename(source, destination, **kwargs)
+        if output_state == "omitted" and str(source).endswith(".tmp"):
+            real_rename(outside_results, moved_results)
+
+    def link_then_move_directory(source, destination, **kwargs):
+        real_link(source, destination, **kwargs)
         if str(source).endswith(".tmp"):
             real_rename(outside_results, moved_results)
 
     monkeypatch.setattr(runner.os, "rename", publish_then_move_directory)
+    monkeypatch.setattr(runner.os, "link", link_then_move_directory)
 
     with runner.bind_output_directory(
         outside_results,
@@ -4615,8 +5082,11 @@ def test_bound_publication_rolls_back_directory_move_after_descriptor_relative_r
         assert capture_repository_identity(candidate_root) == identity_before
     else:
         moved_output = moved_results / output.name
-        assert list(moved_results.iterdir()) == [moved_output]
         assert moved_output.read_text(encoding="utf-8") == "previous artifact\n"
+        backups = [path for path in moved_results.iterdir() if path.name.endswith(".backup")]
+        assert len(backups) == 1
+        assert backups[0].read_text(encoding="utf-8") == "previous artifact\n"
+        assert all(not path.name.endswith(".tmp") for path in moved_results.iterdir())
         identity_after = capture_repository_identity(candidate_root)
         assert identity_after.commit == identity_before.commit
         assert identity_after.clean is False
@@ -4639,9 +5109,10 @@ def test_bound_publication_preserves_concurrent_replacement_after_directory_move
     if output_state == "existing":
         output.write_text("previous artifact\n", encoding="utf-8")
     real_rename = os.rename
+    real_link = os.link
 
     def publish_move_and_replace(source, destination, **kwargs):
-        real_rename(source, destination, **kwargs)
+        real_link(source, destination, **kwargs)
         if not str(source).endswith(".tmp"):
             return
         real_rename(outside_results, moved_results)
@@ -4649,7 +5120,7 @@ def test_bound_publication_preserves_concurrent_replacement_after_directory_move
         concurrent_output.write_text("concurrent artifact\n", encoding="utf-8")
         real_rename(concurrent_output, moved_results / output.name)
 
-    monkeypatch.setattr(runner.os, "rename", publish_move_and_replace)
+    monkeypatch.setattr(runner.os, "link", publish_move_and_replace)
 
     with runner.bind_output_directory(
         outside_results,
@@ -4670,10 +5141,13 @@ def test_bound_publication_preserves_concurrent_replacement_after_directory_move
     assert moved_output.read_text(encoding="utf-8") == "concurrent artifact\n"
     backups = [path for path in moved_results.iterdir() if path.name.endswith(".backup")]
     if output_state == "existing":
-        assert len(backups) == 1
-        assert backups[0].read_text(encoding="utf-8") == "previous artifact\n"
+        assert sorted(path.read_text(encoding="utf-8") for path in backups) == [
+            "concurrent artifact\n",
+            "previous artifact\n",
+        ]
     else:
-        assert backups == []
+        assert len(backups) == 1
+        assert backups[0].read_text(encoding="utf-8") == "concurrent artifact\n"
     assert all(not path.name.endswith(".tmp") for path in moved_results.iterdir())
 
 

@@ -687,7 +687,9 @@ executes only the immutable bytes through isolated Python's standard input. Git
 repository-selection variables are removed from both the
 launcher validation and the child environment. This prevents an ordinary or
 staged bootstrap modification from executing before repository identity and
-protected-source validation begin.
+protected-source validation begin. The bootstrap then requires the complete
+canonical protected Python path, mode, and object-ID map in the index to equal
+`HEAD` before it reads or imports any protected blob.
 
 The paired coordinator accepts execution only from the validated import
 bootstrap. A one-use process-local state binds the exact protected finder,
@@ -708,13 +710,19 @@ also requires evaluator sources, the quality bar, and both dependency inputs to
 remain regular stage-0 index entries without skip-worktree or assume-unchanged
 flags in every worktree.
 
-Explicit paired-result publication keeps any existing leaf in a
-descriptor-relative backup until the bound output directory passes its
-post-rename protected-root check. A failed check removes the unaccepted result
-and restores the old leaf; a previously missing destination returns to missing.
-The rollback first requires the destination to retain the staged file's bound
-identity. A concurrent replacement is preserved, along with the old-leaf backup
-when one exists, and publication fails closed.
+Explicit paired-result publication atomically renames any existing leaf into a
+reserved descriptor-relative backup, revalidates the detached leaf type, then
+hard-links the fsynced staging inode into the absent destination without
+clobbering a concurrent entry. Allocator-owned output names use the same
+verified detach and no-clobber installation after reserving a unique name. The
+backup remains until the bound output directory passes its post-publication
+protected-root check. Rollback atomically detaches explicit and allocator-owned
+public leaves before discarding an unaccepted staging inode and restores an old
+leaf only through a
+descriptor-relative no-clobber link. A concurrent replacement and uniquely
+named recovery links remain preserved after rollback; restored prior-output
+backups are not unlinked based on a stale public-name identity check. Any
+uncertainty makes publication fail closed.
 
 ## Extension Points
 

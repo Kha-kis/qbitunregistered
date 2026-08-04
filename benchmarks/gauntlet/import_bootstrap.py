@@ -272,6 +272,79 @@ def _source_index_identity(
     return {fullname: (source.path, source.is_package, source.mode, source.oid) for fullname, source in sources.items()}
 
 
+def _head_protected_source_identities(repository_root: Path) -> dict[str, tuple[str, str]]:
+    """Return canonical protected Python blob identities from ``HEAD``."""
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "--no-replace-objects",
+                "ls-tree",
+                "--full-tree",
+                "-r",
+                "-z",
+                "HEAD",
+                "--",
+                *PROTECTED_PACKAGE_NAMES,
+            ],
+            cwd=repository_root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR) from error
+    if completed.returncode != 0 or not completed.stdout.endswith(b"\0"):
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+    encoded_records = completed.stdout[:-1].split(b"\0")
+    if not encoded_records or any(not record for record in encoded_records):
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+
+    identities: dict[str, tuple[str, str]] = {}
+    casefold_paths: set[str] = set()
+    for encoded_record in encoded_records:
+        try:
+            encoded_metadata, encoded_path = encoded_record.split(b"\t", 1)
+        except ValueError as error:
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR) from error
+        metadata_fields = encoded_metadata.split(b" ")
+        if len(metadata_fields) != 3 or any(not field for field in metadata_fields):
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        encoded_mode, object_type, encoded_oid = metadata_fields
+        relative_value = os.fsdecode(encoded_path)
+        relative_path = PurePosixPath(relative_value)
+        if (
+            relative_path.is_absolute()
+            or "\\" in relative_value
+            or not relative_path.parts
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+            or relative_path.parts[0] not in PROTECTED_PACKAGE_NAMES
+        ):
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        if relative_path.suffix != ".py":
+            continue
+        if (
+            encoded_mode not in _REGULAR_BLOB_MODES
+            or object_type != b"blob"
+            or len(encoded_oid) not in {40, 64}
+            or any(character not in b"0123456789abcdef" for character in encoded_oid)
+        ):
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        folded_path = relative_value.casefold()
+        if relative_value in identities or folded_path in casefold_paths:
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+        try:
+            identities[relative_value] = (
+                encoded_mode.decode("ascii"),
+                encoded_oid.decode("ascii"),
+            )
+        except UnicodeDecodeError as error:
+            raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR) from error
+        casefold_paths.add(folded_path)
+    return identities
+
+
 def _tracked_protected_sources(
     repository_root: Path,
     *,
@@ -376,6 +449,11 @@ def _tracked_protected_sources(
             if parent is None or not parent.is_package:
                 raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
             parent_name = parent_name.rpartition(".")[0]
+    index_identities = {
+        source.path.relative_to(repository_root).as_posix(): (source.mode, source.oid) for source in sources.values()
+    }
+    if index_identities != _head_protected_source_identities(repository_root):
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
     if capture_source_bytes:
         sources = {
             fullname: replace(

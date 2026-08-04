@@ -42,7 +42,9 @@ root and descendant imports to immutable blob bytes captured from regular,
 canonically visible Git index entries. The loader retains worktree filenames
 for package and traceback semantics, but it compiles only the captured index
 bytes and rechecks staged modes, object IDs, and the complete protected source
-set before every protected import and after evaluation. Skip-worktree,
+set before every protected import and after evaluation. Before any protected
+blob is read or imported, the complete canonical Python path, mode, and object
+ID map must also exactly match `HEAD`. Skip-worktree,
 assume-unchanged, missing, ignored, native-only, namespace, redirected, or
 case-ambiguous protected imports fail closed without falling through to
 installed import finders.
@@ -56,15 +58,23 @@ staging, cleanup, and replacement use names relative to that descriptor so an
 ancestor symlink retarget cannot redirect the artifact. Paired execution fails
 closed before staging when the platform lacks the required descriptor-relative
 filesystem operations or trustworthy kernel descriptor-path introspection. The
-publisher preserves an existing explicit output under a descriptor-relative
-backup until the final directory check succeeds, restoring it or removing a
-new output if the bound directory moves during publication. Rollback is
-conditioned on the output still matching the staged file's bound identity; a
-concurrent replacement and any prior-output backup are preserved. The
+publisher atomically detaches an existing explicit output into a reserved,
+descriptor-relative backup, revalidates that the detached leaf remains a
+regular file or symbolic link, then installs the fsynced staging inode with a
+descriptor-relative no-clobber hard link. Allocator-owned output names likewise
+detach and verify their reserved inode before the same no-clobber install. The
+backup remains until the final directory check succeeds. Rollback atomically
+captures both explicit and allocator-owned public leaves before removing an
+unaccepted staging inode, and restores the prior output only into an absent
+name. A concurrent replacement,
+its uniquely named recovery link, and any restored prior-output backup remain
+preserved after a failed publication so a later replacement cannot erase the
+last recovery link. The
 parent directory for an explicit paired `--output` must already exist so it can
 be safely bound. The output leaf must be missing, a regular file, or a symbolic
-link; directories and special files are rejected before evaluation. Ordinary
-non-paired output retains automatic parent creation.
+link; directories and special files are rejected before evaluation and
+rejected again if raced into place before publication. Ordinary non-paired
+output retains automatic parent creation.
 
 Paired mode must start through the source-only launcher shown above. The
 operator-selected launcher file is the entry trust root: callers must invoke it
