@@ -602,6 +602,27 @@ def test_fake_qbittorrent_malformed_bulk_mode_is_explicit(tmp_path: Path) -> Non
     assert fixture.client.read_counts == {"torrents.info": 1, "torrents_files": 1}
 
 
+def test_prepared_pass_retains_zero_read_endpoints_and_rejects_schema_drift(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path / "fixture", TINY_PROFILE, seed=114)
+    budgets = expected_endpoint_budgets(TINY_PROFILE)
+
+    runner._prepare_pass(fixture)
+
+    assert fixture.client.read_counts == dict.fromkeys(budgets, 0)
+    minimum_counts = {endpoint: budget.minimum for endpoint, budget in budgets.items()}
+    zero_endpoint = next(endpoint for endpoint, count in minimum_counts.items() if count == 0)
+    runner._validate_endpoint_budget(minimum_counts, budgets)
+
+    missing = dict(minimum_counts)
+    missing.pop(zero_endpoint)
+    with pytest.raises(GauntletSafetyError, match="locked budget schema"):
+        runner._validate_endpoint_budget(missing, budgets)
+
+    unknown = {**minimum_counts, "unknown": 0}
+    with pytest.raises(GauntletSafetyError, match="locked budget schema"):
+        runner._validate_endpoint_budget(unknown, budgets)
+
+
 def test_paired_comparison_passes_supported_api_reduction_and_retains_all_samples() -> None:
     quality_bar = load_quality_bar(QUALITY_BAR_PATH)
     runs = _paired_runs()

@@ -282,6 +282,7 @@ def _prepare_pass(fixture: GauntletFixture) -> None:
     """Reset evaluator-visible application state before one pipeline pass."""
     clear_cache()
     fixture.client.reset_read_counts()
+    fixture.client.read_counts.update({endpoint: 0 for endpoint in expected_endpoint_budgets(fixture.profile)})
 
 
 def _execute_pipeline(fixture: GauntletFixture) -> _PipelineResult:
