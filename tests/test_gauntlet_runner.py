@@ -2609,6 +2609,44 @@ def test_source_launcher_rejects_modified_worktree_bootstrap_before_execution(
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("changed_interface", [None, "descriptor", "path"])
+def test_worktree_bootstrap_compares_ctime_only_within_stat_interface(
+    monkeypatch: pytest.MonkeyPatch,
+    changed_interface: str | None,
+) -> None:
+    payload = b"trusted bootstrap\n"
+
+    def file_stat(*, ctime_ns: int) -> os.stat_result:
+        return cast(
+            os.stat_result,
+            SimpleNamespace(
+                st_dev=7,
+                st_ino=11,
+                st_mode=stat.S_IFREG | 0o600,
+                st_size=len(payload),
+                st_file_attributes=0,
+                st_mtime_ns=13,
+                st_ctime_ns=ctime_ns,
+            ),
+        )
+
+    path_before = file_stat(ctime_ns=17)
+    descriptor_before = file_stat(ctime_ns=19)
+    path_after = file_stat(ctime_ns=23 if changed_interface == "path" else 17)
+    descriptor_after = file_stat(ctime_ns=29 if changed_interface == "descriptor" else 19)
+    monkeypatch.setattr(launcher.os, "lstat", Mock(side_effect=(path_before, path_after)))
+    monkeypatch.setattr(launcher.os, "open", Mock(return_value=31))
+    monkeypatch.setattr(launcher.os, "fstat", Mock(side_effect=(descriptor_before, descriptor_after)))
+    monkeypatch.setattr(launcher.os, "read", Mock(side_effect=(payload, b"")))
+    monkeypatch.setattr(launcher.os, "close", Mock())
+
+    if changed_interface is None:
+        assert launcher._read_worktree_bootstrap(Path("bootstrap.py")) == payload
+    else:
+        with pytest.raises(SystemExit, match=launcher.BOOTSTRAP_VERIFICATION_ERROR):
+            launcher._read_worktree_bootstrap(Path("bootstrap.py"))
+
+
 @pytest.mark.parametrize(
     ("worktree_source", "trusted_source", "expected"),
     [

@@ -173,6 +173,23 @@ def _stable_file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int
     )
 
 
+def _cross_interface_file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    """Return identity fields comparable between path and descriptor stats.
+
+    Modern Windows path stats expose creation time as ``st_ctime_ns``, while
+    descriptor stats expose metadata change time. Callers compare ctime only
+    between repeated observations from the same stat interface.
+    """
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_mode,
+        file_stat.st_size,
+        getattr(file_stat, "st_file_attributes", 0),
+        file_stat.st_mtime_ns,
+    )
+
+
 def _read_worktree_bootstrap(path: Path) -> bytes:  # noqa: C901
     try:
         path_before = os.lstat(path)
@@ -194,7 +211,7 @@ def _read_worktree_bootstrap(path: Path) -> bytes:  # noqa: C901
         if (
             _entry_is_redirecting(descriptor_before)
             or not stat.S_ISREG(descriptor_before.st_mode)
-            or _stable_file_identity(descriptor_before) != _stable_file_identity(path_before)
+            or _cross_interface_file_identity(descriptor_before) != _cross_interface_file_identity(path_before)
         ):
             raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR)
         payload = bytearray()
@@ -213,10 +230,11 @@ def _read_worktree_bootstrap(path: Path) -> bytes:  # noqa: C901
             os.close(descriptor)
         except OSError as error:
             raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR) from error
-    expected_identity = _stable_file_identity(path_before)
+    expected_path_identity = _stable_file_identity(path_before)
+    expected_descriptor_identity = _stable_file_identity(descriptor_before)
     if (
-        _stable_file_identity(descriptor_after) != expected_identity
-        or _stable_file_identity(path_after) != expected_identity
+        _stable_file_identity(descriptor_after) != expected_descriptor_identity
+        or _stable_file_identity(path_after) != expected_path_identity
         or len(payload) != path_before.st_size
     ):
         raise SystemExit(BOOTSTRAP_VERIFICATION_ERROR)
