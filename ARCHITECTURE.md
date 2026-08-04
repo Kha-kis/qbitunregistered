@@ -679,6 +679,15 @@ protected trees before and after the crossover; each isolated child closes the
 preflight-to-import gap by checking immediately before imports and after
 evaluation.
 
+The operator-selected source launcher is the entry trust root. Before it starts
+the import bootstrap, it requires the bootstrap to be the same regular, visible
+stage-0 blob in `HEAD` and the index, compares stable worktree bytes with that
+immutable blob, and executes the immutable bytes through isolated Python's
+standard input. Git repository-selection variables are removed from both the
+launcher validation and the child environment. This prevents an ordinary or
+staged bootstrap modification from executing before repository identity and
+protected-source validation begin.
+
 The paired coordinator accepts execution only from the validated import
 bootstrap. A one-use process-local state binds the exact protected finder,
 sanitized import path, source location, and site/safe-path interpreter flags

@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory moves under a protected root, suppress contextless overflowed
   child diagnostics, and bind installed dependency contents across every
   crossover child.
+- The source launcher now verifies its downstream import bootstrap against the
+  matching regular, visible stage-0 `HEAD` and index blob, rejects modified
+  worktree bytes and inherited Git repository redirection before execution, and
+  runs the immutable blob through isolated Python standard input.
 
 ## [2.2.1] - 2026-07-29
 

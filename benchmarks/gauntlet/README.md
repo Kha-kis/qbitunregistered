@@ -67,10 +67,16 @@ link; directories and special files are rejected before evaluation. Ordinary
 non-paired output retains automatic parent creation.
 
 Paired mode must start through the source-only launcher shown above. The
-launcher removes inherited Python injection variables and starts the
-coordinator with a fresh temporary bytecode cache before any repository package
-can be imported. The coordinator and every measured child then start with
-Python's site initialization disabled and unsafe path prepending blocked. A
+operator-selected launcher file is the entry trust root: callers must invoke it
+from the intended clean checkout. Before executing downstream repository code,
+the launcher requires `import_bootstrap.py` to be the same regular, visible
+stage-0 blob in both `HEAD` and the index, verifies the stable worktree bytes
+against that immutable blob, and supplies the immutable blob bytes to isolated
+Python over standard input. It also removes inherited Python injection variables
+and Git repository-selection variables, and starts the coordinator with a fresh
+temporary bytecode cache before any repository package can be imported. The
+coordinator and every measured child then start with Python's site initialization
+disabled and unsafe path prepending blocked. A
 source-only finder binds the `benchmarks` and `qbitunregistered` package trees
 to the selected worktree without adding its repository root to `sys.path`.
 Interpreter-owned standard-library paths, including the standard-library zip

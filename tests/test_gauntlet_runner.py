@@ -2493,6 +2493,110 @@ def test_source_launcher_ignores_timestamp_valid_parent_bytecode(
     assert list(cache_parent.iterdir()) == []
 
 
+def test_source_launcher_rejects_modified_worktree_bootstrap_before_execution(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    gauntlet_root = repository_root / "benchmarks" / "gauntlet"
+    qbitunregistered_root = repository_root / "qbitunregistered"
+    invocation_root = tmp_path / "invocation"
+    marker = tmp_path / "modified-bootstrap-ran"
+    gauntlet_root.mkdir(parents=True)
+    qbitunregistered_root.mkdir()
+    invocation_root.mkdir()
+    (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
+    (gauntlet_root / "__init__.py").write_text("", encoding="utf-8")
+    (gauntlet_root / "__main__.py").write_text('print("canonical evidence")\n', encoding="utf-8")
+    (qbitunregistered_root / "__init__.py").write_text("", encoding="utf-8")
+    assert launcher.__file__ is not None
+    launcher_path = gauntlet_root / "launcher.py"
+    launcher_path.write_bytes(Path(launcher.__file__).read_bytes())
+    bootstrap_path = gauntlet_root / "import_bootstrap.py"
+    bootstrap_path.write_bytes(Path(launcher.__file__).with_name("import_bootstrap.py").read_bytes())
+    _commit_gauntlet_test_repository(repository_root)
+    clean_environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
+    clean_environment["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    clean = subprocess.run(
+        [sys.executable, "-I", str(launcher_path)],
+        cwd=invocation_root,
+        env=clean_environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert clean.returncode == 0
+    assert clean.stdout.strip() == "canonical evidence"
+    assert clean.stderr == ""
+
+    bootstrap_path.write_text(
+        "\n".join(
+            (
+                "from pathlib import Path",
+                f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                "print('fabricated evidence')",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == " M benchmarks/gauntlet/import_bootstrap.py\n"
+
+    modified = subprocess.run(
+        [sys.executable, "-I", str(launcher_path)],
+        cwd=invocation_root,
+        env=clean_environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert modified.returncode == 1
+    assert modified.stdout == ""
+    assert modified.stderr.strip() == "gauntlet import bootstrap could not be verified"
+    assert "Traceback" not in modified.stderr
+    assert str(repository_root) not in modified.stderr
+    assert not marker.exists()
+
+    redirected_repository = tmp_path / "redirected-repository"
+    redirected_bootstrap = redirected_repository / "benchmarks" / "gauntlet" / "import_bootstrap.py"
+    redirected_bootstrap.parent.mkdir(parents=True)
+    (redirected_repository / "qbitunregistered").mkdir()
+    (redirected_repository / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
+    (redirected_repository / "qbitunregistered" / "__init__.py").write_text("", encoding="utf-8")
+    redirected_bootstrap.write_bytes(bootstrap_path.read_bytes())
+    _commit_gauntlet_test_repository(redirected_repository)
+    redirected_environment = {
+        **clean_environment,
+        "GIT_DIR": str(redirected_repository / ".git"),
+        "GIT_WORK_TREE": str(repository_root),
+    }
+
+    redirected = subprocess.run(
+        [sys.executable, "-I", str(launcher_path)],
+        cwd=invocation_root,
+        env=redirected_environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert redirected.returncode == 1
+    assert redirected.stdout == ""
+    assert redirected.stderr.strip() == "gauntlet import bootstrap could not be verified"
+    assert "Traceback" not in redirected.stderr
+    assert str(repository_root) not in redirected.stderr
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize(("child_returncode", "expected_returncode"), [(2, 2), (-15, 143)])
 def test_source_launcher_strips_injection_spawns_once_and_cleans_cache(
     tmp_path: Path,
@@ -2505,18 +2609,29 @@ def test_source_launcher_strips_injection_spawns_once_and_cleans_cache(
     monkeypatch.setenv("PYTHONPATH", "/inherited/injection")
     monkeypatch.setenv("PythonStartup", "/inherited/startup.py")
     monkeypatch.setenv("pythonwarnings", "ignore")
+    monkeypatch.setenv("git_dir", "/redirected/git-dir")
+    monkeypatch.setenv("GiT_WoRk_TrEe", "/redirected/worktree")
     monkeypatch.setenv(
         launcher.ISOLATED_PARENT_CACHE_ENV.lower(),
         "/inherited/parent-cache",
+    )
+    trusted_bootstrap = b"# trusted bootstrap\n"
+    monkeypatch.setattr(
+        launcher,
+        "_trusted_bootstrap_source",
+        lambda _repository_root: trusted_bootstrap,
     )
     calls: list[list[str]] = []
 
     def record_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
         calls.append(command)
+        assert kwargs["input"] == trusted_bootstrap
         environment = kwargs["env"]
         assert "PYTHONPATH" not in environment
         assert "PythonStartup" not in environment
         assert "pythonwarnings" not in environment
+        assert "git_dir" not in environment
+        assert "GiT_WoRk_TrEe" not in environment
         assert launcher.ISOLATED_PARENT_CACHE_ENV.lower() not in environment
         cache_root = Path(environment["PYTHONPYCACHEPREFIX"])
         assert cache_root.is_dir()
@@ -2536,7 +2651,7 @@ def test_source_launcher_strips_injection_spawns_once_and_cleans_cache(
         "-s",
         "-S",
         "-P",
-        str(REPOSITORY_ROOT / "benchmarks" / "gauntlet" / "import_bootstrap.py"),
+        "-",
         str(REPOSITORY_ROOT),
         json.dumps(launcher._dependency_import_paths()),
     ]
