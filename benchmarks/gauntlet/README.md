@@ -105,23 +105,29 @@ blocked. A
 source-only finder binds the `benchmarks` and `qbitunregistered` package trees
 to the selected worktree without adding its repository root to `sys.path`.
 Interpreter-owned standard-library paths, including the standard-library zip
-and native-module directory, remain first; ordinary installed dependency
-directories follow, and editable-install path hooks are not executed. Thus
-checkout-level modules cannot shadow standard-library or third-party imports,
-while the evaluated worktree remains authoritative for both first-party
-packages. The coordinator fixes one ordered set of installed dependency paths
-for the complete crossover and fingerprints every relative path and regular
-file's contents. Every child bootstrap recomputes that fingerprint immediately
-before and after evaluator execution, and the coordinator rechecks it after
-each child. Redirecting and special dependency entries fail closed. The
-artifact dependency digest binds this environment fingerprint to the identical
-`pyproject.toml` and `uv.lock` bytes. This launcher invocation is the only
-supported paired entry path. The coordinator rejects direct paired execution
-with `python -m benchmarks.gauntlet` unless the validated bootstrap supplies
-its one-use in-process isolation state and the exact interpreter flags,
+and native-module directory, remain first. The coordinator keeps ordinary
+installed dependency directories behind those paths without executing editable
+install hooks. Digest-bound measured children instead reject modules already
+loaded from dependency origins and remove those directories from `sys.path`;
+their imports are limited to the standard library and immutable protected
+first-party sources. Thus checkout-level or temporarily replaced dependency
+modules cannot enter measured execution.
+
+The coordinator fixes one ordered set of installed dependency paths for the
+complete crossover and fingerprints every relative path and regular file's
+contents. Every child bootstrap recomputes that fingerprint immediately before
+and after evaluator execution, and the coordinator rechecks it after each
+child. Redirecting and special dependency entries fail closed. The artifact
+dependency digest binds this environment fingerprint to the identical
+`pyproject.toml` and `uv.lock` bytes for comparability; it records observed
+contents but is not an installation-provenance claim. This launcher invocation
+is the only supported paired entry path. The coordinator rejects direct paired
+execution with `python -m benchmarks.gauntlet` unless the validated bootstrap
+supplies its one-use in-process isolation state and the exact interpreter flags,
 protected finder, and sanitized import paths still match. Caller-controlled
 cache environment markers cannot satisfy that proof. Ordinary non-paired
-execution remains available through the module command.
+execution remains available through the module command with installed
+dependency imports unchanged.
 
 The orchestrator uses two symmetric crossover blocks: `control, candidate,
 candidate, control`, then `candidate, control, control, candidate`

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.machinery
 import importlib.util
 import json
 import math
@@ -17,7 +18,7 @@ import tracemalloc
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
@@ -1515,6 +1516,67 @@ def test_dependency_environment_digest_rejects_windows_reparse_root(
         import_bootstrap.dependency_environment_digest((str(dependency_root),))
 
 
+@pytest.mark.parametrize("location_kind", ["module-file", "spec-origin", "zip-origin", "namespace-path"])
+def test_dependency_isolation_rejects_preloaded_module_origins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    location_kind: str,
+) -> None:
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_root.mkdir(parents=True)
+    module = ModuleType("preloaded_dependency")
+    module_path = dependency_root / "preloaded_dependency.py"
+    if location_kind == "module-file":
+        module.__file__ = str(module_path)
+    elif location_kind == "spec-origin":
+        module.__spec__ = importlib.machinery.ModuleSpec(
+            module.__name__,
+            loader=None,
+            origin=str(module_path),
+        )
+    elif location_kind == "zip-origin":
+        module.__spec__ = importlib.machinery.ModuleSpec(
+            module.__name__,
+            loader=None,
+            origin=str(dependency_root / "dependencies.zip" / "preloaded_dependency.py"),
+        )
+    else:
+        module.__spec__ = importlib.machinery.ModuleSpec(
+            module.__name__,
+            loader=None,
+            is_package=True,
+        )
+        assert module.__spec__.submodule_search_locations is not None
+        module.__spec__.submodule_search_locations.append(str(dependency_root / "preloaded_dependency"))
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    with pytest.raises(SystemExit, match=f"^{import_bootstrap.DEPENDENCY_ISOLATION_ERROR}$"):
+        import_bootstrap._reject_preloaded_dependency_modules((str(dependency_root.resolve()),))
+
+
+def test_dependency_isolation_fails_closed_on_origin_resolution_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_root.mkdir(parents=True)
+    module = ModuleType("unresolvable_dependency")
+    module_path = dependency_root / "unresolvable_dependency.py"
+    module.__file__ = str(module_path)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    original_resolve = Path.resolve
+
+    def fail_selected_origin(path: Path, strict: bool = False) -> Path:
+        if path == module_path:
+            raise OSError("private origin failure")
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", fail_selected_origin)
+
+    with pytest.raises(SystemExit, match=f"^{import_bootstrap.DEPENDENCY_ISOLATION_ERROR}$"):
+        import_bootstrap._reject_preloaded_dependency_modules((str(dependency_root),))
+
+
 def test_import_bootstrap_maps_valid_tracked_packages_and_modules(
     tmp_path: Path,
 ) -> None:
@@ -2388,8 +2450,7 @@ def test_import_bootstrap_rejects_dependency_tampering_without_traceback(
     if tamper_stage == "during":
         main_lines.extend(
             [
-                "import dependency",
-                'Path(dependency.__file__).write_text("VALUE = 2\\n", encoding="utf-8")',
+                f'Path({str(dependency_file)!r}).write_text("VALUE = 2\\n", encoding="utf-8")',
             ]
         )
     (gauntlet_root / "__main__.py").write_text("\n".join(main_lines) + "\n", encoding="utf-8")
@@ -2426,6 +2487,71 @@ def test_import_bootstrap_rejects_dependency_tampering_without_traceback(
     assert completed.stderr.strip() == (f"gauntlet dependency environment changed {tamper_stage} evaluation")
     assert "Traceback" not in completed.stderr
     assert marker.exists() is (tamper_stage == "during")
+
+
+def test_digest_bound_bootstrap_never_imports_swap_restored_dependency(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_root.mkdir(parents=True)
+    dependency_name = "gauntlet_swap_dependency"
+    dependency_file = dependency_root / f"{dependency_name}.py"
+    replacement_file = tmp_path / "replacement.py"
+    original_file = tmp_path / "original.py"
+    outcome_marker = tmp_path / "import-outcome"
+    execution_marker = tmp_path / "replacement-executed"
+    canonical_bytes = b'VALUE = "verified"\n'
+    dependency_file.write_bytes(canonical_bytes)
+    replacement_file.write_text(
+        "\n".join(
+            (
+                "from pathlib import Path",
+                f'Path({str(execution_marker)!r}).write_text("executed", encoding="utf-8")',
+                'VALUE = "swapped"',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_import_bootstrap_fixture(
+        repository_root,
+        "\n".join(
+            (
+                "import importlib",
+                "from pathlib import Path",
+                f"dependency_file = Path({str(dependency_file)!r})",
+                f"replacement_file = Path({str(replacement_file)!r})",
+                f"original_file = Path({str(original_file)!r})",
+                "dependency_file.replace(original_file)",
+                "replacement_file.replace(dependency_file)",
+                "try:",
+                "    try:",
+                f"        dependency = importlib.import_module({dependency_name!r})",
+                "    except ModuleNotFoundError:",
+                '        outcome = "unavailable"',
+                "    else:",
+                '        outcome = f"loaded:{dependency.VALUE}"',
+                "finally:",
+                "    dependency_file.replace(replacement_file)",
+                "    original_file.replace(dependency_file)",
+                f'Path({str(outcome_marker)!r}).write_text(outcome, encoding="utf-8")',
+            )
+        )
+        + "\n",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+    dependency_paths = (str(dependency_root.resolve()),)
+    expected_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+
+    completed = _run_import_bootstrap_fixture(repository_root, dependency_root)
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    assert outcome_marker.read_text(encoding="utf-8") == "unavailable"
+    assert not execution_marker.exists()
+    assert dependency_file.read_bytes() == canonical_bytes
+    assert import_bootstrap.dependency_environment_digest(dependency_paths) == expected_digest
 
 
 @requires_descriptor_no_follow
@@ -2497,7 +2623,7 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     assert all(not path.exists() for path in pycache_roots)
 
 
-def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
+def test_controlled_bootstrap_isolates_paired_dependencies_and_preserves_ordinary_imports(
     tmp_path: Path,
 ) -> None:
     repository_root = tmp_path / "repository"
@@ -2521,7 +2647,10 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
                 "import json",
                 ("bootstrap_state = " f"sys.modules.get({import_bootstrap.COORDINATOR_BOOTSTRAP_MODULE!r})"),
                 ("bootstrap_accepted = bootstrap_state is not None " "and bootstrap_state.accept(__file__)"),
-                "import schedule",
+                "try:",
+                "    import schedule",
+                "except ModuleNotFoundError:",
+                "    schedule = None",
                 "import statistics",
                 "import qbitunregistered",
                 "print(json.dumps({",
@@ -2532,8 +2661,8 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
                     '    "flags": {"no_site": sys.flags.no_site, '
                     '"no_user_site": sys.flags.no_user_site, "safe_path": sys.flags.safe_path},'
                 ),
-                '    "third_party": getattr(schedule, "ORIGIN", "installed-dependency"),',
-                '    "third_party_file": schedule.__file__,',
+                '    "third_party": None if schedule is None else getattr(schedule, "ORIGIN", "installed-dependency"),',
+                '    "third_party_file": None if schedule is None else schedule.__file__,',
                 '    "statistics_file": statistics.__file__,',
                 '    "statistics_marker": getattr(statistics, "ORIGIN", "stdlib"),',
                 '    "path": sys.path,',
@@ -2627,21 +2756,27 @@ def test_controlled_bootstrap_ignores_root_shadows_and_orders_import_paths(
         }
         assert result["first_party"] == "selected-worktree"
         assert Path(result["first_party_file"]).is_relative_to(selected_package)
-        assert result["third_party"] == "installed-dependency"
-        assert Path(result["third_party_file"]) != repository_root / "schedule.py"
         assert result["statistics_marker"] == "stdlib"
         assert Path(result["statistics_file"]) != shadow_source
-        import_paths = [Path(value) for value in result["path"]]
-        assert repository_root not in import_paths
-        third_party_path = Path(result["third_party_file"]).resolve()
-        dependency_index = _installed_dependency_index(import_paths, third_party_path)
-        stdlib_zip_indexes = [index for index, path in enumerate(import_paths) if path.suffix.casefold() == ".zip"]
-        dynamic_library_indexes = [
-            index for index, path in enumerate(import_paths) if path.name.casefold() in {"lib-dynload", "dlls"}
-        ]
-        assert stdlib_zip_indexes
-        assert dynamic_library_indexes
-        assert max(*stdlib_zip_indexes, *dynamic_library_indexes) < dependency_index
+        assert repository_root not in [Path(value) for value in result["path"]]
+
+    controlled_paths = [Path(value) for value in controlled_result["path"]]
+    assert controlled_result["third_party"] is None
+    assert controlled_result["third_party_file"] is None
+    assert dependency_root.resolve() not in controlled_paths
+
+    assert launched_result["third_party"] == "installed-dependency"
+    assert Path(launched_result["third_party_file"]) != repository_root / "schedule.py"
+    launched_paths = [Path(value) for value in launched_result["path"]]
+    third_party_path = Path(launched_result["third_party_file"]).resolve()
+    dependency_index = _installed_dependency_index(launched_paths, third_party_path)
+    stdlib_zip_indexes = [index for index, path in enumerate(launched_paths) if path.suffix.casefold() == ".zip"]
+    dynamic_library_indexes = [
+        index for index, path in enumerate(launched_paths) if path.name.casefold() in {"lib-dynload", "dlls"}
+    ]
+    assert stdlib_zip_indexes
+    assert dynamic_library_indexes
+    assert max(*stdlib_zip_indexes, *dynamic_library_indexes) < dependency_index
 
 
 def test_installed_dependency_index_prefers_nested_site_packages(

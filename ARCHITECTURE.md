@@ -715,7 +715,13 @@ dependency digest combines that environment fingerprint with the identical
 `pyproject.toml` and `uv.lock` inputs from all three worktrees. The coordinator
 also requires evaluator sources, the quality bar, and both dependency inputs to
 remain regular stage-0 index entries without skip-worktree or assume-unchanged
-flags in every worktree.
+flags in every worktree. Digest-bound measured children reject modules already
+loaded from those dependency directories and exclude the directories from
+`sys.path`; their measured import closure is the standard library plus the
+immutable protected-source finder. The environment fingerprint therefore
+records and compares the installed tree but does not claim package provenance.
+Ordinary non-paired launcher execution retains its installed-dependency import
+behavior.
 
 The invoking checkout's quality bar is captured as a regular, visible stage-0
 blob that must exactly match the originally recorded evaluator commit. One

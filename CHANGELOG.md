@@ -46,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stable through bound publication. Paired thresholds and their recorded digest
   now come from the same stage-0 blob pinned to the invoking checkout's captured
   commit, with exact provenance revalidated before comparison and publication.
+  Digest-bound measured children now exclude installed dependency directories
+  from import resolution and reject modules preloaded from them, while retaining
+  the installed-tree fingerprint for paired-environment comparability. Ordinary
+  non-paired launcher dependency imports are unchanged.
 - The source launcher now verifies its downstream import bootstrap against the
   matching regular, visible stage-0 `HEAD` and index blob, rejects modified
   worktree bytes and inherited Git repository redirection before execution, and

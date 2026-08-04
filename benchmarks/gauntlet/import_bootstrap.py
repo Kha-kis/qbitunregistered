@@ -23,6 +23,7 @@ SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 DEPENDENCY_DIGEST_ARGUMENT = "--dependency-environment-digest"
 EXPECTED_REPOSITORY_COMMIT_ARGUMENT = "--expected-repository-commit"
 PROTECTED_IMPORT_ERROR = "gauntlet protected imports could not be verified"
+DEPENDENCY_ISOLATION_ERROR = "gauntlet dependency imports could not be isolated"
 COORDINATOR_BOOTSTRAP_MODULE = "_qbitunregistered_gauntlet_coordinator_bootstrap"
 _DIGEST_CHUNK_BYTES = 1024 * 1024
 _GIT_TIMEOUT_SECONDS = 10
@@ -191,6 +192,44 @@ def _current_dependency_digest(dependency_paths: Sequence[str]) -> str:
         return dependency_environment_digest(dependency_paths)
     except DependencyEnvironmentError as error:
         raise SystemExit("gauntlet dependency environment could not be verified") from error
+
+
+def _module_import_locations(module: ModuleType) -> list[object]:
+    locations: list[object] = [getattr(module, "__file__", None)]
+    spec = getattr(module, "__spec__", None)
+    if spec is None:
+        return locations
+    locations.append(spec.origin)
+    if spec.submodule_search_locations is not None:
+        try:
+            locations.extend(spec.submodule_search_locations)
+        except TypeError as error:
+            raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from error
+    return locations
+
+
+def _resolved_module_location(value: object) -> Path | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        path = Path(value)
+        return path.resolve() if path.is_absolute() else None
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from error
+
+
+def _reject_preloaded_dependency_modules(dependency_paths: Sequence[str]) -> None:
+    """Reject modules already loaded from a dependency directory."""
+    dependency_roots = tuple(Path(value) for value in dependency_paths)
+    for module in sys.modules.values():
+        if not isinstance(module, ModuleType):
+            continue
+        for value in _module_import_locations(module):
+            resolved_path = _resolved_module_location(value)
+            if resolved_path is not None and any(
+                resolved_path == root or resolved_path.is_relative_to(root) for root in dependency_roots
+            ):
+                raise SystemExit(DEPENDENCY_ISOLATION_ERROR)
 
 
 def _validate_protected_package_trees(repository_root: Path) -> None:
@@ -685,6 +724,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         expected_dependency_digest = _validated_dependency_digest(resolved_arguments.pop(0))
         if _current_dependency_digest(dependency_paths) != expected_dependency_digest:
             raise SystemExit("gauntlet dependency environment changed before evaluation")
+        _reject_preloaded_dependency_modules(dependency_paths)
     interpreter_paths = _validate_interpreter_paths(repository_root)
     _require_safe_package_trees(repository_root)
     try:
@@ -700,9 +740,9 @@ def main(arguments: Sequence[str] | None = None) -> None:
         expected_revision,
     )
 
-    # The worktree root is deliberately absent: only its protected first-party
-    # packages outrank ordinary installed dependencies.
-    sys.path[:] = [*interpreter_paths, *dependency_paths]
+    # The worktree root is deliberately absent. Digest-bound measured children
+    # use no installed import roots; ordinary mode keeps them behind stdlib.
+    sys.path[:] = interpreter_paths if expected_dependency_digest is not None else [*interpreter_paths, *dependency_paths]
     sys.meta_path.insert(0, protected_finder)
     if COORDINATOR_BOOTSTRAP_MODULE in sys.modules:
         raise SystemExit(PROTECTED_IMPORT_ERROR)
