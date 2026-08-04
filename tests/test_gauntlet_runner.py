@@ -628,11 +628,18 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     monkeypatch.setattr("benchmarks.gauntlet.paired._dependency_import_paths", lambda: dependency_paths)
     monkeypatch.setattr("benchmarks.gauntlet.paired._reject_ignored_python_sources", lambda _root: None)
     monkeypatch.setattr("benchmarks.gauntlet.paired._reject_noncanonical_index_inputs", lambda _root: None)
+    monkeypatch.setattr(
+        paired,
+        "verified_import_bootstrap_source",
+        lambda _root, _commit: b"# immutable bootstrap\n",
+    )
 
     def fake_run_child(root: Path, **kwargs):
         role = "control" if root == control_root else "candidate"
         assert kwargs["dependency_paths"] == dependency_paths
         assert kwargs["dependency_environment_digest"] == dependency_environment_identity
+        assert kwargs["bootstrap_source"] == b"# immutable bootstrap\n"
+        assert kwargs["expected_commit"] == identities[root].commit
         calls.append(role)
         return copy.deepcopy(expected_runs[len(calls) - 1]["result"])
 
@@ -901,6 +908,11 @@ def test_paired_runner_rechecks_importable_extensions_after_each_child(
     monkeypatch.setattr("benchmarks.gauntlet.paired._reject_ignored_python_sources", lambda _root: None)
     monkeypatch.setattr("benchmarks.gauntlet.paired._reject_noncanonical_index_inputs", lambda _root: None)
     monkeypatch.setattr(
+        paired,
+        "verified_import_bootstrap_source",
+        lambda _root, _commit: b"# immutable bootstrap\n",
+    )
+    monkeypatch.setattr(
         "benchmarks.gauntlet.paired._current_dependency_environment_digest",
         lambda _paths: "a" * 64,
     )
@@ -958,6 +970,11 @@ def test_paired_runner_rejects_dependency_environment_tampering_between_children
     monkeypatch.setattr(paired, "_dependency_import_paths", lambda: (str(dependency_root),))
     monkeypatch.setattr(paired, "_reject_ignored_python_sources", lambda _root: None)
     monkeypatch.setattr(paired, "_reject_noncanonical_index_inputs", lambda _root: None)
+    monkeypatch.setattr(
+        paired,
+        "verified_import_bootstrap_source",
+        lambda _root, _commit: b"# immutable bootstrap\n",
+    )
     real_load_quality_bar = paired._load_canonical_quality_bar
     loaded_quality_bars: list[Path] = []
     digested_quality_bars: list[Path] = []
@@ -1413,6 +1430,111 @@ def test_import_bootstrap_maps_valid_tracked_packages_and_modules(
         match=f"^{import_bootstrap.PROTECTED_IMPORT_ERROR}$",
     ):
         finder.find_spec("Qbitunregistered.operations.nested", [])
+
+
+def test_verified_child_bootstrap_executes_original_commit_bytes_from_stdin(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_root.mkdir(parents=True)
+    _write_import_bootstrap_fixture(repository_root, 'print("trusted child")\n')
+    _commit_gauntlet_test_repository(repository_root)
+    expected_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    bootstrap_path = repository_root / "benchmarks" / "gauntlet" / "import_bootstrap.py"
+    trusted_source = import_bootstrap.verified_import_bootstrap_source(
+        repository_root,
+        expected_commit,
+    )
+    bootstrap_path.write_text('raise SystemExit("mutable worktree bootstrap ran")\n', encoding="utf-8")
+    dependency_paths = (str(dependency_root.resolve()),)
+    dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-s",
+            "-S",
+            "-P",
+            "-",
+            str(repository_root),
+            json.dumps(dependency_paths),
+            import_bootstrap.EXPECTED_REPOSITORY_COMMIT_ARGUMENT,
+            expected_commit,
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            dependency_digest,
+        ],
+        cwd=tmp_path,
+        env={
+            **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        input=trusted_source,
+        check=False,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == b"trusted child\n"
+    assert completed.stderr == b""
+
+
+def test_verified_child_bootstrap_rejects_head_and_index_drift_from_expected_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = tmp_path / "repository"
+    _write_import_bootstrap_fixture(repository_root, "")
+    _commit_gauntlet_test_repository(repository_root)
+    expected_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    bootstrap_path = repository_root / "benchmarks" / "gauntlet" / "import_bootstrap.py"
+    bootstrap_path.write_bytes(bootstrap_path.read_bytes() + b"\n# changed revision\n")
+    subprocess.run(["git", "add", str(bootstrap_path)], cwd=repository_root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Gauntlet Test",
+            "-c",
+            "user.email=gauntlet@example.invalid",
+            "commit",
+            "-qm",
+            "changed revision",
+        ],
+        cwd=repository_root,
+        check=True,
+    )
+    blob_reads: list[str] = []
+    real_read_git_blob = import_bootstrap._read_git_blob
+
+    def record_blob_read(root: Path, oid: str) -> bytes:
+        blob_reads.append(oid)
+        return real_read_git_blob(root, oid)
+
+    monkeypatch.setattr(import_bootstrap, "_read_git_blob", record_blob_read)
+
+    with pytest.raises(
+        import_bootstrap.ProtectedPackageTreeError,
+        match=f"^{import_bootstrap.PROTECTED_IMPORT_ERROR}$",
+    ):
+        import_bootstrap.verified_import_bootstrap_source(
+            repository_root,
+            expected_commit,
+        )
+
+    assert blob_reads == []
 
 
 def test_import_bootstrap_accepts_canonical_nul_terminated_stage_records(
@@ -2112,16 +2234,23 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     pycache_roots: list[Path] = []
     dependency_paths = paired._dependency_import_paths()
     dependency_environment_identity = import_bootstrap.dependency_environment_digest(dependency_paths)
+    bootstrap_source = b"# immutable bootstrap\n"
+    expected_commit = "a" * 40
 
     def fake_run(command, **kwargs):
         assert command[1:4] == ["-s", "-S", "-P"]
-        assert command[4] == str(tmp_path / "benchmarks" / "gauntlet" / "import_bootstrap.py")
+        assert command[4] == "-"
         assert command[5] == str(tmp_path)
         assert json.loads(command[6]) == list(dependency_paths)
         assert command[7:9] == [
+            import_bootstrap.EXPECTED_REPOSITORY_COMMIT_ARGUMENT,
+            expected_commit,
+        ]
+        assert command[9:11] == [
             import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
             dependency_environment_identity,
         ]
+        assert kwargs["input"] == bootstrap_source
         environment = kwargs["env"]
         assert environment["PYTHONNOUSERSITE"] == "1"
         assert environment["PYTHONHASHSEED"] == "0"
@@ -2148,6 +2277,8 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
             output=output,
             dependency_paths=dependency_paths,
             dependency_environment_digest=dependency_environment_identity,
+            bootstrap_source=bootstrap_source,
+            expected_commit=expected_commit,
         )
         for _ in range(2)
     ]
@@ -2381,6 +2512,8 @@ def test_paired_child_failure_reports_sanitized_stderr(
             output=output,
             dependency_paths=("dependencies",),
             dependency_environment_digest="a" * 64,
+            bootstrap_source=b"# immutable bootstrap\n",
+            expected_commit="a" * 40,
         )
 
     message = str(error_info.value)
@@ -2426,6 +2559,8 @@ def test_paired_child_failure_suppresses_contextless_truncated_stderr(
             output=output,
             dependency_paths=("dependencies",),
             dependency_environment_digest="a" * 64,
+            bootstrap_source=b"# immutable bootstrap\n",
+            expected_commit="a" * 40,
         )
 
     message = str(error_info.value)
@@ -2460,6 +2595,8 @@ def test_paired_child_failure_with_empty_stderr_reports_only_exit_code(
             output=output,
             dependency_paths=("dependencies",),
             dependency_environment_digest="a" * 64,
+            bootstrap_source=b"# immutable bootstrap\n",
+            expected_commit="a" * 40,
         )
 
 

@@ -691,6 +691,13 @@ protected-source validation begin. The bootstrap then requires the complete
 canonical protected Python path, mode, and object-ID map in the index to equal
 `HEAD` before it reads or imports any protected blob.
 
+Before every measured child, the coordinator captures `import_bootstrap.py`
+from the immutable blob map for that role's originally recorded commit and
+supplies those bytes through isolated Python standard input. The child pins all
+downstream protected imports and finder revalidations to the same commit, and
+the coordinator repeats repository and bootstrap validation after the child.
+No measured process executes the mutable worktree bootstrap path.
+
 The paired coordinator accepts execution only from the validated import
 bootstrap. A one-use process-local state binds the exact protected finder,
 sanitized import path, source location, and site/safe-path interpreter flags

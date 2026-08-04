@@ -37,7 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   atomically capture explicit and allocator-owned rollback targets before
   cleanup, retain prior-output recovery links after failed publication, suppress
   contextless overflowed child diagnostics, and bind installed dependency
-  contents across every crossover child.
+  contents across every crossover child. Each measured child now executes its
+  originally recorded commit's verified bootstrap blob through isolated Python
+  standard input and pins downstream protected imports to that same revision.
 - The source launcher now verifies its downstream import bootstrap against the
   matching regular, visible stage-0 `HEAD` and index blob, rejects modified
   worktree bytes and inherited Git repository redirection before execution, and

@@ -44,7 +44,10 @@ for package and traceback semantics, but it compiles only the captured index
 bytes and rechecks staged modes, object IDs, and the complete protected source
 set before every protected import and after evaluation. Before any protected
 blob is read or imported, the complete canonical Python path, mode, and object
-ID map must also exactly match `HEAD`. Skip-worktree,
+ID map must also exactly match the role's originally captured commit. Every
+measured child receives that commit's verified bootstrap blob through isolated
+Python standard input, and the coordinator repeats the same binding after the
+child returns. Skip-worktree,
 assume-unchanged, missing, ignored, native-only, namespace, redirected, or
 case-ambiguous protected imports fail closed without falling through to
 installed import finders.
@@ -86,8 +89,9 @@ checkout representation), and supplies the immutable blob bytes to isolated
 Python over standard input. It also removes inherited Python injection variables
 and Git repository-selection variables, and starts the coordinator with a fresh
 temporary bytecode cache before any repository package can be imported. The
-coordinator and every measured child then start with Python's site initialization
-disabled and unsafe path prepending blocked. A
+coordinator and every measured child then start from verified bootstrap blob
+bytes with Python's site initialization disabled and unsafe path prepending
+blocked. A
 source-only finder binds the `benchmarks` and `qbitunregistered` package trees
 to the selected worktree without adding its repository root to `sys.path`.
 Interpreter-owned standard-library paths, including the standard-library zip

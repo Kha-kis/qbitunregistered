@@ -35,8 +35,11 @@ from benchmarks.gauntlet.identity import (
 )
 from benchmarks.gauntlet.import_bootstrap import (
     DEPENDENCY_DIGEST_ARGUMENT,
+    EXPECTED_REPOSITORY_COMMIT_ARGUMENT,
     DependencyEnvironmentError,
+    ProtectedPackageTreeError,
     dependency_environment_digest,
+    verified_import_bootstrap_source,
 )
 from benchmarks.gauntlet.paired_evidence import (
     PairedEvidenceError,
@@ -846,6 +849,7 @@ def _run_child_with_bounded_stderr(
     *,
     repository_root: Path,
     environment: Mapping[str, str],
+    bootstrap_source: bytes | None = None,
 ) -> tuple[subprocess.CompletedProcess[bytes], bytes, bool]:
     try:
         read_descriptor, write_descriptor = os.pipe()
@@ -871,6 +875,7 @@ def _run_child_with_bounded_stderr(
             command,
             cwd=repository_root,
             env=environment,
+            input=bootstrap_source,
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=write_descriptor,
@@ -937,6 +942,8 @@ def _run_child(
     output: Path,
     dependency_paths: Sequence[str],
     dependency_environment_digest: str,
+    bootstrap_source: bytes,
+    expected_commit: str,
 ) -> dict[str, object]:
     environment = {
         key: value
@@ -950,9 +957,11 @@ def _run_child(
         "-s",
         "-S",
         "-P",
-        str(repository_root / "benchmarks" / "gauntlet" / "import_bootstrap.py"),
+        "-",
         str(repository_root),
         json.dumps(dependency_paths),
+        EXPECTED_REPOSITORY_COMMIT_ARGUMENT,
+        expected_commit,
         DEPENDENCY_DIGEST_ARGUMENT,
         dependency_environment_digest,
         "--profile",
@@ -974,6 +983,7 @@ def _run_child(
                 command,
                 repository_root=repository_root,
                 environment=environment,
+                bootstrap_source=bootstrap_source,
             )
     except (OSError, subprocess.SubprocessError) as error:
         raise PairedGauntletError("paired child evaluation could not run") from error
@@ -1086,14 +1096,24 @@ def run_paired_gauntlet(
     )
 
     roots = {"control": control_root, "candidate": candidate_root}
+    identities = {"control": control_identity, "candidate": candidate_identity}
     paired_runs: list[PairedRun] = []
     with tempfile.TemporaryDirectory(prefix="qbitunregistered-gauntlet-paired-") as temporary_root:
         for position, role in enumerate(PAIRED_ORDER):
             output = Path(temporary_root) / f"run-{position}.json"
             child_root = roots[role]
+            child_identity = identities[role]
+            _require_unchanged_identity(child_identity, child_root)
             _reject_unsafe_package_entries_in_roots((child_root,))
             _reject_ignored_python_sources(child_root)
             _reject_noncanonical_index_inputs(child_root)
+            try:
+                bootstrap_source = verified_import_bootstrap_source(
+                    child_root,
+                    child_identity.commit,
+                )
+            except ProtectedPackageTreeError as error:
+                raise PairedGauntletError("paired child bootstrap could not be verified") from error
             try:
                 child_result = _run_child(
                     child_root,
@@ -1103,8 +1123,11 @@ def run_paired_gauntlet(
                     output=output,
                     dependency_paths=dependency_paths,
                     dependency_environment_digest=dependency_environment_identity,
+                    bootstrap_source=bootstrap_source,
+                    expected_commit=child_identity.commit,
                 )
             finally:
+                _require_unchanged_identity(child_identity, child_root)
                 _reject_unsafe_package_entries_in_roots((child_root,))
                 _require_dependency_environment(
                     dependency_paths,
@@ -1112,6 +1135,15 @@ def run_paired_gauntlet(
                 )
                 _reject_ignored_python_sources(child_root)
                 _reject_noncanonical_index_inputs(child_root)
+                try:
+                    current_bootstrap_source = verified_import_bootstrap_source(
+                        child_root,
+                        child_identity.commit,
+                    )
+                except ProtectedPackageTreeError as error:
+                    raise PairedGauntletError("paired child bootstrap could not be verified") from error
+                if current_bootstrap_source != bootstrap_source:
+                    raise PairedGauntletError("paired child bootstrap changed during evaluation")
             try:
                 result = sanitize_child_result(child_result, quality_bar)
             except PairedEvidenceError as error:

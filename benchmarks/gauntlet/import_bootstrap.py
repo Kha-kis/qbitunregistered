@@ -21,6 +21,7 @@ from typing import Protocol
 PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
 SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 DEPENDENCY_DIGEST_ARGUMENT = "--dependency-environment-digest"
+EXPECTED_REPOSITORY_COMMIT_ARGUMENT = "--expected-repository-commit"
 PROTECTED_IMPORT_ERROR = "gauntlet protected imports could not be verified"
 COORDINATOR_BOOTSTRAP_MODULE = "_qbitunregistered_gauntlet_coordinator_bootstrap"
 _DIGEST_CHUNK_BYTES = 1024 * 1024
@@ -272,8 +273,11 @@ def _source_index_identity(
     return {fullname: (source.path, source.is_package, source.mode, source.oid) for fullname, source in sources.items()}
 
 
-def _head_protected_source_identities(repository_root: Path) -> dict[str, tuple[str, str]]:
-    """Return canonical protected Python blob identities from ``HEAD``."""
+def _revision_protected_source_identities(
+    repository_root: Path,
+    revision: str,
+) -> dict[str, tuple[str, str]]:
+    """Return canonical protected Python blob identities from one revision."""
     try:
         completed = subprocess.run(
             [
@@ -283,7 +287,7 @@ def _head_protected_source_identities(repository_root: Path) -> dict[str, tuple[
                 "--full-tree",
                 "-r",
                 "-z",
-                "HEAD",
+                revision,
                 "--",
                 *PROTECTED_PACKAGE_NAMES,
             ],
@@ -349,6 +353,7 @@ def _tracked_protected_sources(
     repository_root: Path,
     *,
     capture_source_bytes: bool = True,
+    expected_revision: str = "HEAD",
 ) -> dict[str, _ProtectedSource]:
     """Build the canonical protected-source map from Git's staged index."""
     try:
@@ -452,7 +457,7 @@ def _tracked_protected_sources(
     index_identities = {
         source.path.relative_to(repository_root).as_posix(): (source.mode, source.oid) for source in sources.values()
     }
-    if index_identities != _head_protected_source_identities(repository_root):
+    if index_identities != _revision_protected_source_identities(repository_root, expected_revision):
         raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
     if capture_source_bytes:
         sources = {
@@ -463,6 +468,30 @@ def _tracked_protected_sources(
             for fullname, source in sources.items()
         }
     return sources
+
+
+def _validated_repository_commit(value: str) -> str:
+    if len(value) not in {40, 64} or any(character not in "0123456789abcdef" for character in value):
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+    return value
+
+
+def verified_import_bootstrap_source(
+    repository_root: Path,
+    expected_commit: str,
+) -> bytes:
+    """Return bootstrap bytes bound to one exact repository commit and index."""
+    revision = _validated_repository_commit(expected_commit)
+    sources = _tracked_protected_sources(
+        repository_root,
+        capture_source_bytes=False,
+        expected_revision=revision,
+    )
+    source = sources.get("benchmarks.gauntlet.import_bootstrap")
+    expected_path = repository_root / "benchmarks" / "gauntlet" / "import_bootstrap.py"
+    if source is None or source.path != expected_path or source.is_package:
+        raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
+    return _read_git_blob(repository_root, source.oid)
 
 
 class _ProtectedSourceLoader(importlib.abc.SourceLoader):
@@ -497,9 +526,11 @@ class _WorktreePackageFinder(importlib.abc.MetaPathFinder):
         self,
         repository_root: Path,
         sources: Mapping[str, _ProtectedSource],
+        expected_revision: str = "HEAD",
     ) -> None:
         self._repository_root = repository_root
         self._sources = dict(sources)
+        self._expected_revision = expected_revision
         self._protected_names = frozenset(name.casefold() for name in PROTECTED_PACKAGE_NAMES)
 
     def find_spec(
@@ -534,6 +565,7 @@ class _WorktreePackageFinder(importlib.abc.MetaPathFinder):
         current_sources = _tracked_protected_sources(
             self._repository_root,
             capture_source_bytes=False,
+            expected_revision=self._expected_revision,
         )
         if _source_index_identity(current_sources) != _source_index_identity(self._sources):
             raise ProtectedPackageTreeError(PROTECTED_IMPORT_ERROR)
@@ -637,6 +669,15 @@ def main(arguments: Sequence[str] | None = None) -> None:
         repository_root,
     )
     expected_dependency_digest: str | None = None
+    expected_revision = "HEAD"
+    if resolved_arguments[:1] == [EXPECTED_REPOSITORY_COMMIT_ARGUMENT]:
+        resolved_arguments.pop(0)
+        if not resolved_arguments:
+            raise SystemExit(PROTECTED_IMPORT_ERROR)
+        try:
+            expected_revision = _validated_repository_commit(resolved_arguments.pop(0))
+        except ProtectedPackageTreeError:
+            raise SystemExit(PROTECTED_IMPORT_ERROR) from None
     if resolved_arguments[:1] == [DEPENDENCY_DIGEST_ARGUMENT]:
         resolved_arguments.pop(0)
         if not resolved_arguments:
@@ -647,10 +688,17 @@ def main(arguments: Sequence[str] | None = None) -> None:
     interpreter_paths = _validate_interpreter_paths(repository_root)
     _require_safe_package_trees(repository_root)
     try:
-        protected_sources = _tracked_protected_sources(repository_root)
+        protected_sources = _tracked_protected_sources(
+            repository_root,
+            expected_revision=expected_revision,
+        )
     except ProtectedPackageTreeError:
         raise SystemExit(PROTECTED_IMPORT_ERROR) from None
-    protected_finder = _WorktreePackageFinder(repository_root, protected_sources)
+    protected_finder = _WorktreePackageFinder(
+        repository_root,
+        protected_sources,
+        expected_revision,
+    )
 
     # The worktree root is deliberately absent: only its protected first-party
     # packages outrank ordinary installed dependencies.
