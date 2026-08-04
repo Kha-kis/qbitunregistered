@@ -500,7 +500,7 @@ def _installed_dependency_index(
     return most_specific_indexes[0]
 
 
-def test_fake_qbittorrent_bulk_response_embeds_exact_files_without_endpoint_calls(tmp_path: Path) -> None:
+def test_fake_qbittorrent_bulk_mapping_and_files_property_use_distinct_responses(tmp_path: Path) -> None:
     fixture = build_fixture(tmp_path / "fixture", TINY_PROFILE, seed=107)
     source_torrent = fixture.initial_torrents[0]
     expected_files = fixture.client.torrents_files(torrent_hash=source_torrent.hash)
@@ -513,6 +513,12 @@ def test_fake_qbittorrent_bulk_response_embeds_exact_files_without_endpoint_call
     exact_torrent = next(torrent for torrent in snapshot if torrent.hash == source_torrent.hash)
     assert exact_torrent["files"] == expected_files
     assert exact_torrent["files"] is not expected_files
+    assert fixture.client.read_counts == {"torrents.info": 1}
+    exact_property_files = exact_torrent.files
+    assert exact_property_files == expected_files
+    assert exact_property_files is not exact_torrent["files"]
+    with pytest.raises(AttributeError):
+        setattr(exact_torrent, "files", [])
     second_snapshot = fixture.client.torrents.info(include_files=True)
     assert isinstance(second_snapshot, list)
     second_exact = next(
@@ -521,7 +527,11 @@ def test_fake_qbittorrent_bulk_response_embeds_exact_files_without_endpoint_call
     assert second_exact is not exact_torrent
     assert second_exact["files"] == exact_torrent["files"]
     assert second_exact["files"] is not exact_torrent["files"]
-    assert fixture.client.read_counts == {"torrents.info": 2}
+    second_property_files = second_exact.files
+    assert second_property_files == exact_property_files
+    assert second_property_files is not exact_property_files
+    assert second_property_files is not second_exact["files"]
+    assert fixture.client.read_counts == {"torrents.info": 2, "torrents_files": 2}
 
 
 def test_fake_exact_metadata_allocates_fresh_decoded_responses(tmp_path: Path) -> None:
@@ -540,16 +550,26 @@ def test_fake_exact_metadata_allocates_fresh_decoded_responses(tmp_path: Path) -
 
 def test_fake_qbittorrent_legacy_and_unsupported_bulk_modes_preserve_fallback(tmp_path: Path) -> None:
     fixture = build_fixture(tmp_path / "fixture", TINY_PROFILE, seed=109)
+    source_torrent = fixture.initial_torrents[0]
+    expected_files = fixture.client.torrents_files(torrent_hash=source_torrent.hash)
+    fixture.client.reset_read_counts()
     fixture.client.set_bulk_files_mode("legacy_missing")
     snapshot = fixture.client.torrents.info(include_files=True)
 
     assert isinstance(snapshot, list)
     assert all(isinstance(torrent, FakeBulkTorrent) and "files" not in torrent for torrent in snapshot)
+    legacy_torrent = next(
+        torrent for torrent in snapshot if isinstance(torrent, FakeBulkTorrent) and torrent.hash == source_torrent.hash
+    )
+    legacy_property_files = legacy_torrent.files
+    assert legacy_property_files == expected_files
+    assert legacy_property_files is not expected_files
+    assert fixture.client.read_counts == {"torrents.info": 1, "torrents_files": 1}
     for torrent in fixture.initial_torrents[: TINY_PROFILE.exact_metadata_torrent_count]:
         fixture.client.torrents_files(torrent_hash=torrent.hash)
     assert fixture.client.read_counts == {
         "torrents.info": 1,
-        "torrents_files": TINY_PROFILE.exact_metadata_torrent_count,
+        "torrents_files": TINY_PROFILE.exact_metadata_torrent_count + 1,
     }
 
     fixture.client.reset_read_counts()
@@ -562,13 +582,24 @@ def test_fake_qbittorrent_legacy_and_unsupported_bulk_modes_preserve_fallback(tm
 
 def test_fake_qbittorrent_malformed_bulk_mode_is_explicit(tmp_path: Path) -> None:
     fixture = build_fixture(tmp_path / "fixture", TINY_PROFILE, seed=113)
+    source_torrent = fixture.initial_torrents[0]
+    expected_files = fixture.client.torrents_files(torrent_hash=source_torrent.hash)
+    fixture.client.reset_read_counts()
     fixture.client.set_bulk_files_mode("malformed")
 
     snapshot = fixture.client.torrents.info(include_files=True)
 
     assert isinstance(snapshot, list)
-    assert any(isinstance(torrent, FakeBulkTorrent) and isinstance(torrent["files"], dict) for torrent in snapshot)
+    malformed_torrent = next(
+        torrent for torrent in snapshot if isinstance(torrent, FakeBulkTorrent) and isinstance(torrent["files"], dict)
+    )
+    assert malformed_torrent["files"] == {"malformed": True}
     assert fixture.client.read_counts["torrents_files"] == 0
+    malformed_property_files = malformed_torrent.files
+    assert malformed_property_files == expected_files
+    assert malformed_property_files is not expected_files
+    assert malformed_property_files is not malformed_torrent["files"]
+    assert fixture.client.read_counts == {"torrents.info": 1, "torrents_files": 1}
 
 
 def test_paired_comparison_passes_supported_api_reduction_and_retains_all_samples() -> None:

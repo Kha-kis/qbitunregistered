@@ -189,14 +189,20 @@ class FakeTorrent:
 class FakeBulkTorrent(dict[str, object]):
     """Mapping-shaped qBittorrent torrent response with attribute access."""
 
-    def __init__(self, payload: Mapping[str, object]) -> None:
+    def __init__(self, payload: Mapping[str, object], client: FakeQBittorrentClient) -> None:
         super().__init__(payload)
+        self._client = client
         self.hash = cast(str, payload["hash"])
         self.name = cast(str, payload["name"])
         self.save_path = cast(str, payload["save_path"])
         self.content_path = cast(str, payload["content_path"])
         self.category = cast(str, payload["category"])
         self.tags = cast(str, payload["tags"])
+
+    @property
+    def files(self) -> list[Any]:
+        """Return fresh exact metadata through the canonical API property."""
+        return self._client.torrents_files(torrent_hash=self.hash)
 
 
 class _FakeApplication:
@@ -305,7 +311,7 @@ class FakeQBittorrentClient:
         decoded_payload = _fresh_decoded_payload(response_payload)
         if not isinstance(decoded_payload, list):
             raise TypeError("bulk torrent payload did not decode to a list")
-        return [FakeBulkTorrent(item) if isinstance(item, Mapping) else item for item in decoded_payload]
+        return [FakeBulkTorrent(item, self) if isinstance(item, Mapping) else item for item in decoded_payload]
 
     def reset_read_counts(self) -> None:
         """Clear reads while retaining mutation evidence."""
