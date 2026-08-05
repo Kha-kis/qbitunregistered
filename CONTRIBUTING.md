@@ -388,10 +388,12 @@ Releases are managed by maintainers:
    ```
 
 The release workflow verifies the tag, runs the tests and required type
-analysis, builds and checks both distributions, and attaches them to a GitHub
-release. Pre-release version tags are marked as GitHub pre-releases
-automatically. The project is not currently published to PyPI; adding another
-package index is a separate release-policy decision.
+analysis, builds and checks both distributions, generates an SPDX JSON SBOM for
+the wheel and a SHA-256 checksum manifest, records GitHub provenance and SBOM
+attestations, and attaches the artifacts to a GitHub release. Pre-release
+version tags are marked as GitHub pre-releases automatically. The project is
+not currently published to PyPI; adding another package index is a separate
+release-policy decision.
 
 ## Getting Help
 

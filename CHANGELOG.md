@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- GitHub releases now include SHA-256 checksums and an SPDX JSON wheel SBOM,
+  with GitHub build-provenance and SBOM attestations for independent artifact
+  verification. Release workflow actions are pinned to exact revisions.
+
 ## [2.3.0] - 2026-08-04
 
 ### Added

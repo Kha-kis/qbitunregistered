@@ -56,12 +56,26 @@ Confirm the installed version with:
 qbitunregistered --version
 ```
 
-The project is not currently published to PyPI. Tagged GitHub Releases include
-a wheel and source distribution. To install a downloaded wheel instead of a
-source checkout:
+The project is not currently published to PyPI. Releases created after v2.3.0
+include a wheel, source distribution, SHA-256 checksum manifest, and an SPDX
+JSON SBOM for the wheel. After downloading one release's assets, replace
+`X.Y.Z` below with that release's version, then verify and install the wheel:
 
 ```bash
-python -m pip install ./qbitunregistered-2.3.0-py3-none-any.whl
+WHEEL=qbitunregistered-X.Y.Z-py3-none-any.whl
+sha256sum --check SHA256SUMS
+gh attestation verify "$WHEEL" \
+  --repo Kha-kis/qbitunregistered
+python -m pip install "./$WHEEL"
+```
+
+GitHub also records the wheel's SBOM as an artifact attestation. Verify it with:
+
+```bash
+WHEEL=qbitunregistered-X.Y.Z-py3-none-any.whl
+gh attestation verify "$WHEEL" \
+  --repo Kha-kis/qbitunregistered \
+  --predicate-type https://spdx.dev/Document/v2.3
 ```
 
 ## Upgrading
