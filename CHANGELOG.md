@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1rc1] - 2026-08-05
+
 ### Changed
 
 - GitHub releases now include SHA-256 checksums and an SPDX JSON wheel SBOM,
@@ -474,7 +476,8 @@ This release represents a comprehensive overhaul focused on performance, securit
 
 *Note: This is the first release with a formal changelog. Previous versions are not documented here.*
 
-[Unreleased]: https://github.com/Kha-kis/qbitunregistered/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/Kha-kis/qbitunregistered/compare/v2.3.1rc1...HEAD
+[2.3.1rc1]: https://github.com/Kha-kis/qbitunregistered/compare/v2.3.0...v2.3.1rc1
 [2.3.0]: https://github.com/Kha-kis/qbitunregistered/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/Kha-kis/qbitunregistered/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/Kha-kis/qbitunregistered/compare/v2.1.1...v2.2.0
