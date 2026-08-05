@@ -82,6 +82,7 @@ jobs:
         id: syft
         env:
           GH_TOKEN: ${{ github.token }}
+          # Update the version and verified release-archive digest together.
           SYFT_ARCHIVE_SHA256: bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788
           SYFT_VERSION: 1.50.0
         shell: bash
