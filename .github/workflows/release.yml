@@ -81,7 +81,6 @@ jobs:
       - name: Install pinned Syft
         id: syft
         env:
-          GH_TOKEN: ${{ github.token }}
           # Update the version and verified release-archive digest together.
           SYFT_ARCHIVE_SHA256: bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788
           SYFT_VERSION: 1.50.0
@@ -90,10 +89,9 @@ jobs:
           syft_dir="${RUNNER_TEMP}/syft-v${SYFT_VERSION}"
           archive="${syft_dir}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
           mkdir "$syft_dir"
-          gh release download "v${SYFT_VERSION}" \
-            --repo anchore/syft \
-            --pattern "syft_${SYFT_VERSION}_linux_amd64.tar.gz" \
-            --dir "$syft_dir"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$archive" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
           printf '%s  %s\n' "$SYFT_ARCHIVE_SHA256" "$archive" | sha256sum --check -
           tar -xzf "$archive" -C "$syft_dir" syft
           printf 'path=%s\n' "${syft_dir}/syft" >> "$GITHUB_OUTPUT"
