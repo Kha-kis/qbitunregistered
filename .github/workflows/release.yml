@@ -8,16 +8,21 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     name: Verify release tag and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-          cache: pip
       - name: Verify tag matches package version
         run: |
           python - <<'PY'
@@ -46,17 +51,83 @@ jobs:
     name: Build release distributions
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      attestations: write # Publish provenance and SBOM attestations.
+      contents: read
+      id-token: write # Sign attestations with GitHub's OIDC identity.
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-          cache: pip
       - run: python -m pip install --upgrade pip "setuptools>=83" build twine
       - run: python -m build
       - run: python -m twine check dist/*
+      - name: Resolve release artifact names
+        id: release_artifacts
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          wheel="dist/qbitunregistered-${version}-py3-none-any.whl"
+          wheel_root="${RUNNER_TEMP}/qbitunregistered-${version}-wheel"
+          sbom="dist/qbitunregistered-${version}-wheel.spdx.json"
+          test -f "$wheel"
+          mkdir "$wheel_root"
+          unzip -q "$wheel" -d "$wheel_root"
+          printf 'wheel=%s\nwheel_root=%s\nsbom=%s\n' \
+            "$wheel" "$wheel_root" "$sbom" >> "$GITHUB_OUTPUT"
+      - name: Install pinned Syft
+        id: syft
+        env:
+          # Update the version and verified release-archive digest together.
+          SYFT_ARCHIVE_SHA256: bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788
+          SYFT_VERSION: 1.50.0
+        shell: bash
+        run: |
+          syft_dir="${RUNNER_TEMP}/syft-v${SYFT_VERSION}"
+          archive="${syft_dir}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          mkdir "$syft_dir"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$archive" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$SYFT_ARCHIVE_SHA256" "$archive" | sha256sum --check -
+          tar -xzf "$archive" -C "$syft_dir" syft
+          printf 'path=%s\n' "${syft_dir}/syft" >> "$GITHUB_OUTPUT"
+      - name: Generate wheel SBOM
+        env:
+          SBOM_PATH: ${{ steps.release_artifacts.outputs.sbom }}
+          SYFT_PATH: ${{ steps.syft.outputs.path }}
+          WHEEL_ROOT: ${{ steps.release_artifacts.outputs.wheel_root }}
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          "$SYFT_PATH" scan \
+            "dir:$WHEEL_ROOT" \
+            --source-name qbitunregistered \
+            --source-version "$version" \
+            --output "spdx-json=$SBOM_PATH"
+          jq --exit-status --arg version "$version" '
+            .spdxVersion == "SPDX-2.3" and
+            any(.packages[]; .name == "qbitunregistered" and .versionInfo == $version)
+          ' "$SBOM_PATH"
+      - name: Generate release checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum -- *.whl *.tar.gz *.spdx.json > SHA256SUMS
+      - name: Attest release build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Attest wheel SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.release_artifacts.outputs.wheel }}
+          sbom-path: ${{ steps.release_artifacts.outputs.sbom }}
       - name: Upload distributions
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-package-distributions
           path: dist/
@@ -67,10 +138,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Create the release and upload its assets.
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: python-package-distributions
           path: dist/
