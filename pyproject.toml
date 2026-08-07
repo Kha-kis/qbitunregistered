@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: System :: Systems Administration",
 ]
 dependencies = [
-    "qbittorrent-api>=2026.5.3",  # API-key authentication support
+    "qbittorrent-api>=2026.8.0",  # API-key authentication support
     "schedule>=1.2.0",
     "tqdm>=4.66.3",  # Security fix for CLI injection vulnerability
     "apprise>=1.9,<2",
