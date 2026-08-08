@@ -70,11 +70,12 @@ Each pass emits and validates:
 
 - fixture-manifest digest;
 - exact preview action digest over action, tag, and torrent hash;
+- exact shadow-execution action digest from a fresh in-memory fake;
 - dry-run reconciliation digest over returned per-path counts and sanitized
   operator-visible action counts;
 - candidate counts for default tags, cross-seed tags, and torrent-only deletes;
-- explicit zero values for every qBittorrent mutation counter and filesystem
-  mutation;
+- explicit zero values for every primary qBittorrent mutation counter and
+  every filesystem-write, network-connect, and network-DNS attempt class;
 - ordinary `torrents.info`, `torrents.info.include_trackers`, and
   `torrents_trackers` request counts.
 
@@ -82,16 +83,18 @@ The supported-response profile accepts the current control transport
 `(include_trackers=0, exact=N)` and a future bulk transport
 `(include_trackers=1, exact=0)`. It rejects more than one bulk request,
 more than `N` exact requests, and redundant bulk plus `N` exact requests. The
-paired optimization target is one combined tracker-metadata request. Runtime
-must be at most 50% of the paired control median, peak memory at most 125%,
-relative MAD at most 0.15, and relative range at most 0.50. Thresholds are not
-relaxed to admit a candidate.
+paired optimization target is structurally one combined tracker-metadata
+request in every candidate pass while every control pass performs exactly `N`
+exact reads. Synthetic runtime is a regression guard with a maximum candidate
+ratio of `1.0`; peak memory remains at most 125%, relative MAD at most 0.15,
+and relative range at most 0.50. No artificial latency or network service is
+introduced to manufacture a wall-clock improvement.
 
-The exact execution-time tag hashes are not present in current dry-run log
-messages. The evaluator therefore locks exact preview hashes and independently
-locks execution per-path results plus tag-action counts. Production cache reuse
-binds both phases to the same tracker snapshot. This observability limitation is
-reported explicitly rather than hidden.
+The primary path remains a genuine dry-run. Because its logs do not expose
+exact execution-time tag hashes, one untimed shadow calls the real mutating
+production boundary against a fresh fake, records normalized per-hash endpoint
+arguments, and requires them to match the fixture-independent preview oracle.
+The shadow cannot delete files and contributes no runtime or memory samples.
 
 ## Compatibility and failure semantics
 
@@ -124,7 +127,7 @@ The two mutating-preflight tests may call the operation with `dry_run=False`
 only against the in-memory fake and must raise before any mutation endpoint.
 
 qBittorrent's standalone tracker endpoint prepends DHT, PeX, and LSD pseudo
-records that are absent from `includeTrackers`. Their statuses are only 0 or 2,
+records that are absent from `includeTrackers`. Their statuses are literal `0`,
 so they can never satisfy unregistered detection, which requires status 4 or 5.
 The later production optimization can therefore use validated embedded real
 trackers for unregistered checks without synthesizing pseudo records. Tracker
@@ -153,3 +156,39 @@ optimization branch is created. The production branch then runs paired
 `tracker-quick` and `tracker-full` comparisons against the merged evaluator.
 Accessing the live qBittorrent instance for the protected dry-run remains a
 separate human approval gate.
+
+## Critic hardening round 2
+
+The primary dry-run remains the measured production path, but aggregate log
+counts are not sufficient execution identity evidence. After the measured
+passes, the evaluator runs one untimed mutating shadow execution against a
+fresh in-memory fake. The fake records normalized per-hash arguments supplied
+to `torrents_add_tags` and `torrents_delete`; the evaluator compares the full
+record set and its digest with the fixture-derived preview oracle. This shadow
+is excluded from runtime and peak-memory measurements, uses
+`delete_files=False`, and has no filesystem or network implementation.
+
+All production calls made by measured passes, the shadow execution, and every
+semantic scenario run inside one process-audit boundary. While active, the
+boundary denies every filesystem write or mutation event regardless of path or
+directory descriptor, plus socket connection and DNS-resolution events. It
+records only sanitized attempt classes and counts. Successful artifacts lock
+all such counters to zero; denied attempts fail the evaluator without retaining
+paths, hostnames, addresses, or payloads.
+
+Real tracker mappings mirror Web API 2.15.1 with `next_announce`,
+`min_announce`, and deterministic nested endpoint objects in both exact and
+embedded responses. Every response remains freshly decoded down to nested
+objects. Torrent roles are ordered by a stable seed/index hash rather than by
+role prefix, with an action-bearing record forced to the tail. This makes
+truncated or default-empty bulk caches fail the existing complete action and
+reconciliation oracles.
+
+Tracker quality-bar profiles lock their exact tier, fixture digest, preview
+action digest, shadow execution digest, isolation schema, and complete
+transport alternatives. Endpoint collapse from `N` exact calls to one bulk
+call is the structural optimization gate. Synthetic runtime is only a CPU and
+runtime regression guard: before a candidate exists its maximum paired ratio
+is `1.0`; peak memory remains at most `1.25`. No artificial latency or local
+network service is part of the evaluator. A real wall-clock improvement can be
+accepted only from separately approved paired protected live dry-run evidence.

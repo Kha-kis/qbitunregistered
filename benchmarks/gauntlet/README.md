@@ -64,25 +64,33 @@ The current control transport performs no ordinary torrent-list read, no bulk
 `N` torrents. A supported optimization performs one `includeTrackers` read and
 no exact tracker reads. The evaluator rejects more than one bulk read, more
 than `N` exact reads, or redundant bulk plus exact reads. The locked target is
-one combined tracker-metadata request, at most 50% of the paired control
-runtime, and at most 125% of its peak memory; the existing variance limits also
-apply.
+one combined tracker-metadata request in every candidate pass while every
+control pass performs exactly `N` exact reads. Synthetic runtime is a
+CPU/regression guard capped at the paired control runtime, and peak memory is
+capped at 125% of control; the existing variance limits also apply. The
+evaluator does not add artificial latency or a local network service. Real
+wall-clock improvement requires separately approved protected live dry-run
+evidence.
 
 ### Evidence semantics
 
+- `tier` locks whether a profile is a round or candidate workload.
 - `fixture_manifest_digest` identifies the deterministic fixture, while
   `intended_action_digest` locks the exact preview action, tag, and torrent-hash
   tuples.
+- `execution_action_digest` locks the normalized per-hash arguments observed
+  during one untimed mutating shadow execution against a fresh fake. It must
+  equal the independent preview oracle and is excluded from timing and memory.
 - `workload` records the locked profile size, and `candidate_counts` records
   the independently expected default-tag, cross-seed-tag, and torrent-only
   deletion targets.
-- `reconciliation.digest` locks execution per-path results and sanitized
-  operator-visible action counts. Dry-run logs do not expose exact tag hashes,
-  so the preview digest and execution reconciliation are deliberately separate;
-  both phases use the same execution-scoped tracker snapshot.
+- `reconciliation.digest` locks primary dry-run per-path results and sanitized
+  operator-visible action counts.
 - `endpoint_counters`, per-pass endpoint counters, and
-  `mutation_counters` prove the selected transport and require zero qBittorrent
-  and filesystem mutations.
+  `mutation_counters` prove the selected transport and require zero primary
+  qBittorrent mutations. `isolation_counters` require zero filesystem-write,
+  network-connect, and network-DNS attempts for measured passes, the shadow,
+  and every semantic scenario.
 - Runtime statistics retain all five untraced samples. Peak memory comes from a
   separate traced, untimed pass. Fixture construction, manifest verification,
   and semantic safety scenarios are outside the measured interval.
@@ -260,8 +268,11 @@ reports only a bounded excerpt with paths, credential-like values, control
 sequences, and URL user information redacted.
 
 Runtime pools all 20 samples for each role and compares their medians with the
-locked `0.50` target. Each four-run block must independently meet that same
-target, preventing a favorable later phase from hiding an unfavorable one.
+profile target. Tracker profiles use `1.0` as a CPU/regression ceiling because
+endpoint collapse is their structural optimization gate; orphan profiles keep
+their existing `0.50` target. Each four-run block must independently meet the
+selected profile target, preventing a favorable later phase from hiding an
+unfavorable one.
 The relative range across each role's four run medians must stay within the
 existing profile `relative_range_max`.
 
@@ -281,8 +292,9 @@ descriptor, strictly validated at every nested level, and reconstructed before
 it is retained. Arbitrary child fields cannot flow into the paired artifact.
 
 A self-comparison should use two isolated clean worktrees at revisions with
-identical production code. It is a stability check: it should produce ratios
-near `1.0` and therefore is not expected to pass the `0.50` optimization target.
+identical production code. It is a stability check: ratios should be near
+`1.0`; it cannot satisfy the tracker transport gate because candidate passes
+must use one bulk request while control passes must use exact requests.
 
 ## qBittorrent file metadata fixture
 

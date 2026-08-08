@@ -48,8 +48,8 @@ from qbitunregistered.operations.orphaned import (
 )
 
 SCHEMA_NAME = "qbitunregistered.gauntlet.result"
-SCHEMA_VERSION = 4
-EVALUATOR_VERSION = "1.4.0"
+SCHEMA_VERSION = 5
+EVALUATOR_VERSION = "1.5.0"
 DEFAULT_SEED = 20_260_729
 DEFAULT_SAMPLES = 5
 _RESULT_STAGING_PREFIX = ".qbit-gauntlet-"
@@ -178,6 +178,8 @@ class GauntletResult(TypedDict):
     maximum_runtime_seconds: float
     median_absolute_deviation_seconds: float
     peak_memory_bytes: int
+    execution_action_digest: NotRequired[str]
+    isolation_counters: NotRequired[dict[str, int]]
     scenarios: NotRequired[dict[str, object]]
     schema: str
     schema_version: int

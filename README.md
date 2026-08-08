@@ -672,6 +672,13 @@ If you encounter issues, check the following:
 
 Your contributions make this project better! Feel free to report bugs, suggest features, or submit pull requests. For major changes, please open an issue first to discuss what you'd like to change.
 
+Tracker batching changes are evaluated with deterministic `tracker-quick` and
+`tracker-full` gauntlets before any protected live dry-run. The evaluator locks
+the preview and fresh-fake shadow execution actions, globally denies filesystem
+writes and network access during production calls, and requires paired control
+and candidate passes to prove the exact-to-bulk endpoint collapse. See the
+[gauntlet guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation).
+
 ## License
 
 This project is released under the MIT License. See the LICENSE file for more details.

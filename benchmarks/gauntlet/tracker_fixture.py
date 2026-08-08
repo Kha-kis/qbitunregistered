@@ -142,7 +142,10 @@ class FakeTrackerBulkTorrent(dict[str, object]):
     @property
     def trackers(self) -> object:
         """Expose the embedded field without normalizing malformed metadata."""
-        return self["trackers"]
+        try:
+            return self["trackers"]
+        except KeyError as error:
+            raise AttributeError("trackers") from error
 
 
 EmbeddedTrackersMode = Literal["supported", "omitted", "rejected", "malformed"]
@@ -213,6 +216,7 @@ class FakeTrackerClient:
         self.embedded_trackers_mode = embedded_trackers_mode
         self.read_counts: Counter[str] = Counter({endpoint: 0 for endpoint in TRACKER_READ_ENDPOINTS})
         self.mutation_counts: Counter[str] = Counter({endpoint: 0 for endpoint in MUTATING_ENDPOINTS})
+        self.execution_action_records: list[TrackerActionRecord] = []
         self.torrents = _FakeTrackerTorrents(self)
         self.application: Any = None
         self.torrent_categories: Any = None
@@ -272,11 +276,42 @@ class FakeTrackerClient:
     def _record_mutation(self, endpoint: str) -> None:
         self.mutation_counts[endpoint] += 1
 
-    def torrents_add_tags(self, *_args: Any, **_kwargs: Any) -> None:
-        self._record_mutation("torrents_add_tags")
+    @staticmethod
+    def _normalized_strings(value: object, description: str) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if not isinstance(value, Sequence) or isinstance(value, (bytes, bytearray)):
+            raise TypeError(f"{description} must be a string or sequence of strings")
+        resolved = list(value)
+        if any(not isinstance(item, str) or not item for item in resolved):
+            raise TypeError(f"{description} must contain non-empty strings")
+        return cast(list[str], resolved)
 
-    def torrents_delete(self, *_args: Any, **_kwargs: Any) -> None:
+    def torrents_add_tags(self, torrent_hashes: object, tags: object, **_kwargs: Any) -> None:
+        """Record the complete normalized tag endpoint arguments in memory."""
+        self._record_mutation("torrents_add_tags")
+        for tag in self._normalized_strings(tags, "tags"):
+            for torrent_hash in self._normalized_strings(torrent_hashes, "torrent_hashes"):
+                self.execution_action_records.append(
+                    {
+                        "action": "add_tag",
+                        "tag": tag,
+                        "torrent_hash": torrent_hash,
+                    }
+                )
+
+    def torrents_delete(self, delete_files: bool, torrent_hashes: object, **_kwargs: Any) -> None:
+        """Record the complete normalized delete endpoint arguments in memory."""
         self._record_mutation("torrents_delete")
+        action = "delete_torrent_with_files" if delete_files else "delete_torrent_only"
+        for torrent_hash in self._normalized_strings(torrent_hashes, "torrent_hashes"):
+            self.execution_action_records.append(
+                {
+                    "action": action,
+                    "tag": DELETE_TAG,
+                    "torrent_hash": torrent_hash,
+                }
+            )
 
     def torrents_pause(self, *_args: Any, **_kwargs: Any) -> None:
         self._record_mutation("torrents_pause")
@@ -385,19 +420,58 @@ def _real_trackers(index: int, role: Literal["exact", "prefix", "healthy"]) -> l
         "healthy": "",
     }[role]
     statuses = ((primary_status, primary_message), (2, ""), (0, ""))
-    return [
-        {
-            "url": f"https://tracker-{index:05d}-{record_index}.invalid/announce",
-            "status": status,
-            "tier": record_index,
-            "num_peers": 10 + record_index,
-            "num_seeds": 20 + record_index,
-            "num_leeches": record_index,
-            "num_downloaded": 30 + record_index,
-            "msg": message,
-        }
-        for record_index, (status, message) in enumerate(statuses)
-    ]
+    trackers: list[dict[str, object]] = []
+    for record_index, (status, message) in enumerate(statuses):
+        next_announce = 120 + (index % 300) + record_index
+        min_announce = 30 + record_index
+        endpoints = [
+            {
+                "name": f"endpoint-{address_family}",
+                "updating": False,
+                "status": status,
+                "msg": message,
+                "bt_version": 2,
+                "num_peers": 10 + record_index + endpoint_index,
+                "num_seeds": 20 + record_index + endpoint_index,
+                "num_leeches": record_index + endpoint_index,
+                "num_downloaded": 30 + record_index + endpoint_index,
+                "next_announce": next_announce + endpoint_index,
+                "min_announce": min_announce,
+            }
+            for endpoint_index, address_family in enumerate(("ipv4", "ipv6"))
+        ]
+        trackers.append(
+            {
+                "url": f"https://tracker-{index:05d}-{record_index}.invalid/announce",
+                "status": status,
+                "tier": record_index,
+                "num_peers": 10 + record_index,
+                "num_seeds": 20 + record_index,
+                "num_leeches": record_index,
+                "num_downloaded": 30 + record_index,
+                "msg": message,
+                "next_announce": next_announce,
+                "min_announce": min_announce,
+                "endpoints": endpoints,
+            }
+        )
+    return trackers
+
+
+def _interleaved_response_order(
+    torrents: Sequence[TrackerTorrent],
+    *,
+    seed: int,
+    action_hashes: set[str],
+) -> list[TrackerTorrent]:
+    """Return stable hash-shuffled roles with one action target at the tail."""
+    ordered = sorted(
+        torrents,
+        key=lambda torrent: hashlib.sha256(f"gauntlet:tracker:response-order:{seed}:{torrent.hash}".encode("ascii")).digest(),
+    )
+    tail_index = max(index for index, torrent in enumerate(ordered) if torrent.hash in action_hashes)
+    ordered.append(ordered.pop(tail_index))
+    return ordered
 
 
 def build_tracker_fixture(
@@ -444,8 +518,10 @@ def build_tracker_fixture(
         )
         trackers_by_hash[torrent_hash] = _real_trackers(index, role)
 
+    action_hashes = {_torrent_hash(seed, index) for index in range(profile.default_tag_count + profile.cross_seed_tag_count)}
+    interleaved_torrents = _interleaved_response_order(torrents, seed=seed, action_hashes=action_hashes)
     client = FakeTrackerClient(
-        torrents,
+        interleaved_torrents,
         trackers_by_hash,
         embedded_trackers_mode=embedded_trackers_mode,
     )
@@ -453,7 +529,7 @@ def build_tracker_fixture(
         root=root,
         profile=profile,
         seed=seed,
-        initial_torrents=tuple(torrents),
+        initial_torrents=tuple(interleaved_torrents),
         client=client,
     )
 

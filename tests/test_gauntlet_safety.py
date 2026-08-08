@@ -7,6 +7,7 @@ import importlib
 import json
 import logging
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -113,7 +114,7 @@ def test_tracker_evaluator_rejects_transient_create_remove_attempts(
 
     monkeypatch.setattr(tracker_runner, "_execute_pipeline", create_then_remove)
 
-    with pytest.raises(runner.GauntletSafetyError, match="filesystem mutation"):
+    with pytest.raises(runner.GauntletSafetyError, match="filesystem write"):
         tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
 
     assert not marker.exists()
@@ -145,11 +146,209 @@ def test_tracker_evaluator_rejects_write_restore_attempts_independent_of_final_d
     monkeypatch.setattr(tracker_runner, "_execute_pipeline", write_then_restore)
     monkeypatch.setattr(tracker_runner, "_filesystem_digest", lambda _root: "stable-final-state")
 
-    with pytest.raises(runner.GauntletSafetyError, match="filesystem mutation"):
+    with pytest.raises(runner.GauntletSafetyError, match="filesystem write"):
         tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
 
     assert marker.read_bytes() == b"original"
     assert fixture.client.mutation_total == 0
+
+
+def test_tracker_evaluator_rejects_transient_writes_outside_fixture_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch root-scoped auditing treating an outside dry-run write as harmless."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    marker = tmp_path / "outside-transient-mutation"
+    real_execute_pipeline = tracker_runner._execute_pipeline
+
+    def create_then_remove_outside(current_fixture):
+        result = real_execute_pipeline(current_fixture)
+        marker.write_text("transient", encoding="utf-8")
+        marker.unlink()
+        return result
+
+    monkeypatch.setattr(tracker_runner, "_execute_pipeline", create_then_remove_outside)
+
+    with pytest.raises(runner.GauntletSafetyError, match="filesystem write") as error:
+        tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+    assert str(marker) not in str(error.value)
+    assert not marker.exists()
+
+
+def test_tracker_evaluator_rejects_descriptor_relative_write_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch descriptor-relative os.open bypassing lexical path resolution."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    outside = tmp_path / "descriptor-target"
+    outside.mkdir()
+    directory_fd = os.open(outside, os.O_RDONLY)
+    real_execute_pipeline = tracker_runner._execute_pipeline
+
+    def write_relative_to_descriptor(current_fixture):
+        result = real_execute_pipeline(current_fixture)
+        descriptor = os.open("transient", os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=directory_fd)
+        os.close(descriptor)
+        os.unlink("transient", dir_fd=directory_fd)
+        return result
+
+    monkeypatch.setattr(tracker_runner, "_execute_pipeline", write_relative_to_descriptor)
+    try:
+        with pytest.raises(runner.GauntletSafetyError, match="filesystem write"):
+            tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+    finally:
+        os.close(directory_fd)
+
+    assert not (outside / "transient").exists()
+
+
+def test_tracker_semantic_scenario_rejects_transient_filesystem_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch semantic production calls running outside the mutation audit."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    marker = tmp_path / "scenario-transient-mutation"
+    real_analyze_impact = tracker_runner.analyze_impact
+
+    def analyze_with_transient_write(*args, **kwargs):
+        marker.write_text("transient", encoding="utf-8")
+        marker.unlink()
+        return real_analyze_impact(*args, **kwargs)
+
+    monkeypatch.setattr(tracker_runner, "analyze_impact", analyze_with_transient_write)
+
+    with pytest.raises(runner.GauntletSafetyError, match="filesystem write") as error:
+        tracker_runner.evaluate_tracker_scenarios(fixture)
+
+    assert str(marker) not in str(error.value)
+    assert not marker.exists()
+
+
+def test_tracker_evaluator_rejects_primary_network_connect_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a measured production call attempting an external connection."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    real_execute_pipeline = tracker_runner._execute_pipeline
+
+    def connect_before_pipeline(current_fixture):
+        sys.audit("socket.connect", object(), ("forbidden.example.invalid", 443))
+        return real_execute_pipeline(current_fixture)
+
+    monkeypatch.setattr(tracker_runner, "_execute_pipeline", connect_before_pipeline)
+
+    with pytest.raises(runner.GauntletSafetyError, match="network connect") as error:
+        tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+    assert "forbidden.example.invalid" not in str(error.value)
+
+
+def test_tracker_semantic_scenario_rejects_network_dns_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a semantic production call attempting DNS resolution."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    real_analyze_impact = tracker_runner.analyze_impact
+
+    def resolve_before_analysis(*args, **kwargs):
+        sys.audit("socket.getaddrinfo", "forbidden.example.invalid", 443, 0, 0, 0)
+        return real_analyze_impact(*args, **kwargs)
+
+    monkeypatch.setattr(tracker_runner, "analyze_impact", resolve_before_analysis)
+
+    with pytest.raises(runner.GauntletSafetyError, match="network dns") as error:
+        tracker_runner.evaluate_tracker_scenarios(fixture)
+
+    assert "forbidden.example.invalid" not in str(error.value)
+
+
+def test_tracker_shadow_execution_rejects_same_path_hash_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch execution tagging a healthy same-path hash while preserving counts."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    profile = _tracker_safety_profile()
+    seed = 20_260_729
+    fixture = tracker_fixture.build_tracker_fixture(tmp_path / "tracker-fixture", profile, seed=seed)
+    cross_seed_hash = hashlib.sha256(f"gauntlet:tracker:torrent:{seed}:2".encode("ascii")).hexdigest()
+    healthy_pair_hash = hashlib.sha256(f"gauntlet:tracker:torrent:{seed}:4".encode("ascii")).hexdigest()
+    real_add_tags = tracker_fixture.FakeTrackerClient.torrents_add_tags
+
+    def add_tags_with_same_path_swap(client, *args, **kwargs):
+        torrent_hashes = list(kwargs.get("torrent_hashes", args[0] if args else ()))
+        tags = kwargs.get("tags", args[1] if len(args) > 1 else ())
+        if tags == ["unregistered:crossseeding"] and cross_seed_hash in torrent_hashes:
+            torrent_hashes[torrent_hashes.index(cross_seed_hash)] = healthy_pair_hash
+        return real_add_tags(client, torrent_hashes=torrent_hashes, tags=tags)
+
+    monkeypatch.setattr(tracker_fixture.FakeTrackerClient, "torrents_add_tags", add_tags_with_same_path_swap)
+
+    with pytest.raises(runner.GauntletSafetyError, match="execution action"):
+        tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+
+def test_tracker_shadow_execution_rejects_network_connect_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch the untimed mutating shadow escaping network isolation."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    real_add_tags = tracker_fixture.FakeTrackerClient.torrents_add_tags
+
+    def connect_before_adding_tags(client, *args, **kwargs):
+        sys.audit("socket.connect", object(), ("shadow.example.invalid", 443))
+        return real_add_tags(client, *args, **kwargs)
+
+    monkeypatch.setattr(tracker_fixture.FakeTrackerClient, "torrents_add_tags", connect_before_adding_tags)
+
+    with pytest.raises(runner.GauntletSafetyError, match="network connect") as error:
+        tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+    assert "shadow.example.invalid" not in str(error.value)
 
 
 def test_actual_cli_dry_run_keeps_qbittorrent_and_file_contents_unchanged(
@@ -513,10 +712,15 @@ def test_tracker_mutating_preflight_churn_raises_before_fake_mutation(tmp_path: 
     summary = analyze_impact(fixture.client, fixture.initial_torrents, config, ["unregistered"])
     assert summary.unregistered_deletion_plan is not None
     current = list(fixture.initial_torrents)
+    delete_index = next(
+        index
+        for index, torrent in enumerate(current)
+        if "tracker-delete" in {tag.strip() for tag in torrent.tags.split(",") if tag.strip()}
+    )
     if change == "disappear":
-        current = current[1:]
+        current.pop(delete_index)
     else:
-        current[0] = replace(current[0], tags="")
+        current[delete_index] = replace(current[delete_index], tags="")
     fixture.client.set_torrent_snapshot(current)
 
     with pytest.raises(SafetyCheckError, match="no longer available|Delete tag changed"):
@@ -587,7 +791,7 @@ def test_tracker_semantic_matrix_emits_only_normalized_sanitized_pass_evidence(t
         "tracker_change_snapshot_bound",
     }
     for evidence in scenarios.values():
-        assert set(evidence) == {"outcome", "action_digest", "endpoint_counters"}
+        assert set(evidence) == {"outcome", "action_digest", "endpoint_counters", "isolation_counters"}
         assert evidence["outcome"] == "pass"
         assert len(evidence["action_digest"]) == 64
         assert set(evidence["endpoint_counters"]) == {
@@ -596,6 +800,11 @@ def test_tracker_semantic_matrix_emits_only_normalized_sanitized_pass_evidence(t
             "torrents_trackers",
         }
         assert all(isinstance(count, int) and count >= 0 for count in evidence["endpoint_counters"].values())
+        assert evidence["isolation_counters"] == {
+            "filesystem_write_attempts": 0,
+            "network_connect_attempts": 0,
+            "network_dns_attempts": 0,
+        }
     assert fixture.client.mutation_total == 0
 
 

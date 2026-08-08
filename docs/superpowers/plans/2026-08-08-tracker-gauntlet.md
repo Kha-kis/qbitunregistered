@@ -20,7 +20,10 @@
 - `tracker-quick`: 1,300 torrents, 3,900 tracker records, 1,200 save-path groups, 200 default-tag targets, 100 cross-seed-tag targets, 13 torrent-only delete targets.
 - `tracker-full`: 13,000 torrents, 39,000 tracker records, 12,000 save-path groups, 2,000 default-tag targets, 1,000 cross-seed-tag targets, 130 torrent-only delete targets.
 - Supported-response API ceilings: at most one `torrents.info.include_trackers`, at most `N` `torrents_trackers`, ordinary `torrents.info` exactly zero, no redundant one-bulk-plus-`N` exact pattern; paired optimization target is one combined metadata request.
-- Performance targets remain runtime ≤ 50% of paired control, peak memory ≤ 125%, relative MAD ≤ 0.15, and relative range ≤ 0.50.
+- Paired tracker acceptance structurally requires every control pass to use
+  exactly `N` reads and every candidate pass to use one bulk read. Synthetic
+  runtime is a regression guard at ≤ 100% of paired control; peak memory
+  remains ≤ 125%, relative MAD ≤ 0.15, and relative range ≤ 0.50.
 - Raw benchmark output stays outside the repository and contains no credentials, tracker URLs from real systems, torrent names, or host paths.
 
 ---
@@ -292,3 +295,90 @@ credential, or raw benchmark artifact changes. Push the branch and open a PR
 describing Establish mode, exact profiles, safety evidence, endpoint baseline,
 review results, and the requirement to merge this evaluator before beginning the
 production optimization. Do not merge, tag, publish, or access the live instance.
+
+### Task 3: Critic hardening round 2
+
+**Files:**
+- Modify: `benchmarks/gauntlet/tracker_fixture.py`
+- Modify: `benchmarks/gauntlet/tracker_runner.py`
+- Modify: `benchmarks/gauntlet/baseline.py`
+- Modify: `benchmarks/gauntlet/paired_evidence.py`
+- Modify: `benchmarks/gauntlet/quality-bar.toml`
+- Modify: `tests/test_gauntlet_runner.py`
+- Modify: `tests/test_gauntlet_safety.py`
+- Modify: existing evaluator and project documentation named in Task 2
+
+**Interfaces:**
+- Produces exact untimed shadow-execution action records and `execution_action_digest` from a fresh fake fixture.
+- Produces sanitized `isolation_counters` for global filesystem-write, network-connect, and network-DNS attempt classes.
+- Extends scenario evidence with the same exact isolation-counter schema.
+- Locks `tier` and `execution_action_digest` in each tracker quality-bar profile.
+
+- [ ] **Step 1: Write safety regressions before evaluator edits**
+
+Add tests that make a same-path cross-seed/healthy hash swap at the fake mutation
+boundary, transiently write outside the fixture, write during a semantic
+scenario, call descriptor-relative `os.open`, and attempt socket connection and
+DNS resolution. Each test must exercise `evaluate_tracker_fixture` or
+`evaluate_tracker_scenarios` and expect `GauntletSafetyError` with only a
+sanitized attempt class.
+
+- [ ] **Step 2: Run the safety regressions and verify RED**
+
+Run the exact new pytest node IDs. Expected failures are acceptance of the
+swapped hash, path-scoped/out-of-scenario filesystem writes, or unguarded
+network calls; import and fixture-construction errors are not acceptable RED
+states.
+
+- [ ] **Step 3: Implement the shadow and production-boundary audit**
+
+Replace the root-scoped observer with an active global audit that raises on
+write/mutation, socket-connect, and DNS events. Scope it only to production
+calls. Add a fresh-fixture mutating shadow after measured passes; normalize
+batched fake mutation arguments into the existing per-hash action record shape,
+then compare records and digest with `expected_tracker_action_records(...)`.
+
+- [ ] **Step 4: Run the Step 2 nodes and verify GREEN**
+
+The regressions must pass, the primary pass must still show genuine
+`dry_run=True`, and the emitted primary mutation plus isolation counters must
+all be zero.
+
+- [ ] **Step 5: Write fixture and schema regressions before their edits**
+
+Add literal tests for the complete Web API 2.15.1 mapping fields and fresh
+nested identities, deterministic role interleaving with an action target at the
+tail, failure from a truncated/default-empty tracker cache, `AttributeError` for
+a missing fake attribute while the mapping key stays absent, exact quality-bar
+tier, execution digest, isolation keys, and paired/standalone rejection of
+missing, extra, or cross-kind evidence.
+
+- [ ] **Step 6: Run the fixture/schema nodes and verify RED**
+
+Expected failures are the three absent tracker fields, clustered response
+roles, permissive fake attribute behavior, missing quality fields, and the
+current `0.5` tracker runtime target.
+
+- [ ] **Step 7: Implement the fixture, schema, and methodology changes**
+
+Add deterministic `next_announce`, `min_announce`, and nested endpoint data;
+stable hash ordering with an action record at the tail; tracker-only execution
+and isolation evidence validation; exact tier matching; and tracker runtime
+target `1.0` while retaining memory `1.25`. Keep exact-only and one-bulk
+transports as the structural gate and do not introduce latency or networking.
+
+- [ ] **Step 8: Update documentation and locked deterministic values**
+
+Update this design, the gauntlet README, `CONTRIBUTING.md`, `ARCHITECTURE.md`,
+and `CHANGELOG.md`. Recompute only fixture/scenario digests changed by the
+specified deterministic payload/order/schema changes; do not derive a runtime
+threshold from candidate measurements.
+
+- [ ] **Step 9: Verify and commit one coherent evaluator-only change**
+
+Run focused and full pytest, Black, repository fatal and changed-file Flake8,
+BasedPyright CLI, mypy, a real BasedPyright LSP session over every changed
+Python file, pip-audit, Bandit, build, installed-wheel smoke, and
+`git diff --check`. Generate exact-only quick/full artifacts under `/tmp`, append
+the ignored report and progress ledger with sanitized evidence, and commit only
+evaluator/tests/docs/quality-bar files.

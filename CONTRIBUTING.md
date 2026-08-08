@@ -338,11 +338,12 @@ uv run python -m benchmarks.gauntlet \
     --output /tmp/qbitunregistered-tracker-full.json
 ```
 
-Results contain sanitized workload identity, intended-action digest, API read
-counts normalized per pass, mutation counters, sample median/minimum/maximum
-and median absolute deviation, and separately traced peak memory. Candidate
-identity covers the commit plus staged, unstaged, and untracked content without
-including raw paths or diffs in the result.
+Results contain sanitized workload identity and tier, intended and shadow
+execution-action digests, API read counts normalized per pass, mutation and
+global isolation counters, sample median/minimum/maximum and median absolute
+deviation, and separately traced peak memory. Candidate identity covers the
+commit plus staged, unstaged, and untracked content without including raw
+paths or diffs in the result.
 
 Compare an optimization candidate with the checked-in quality bar:
 
@@ -367,8 +368,9 @@ decision is a paired `tracker-full` run with clean control and candidate
 worktrees, using the isolated launcher command in the
 [gauntlet evaluator guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation).
 The exact-only control makes `N` tracker requests; the target uses one bulk
-request and no exact tracker requests while preserving all deterministic
-actions and fail-closed scenarios.
+request and no exact tracker requests in every paired pass while preserving all
+deterministic actions and fail-closed scenarios. Synthetic runtime is a
+regression guard at the control ratio, not evidence of live network speedup.
 
 Comparison validates the fixture and action oracles, measurement policy,
 environment, API budgets, and zero-mutation evidence before evaluating runtime

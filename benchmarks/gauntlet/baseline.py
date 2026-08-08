@@ -50,6 +50,11 @@ TRACKER_SCENARIO_NAMES = {
     "delete_tag_change_preflight",
     "tracker_change_snapshot_bound",
 }
+ISOLATION_COUNTER_KEYS = {
+    "filesystem_write_attempts",
+    "network_connect_attempts",
+    "network_dns_attempts",
+}
 COMMON_RESULT_KEYS = {
     "schema",
     "schema_version",
@@ -80,6 +85,11 @@ COMMON_RESULT_KEYS = {
     "median_absolute_deviation_seconds",
     "peak_memory_bytes",
 }
+TRACKER_RESULT_KEYS = {
+    "execution_action_digest",
+    "isolation_counters",
+    "scenarios",
+}
 ORPHAN_WORKLOAD_KEYS = {
     "torrents",
     "filesystem_files",
@@ -108,6 +118,7 @@ TRACKER_WORKLOAD_KEYS = {
 }
 COMMON_PROFILE_KEYS = {
     "kind",
+    "tier",
     "seed",
     "fixture_manifest_digest",
     "intended_action_digest",
@@ -163,15 +174,18 @@ class ProfileQualityBar:
     """Correctness oracle, baseline, and independent targets for one profile."""
 
     kind: Literal["orphan", "tracker"]
+    tier: str
     seed: int
     fixture_manifest_digest: str
     intended_action_digest: str
+    execution_action_digest: str | None
     reconciliation: Mapping[str, int | str]
     candidate_counts: Mapping[str, int]
     workload: Mapping[str, int]
     api_budgets: Mapping[str, EndpointBudget]
     allowed_tracker_transports: tuple[tuple[int, int], ...]
     scenario_action_digests: Mapping[str, str]
+    isolation_counters: Mapping[str, int]
     baseline: BaselineMeasurement
     runtime_baseline_fraction_max: float
     peak_memory_baseline_fraction_max: float
@@ -416,7 +430,13 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noq
         kind_specific_keys = (
             {"candidate_count", "api_budgets"}
             if kind == "orphan"
-            else {"candidate_counts", "api_evidence", "scenario_action_digests"}
+            else {
+                "candidate_counts",
+                "execution_action_digest",
+                "api_evidence",
+                "isolation_counters",
+                "scenario_action_digests",
+            }
         )
         if set(profile) != COMMON_PROFILE_KEYS | kind_specific_keys:
             raise QualityBarError(f"profiles.{profile_name} profile keys do not match the {kind} schema")
@@ -439,6 +459,8 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noq
             )
             allowed_tracker_transports: tuple[tuple[int, int], ...] = ()
             scenario_action_digests: dict[str, str] = {}
+            execution_action_digest: str | None = None
+            isolation_counters: dict[str, int] = {}
         else:
             candidate_counts = _integer_table(
                 profile.get("candidate_counts"),
@@ -469,6 +491,16 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noq
                 name: _sha256(value, f"profiles.{profile_name}.scenario_action_digests.{name}")
                 for name, value in scenario_table.items()
             }
+            execution_action_digest = _sha256(
+                profile.get("execution_action_digest"),
+                f"profiles.{profile_name}.execution_action_digest",
+            )
+            isolation_counters = _integer_table(
+                profile.get("isolation_counters"),
+                f"profiles.{profile_name}.isolation_counters",
+            )
+            if set(isolation_counters) != ISOLATION_COUNTER_KEYS or any(isolation_counters.values()):
+                raise QualityBarError(f"profiles.{profile_name}.isolation_counters must lock every attempt class to zero")
         workload = _integer_table(
             profile.get("workload"),
             f"profiles.{profile_name}.workload",
@@ -478,6 +510,7 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noq
             raise QualityBarError(f"profiles.{profile_name}.workload keys do not match the {kind} schema")
         profiles[profile_name] = ProfileQualityBar(
             kind=cast(Literal["orphan", "tracker"], kind),
+            tier=_string(profile.get("tier"), f"profiles.{profile_name}.tier"),
             seed=_integer(profile.get("seed"), f"profiles.{profile_name}.seed"),
             fixture_manifest_digest=_sha256(
                 profile.get("fixture_manifest_digest"),
@@ -487,12 +520,14 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noq
                 profile.get("intended_action_digest"),
                 f"profiles.{profile_name}.intended_action_digest",
             ),
+            execution_action_digest=execution_action_digest,
             candidate_counts=candidate_counts,
             workload=workload,
             reconciliation=reconciliation,
             api_budgets=api_budgets,
             allowed_tracker_transports=allowed_tracker_transports,
             scenario_action_digests=scenario_action_digests,
+            isolation_counters=isolation_counters,
             baseline=_baseline_measurement(
                 profile.get("baseline"),
                 f"profiles.{profile_name}.baseline",
@@ -623,21 +658,29 @@ def _runtime_tracker_scenarios(
         "torrents_trackers",
     }
     for name, raw_evidence in value.items():
-        if not isinstance(raw_evidence, dict) or set(raw_evidence) != {"outcome", "action_digest", "endpoint_counters"}:
+        if not isinstance(raw_evidence, dict) or set(raw_evidence) != {
+            "outcome",
+            "action_digest",
+            "endpoint_counters",
+            "isolation_counters",
+        }:
             return None
         action_digest = raw_evidence["action_digest"]
         endpoints = _mapping_of_ints(raw_evidence["endpoint_counters"])
+        isolation_counters = _mapping_of_ints(raw_evidence["isolation_counters"])
         if (
             raw_evidence["outcome"] != "pass"
             or action_digest != profile.scenario_action_digests.get(name)
             or endpoints is None
             or set(endpoints) != endpoint_keys
+            or isolation_counters != dict(profile.isolation_counters)
         ):
             return None
         sanitized[name] = {
             "outcome": "pass",
             "action_digest": action_digest,
             "endpoint_counters": endpoints,
+            "isolation_counters": isolation_counters,
         }
     return sanitized
 
@@ -687,9 +730,24 @@ def _safety_gate(result: Mapping[str, object]) -> GateResult:
     if mutations is None or set(mutations) != MUTATION_COUNTER_KEYS:
         return _gate("fail", "mutation counters are missing or malformed")
     total = sum(mutations.values())
+    if result.get("profile_kind") == "tracker":
+        isolation_counters = _mapping_of_ints(result.get("isolation_counters"))
+        if isolation_counters is None or set(isolation_counters) != ISOLATION_COUNTER_KEYS:
+            return _gate("fail", "isolation counters are missing or malformed")
+        total += sum(isolation_counters.values())
+        scenarios = result.get("scenarios")
+        if not isinstance(scenarios, dict) or set(scenarios) != TRACKER_SCENARIO_NAMES:
+            return _gate("fail", "scenario isolation counters are missing or malformed")
+        for evidence in scenarios.values():
+            if not isinstance(evidence, dict):
+                return _gate("fail", "scenario isolation counters are missing or malformed")
+            scenario_isolation = _mapping_of_ints(evidence.get("isolation_counters"))
+            if scenario_isolation is None or set(scenario_isolation) != ISOLATION_COUNTER_KEYS:
+                return _gate("fail", "scenario isolation counters are missing or malformed")
+            total += sum(scenario_isolation.values())
     if total:
         return _gate("fail", "dry-run mutation evidence is nonzero", actual=total)
-    return _gate("pass", "all mutation counters are zero", actual=0)
+    return _gate("pass", "all mutation and isolation counters are zero", actual=0)
 
 
 def _result_gate(
@@ -698,7 +756,7 @@ def _result_gate(
     profile: ProfileQualityBar,
     profile_name: str,
 ) -> GateResult:
-    expected_keys = COMMON_RESULT_KEYS | ({"scenarios"} if profile.kind == "tracker" else set())
+    expected_keys = COMMON_RESULT_KEYS | (TRACKER_RESULT_KEYS if profile.kind == "tracker" else set())
     if set(result) != expected_keys:
         return _gate("fail", f"top-level result keys do not match the {profile.kind} schema")
     workload = _mapping_of_ints(result.get("workload"))
@@ -712,9 +770,14 @@ def _result_gate(
         and result.get("scope") == quality_bar.scope
         and result.get("profile_kind") == profile.kind
         and result.get("profile") == profile_name
+        and result.get("tier") == profile.tier
         and result.get("seed") == profile.seed
         and result.get("fixture_manifest_digest") == profile.fixture_manifest_digest
         and result.get("intended_action_digest") == profile.intended_action_digest
+        and (profile.kind != "tracker" or result.get("execution_action_digest") == profile.execution_action_digest)
+        and (
+            profile.kind != "tracker" or _mapping_of_ints(result.get("isolation_counters")) == dict(profile.isolation_counters)
+        )
         and reconciliation == dict(profile.reconciliation)
         and scenarios is not None
         and candidates == dict(profile.candidate_counts)

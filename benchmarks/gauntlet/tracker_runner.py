@@ -13,7 +13,7 @@ import tempfile
 import time
 import tracemalloc
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Protocol, TypedDict, cast
@@ -30,6 +30,7 @@ from benchmarks.gauntlet.runner import (
 from benchmarks.gauntlet.tracker_fixture import (
     TRACKER_READ_ENDPOINTS,
     EmbeddedTrackersMode,
+    TrackerActionRecord,
     TrackerGauntletFixture,
     TrackerGauntletProfile,
     build_tracker_fixture,
@@ -92,6 +93,7 @@ class TrackerEvaluationResult(TypedDict):
     workload: TrackerWorkloadResult
     fixture_manifest_digest: str
     intended_action_digest: str
+    execution_action_digest: str
     reconciliation: TrackerReconciliationEvidence
     scenarios: dict[str, TrackerScenarioEvidence]
     candidate_counts: dict[str, int]
@@ -99,6 +101,7 @@ class TrackerEvaluationResult(TypedDict):
     timed_sample_endpoint_counters: list[dict[str, int]]
     pass_endpoint_counters: PassEndpointCounters
     mutation_counters: dict[str, int]
+    isolation_counters: dict[str, int]
     measurement_policy: MeasurementPolicy
     sample_runtime_seconds: list[float]
     median_runtime_seconds: float
@@ -114,6 +117,7 @@ class TrackerScenarioEvidence(TypedDict):
     outcome: str
     action_digest: str
     endpoint_counters: dict[str, int]
+    isolation_counters: dict[str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,83 +136,89 @@ class _TrackerPassEvidence:
     endpoint_counters: dict[str, int]
 
 
-_ACTIVE_FILESYSTEM_AUDITS: list[_FilesystemMutationAudit] = []
-_FILESYSTEM_AUDIT_HOOK_INSTALLED = False
+_ACTIVE_PRODUCTION_AUDITS: list[_ProductionBoundaryAudit] = []
+_PRODUCTION_AUDIT_HOOK_INSTALLED = False
 _WRITE_OPEN_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
-_MUTATING_PATH_EVENTS: Mapping[str, tuple[tuple[int, int | None], ...]] = {
-    "os.chmod": ((0, 2),),
-    "os.chown": ((0, 3),),
-    "os.link": ((0, 2), (1, 3)),
-    "os.mkdir": ((0, 2),),
-    "os.remove": ((0, 1),),
-    "os.rename": ((0, 2), (1, 3)),
-    "os.rmdir": ((0, 1),),
-    "os.symlink": ((1, 2),),
-    "os.truncate": ((0, None),),
-    "os.utime": ((0, 3),),
+_FILESYSTEM_MUTATION_EVENTS = {
+    "os.chmod",
+    "os.chown",
+    "os.link",
+    "os.mkdir",
+    "os.mknod",
+    "os.remove",
+    "os.removexattr",
+    "os.rename",
+    "os.rmdir",
+    "os.setxattr",
+    "os.symlink",
+    "os.truncate",
+    "os.utime",
 }
+_NETWORK_CONNECT_EVENTS = {"socket.connect", "socket.connect_ex"}
+_NETWORK_DNS_EVENTS = {
+    "socket.getaddrinfo",
+    "socket.gethostbyaddr",
+    "socket.gethostbyname",
+    "socket.gethostbyname_ex",
+    "socket.getnameinfo",
+}
+_ISOLATION_COUNTER_KEYS = (
+    "filesystem_write_attempts",
+    "network_connect_attempts",
+    "network_dns_attempts",
+)
 
 
 @dataclass(slots=True)
-class _FilesystemMutationAudit:
-    """Count filesystem mutation attempts lexically or physically inside one root."""
+class _ProductionBoundaryAudit:
+    """Deny and count global filesystem-write and network audit events."""
 
-    root: Path
-    attempt_count: int = 0
+    counters: dict[str, int] = field(default_factory=lambda: {key: 0 for key in _ISOLATION_COUNTER_KEYS})
+    _activation_totals: list[int] = field(default_factory=list)
+    _last_attempt_class: str | None = None
 
-    def __post_init__(self) -> None:
-        self.root = self.root.resolve()
+    @property
+    def filesystem_attempt_count(self) -> int:
+        """Return the number of denied filesystem write or mutation attempts."""
+        return self.counters["filesystem_write_attempts"]
 
-    def __enter__(self) -> _FilesystemMutationAudit:
-        _install_filesystem_audit_hook()
-        _ACTIVE_FILESYSTEM_AUDITS.append(self)
+    @property
+    def total_attempt_count(self) -> int:
+        """Return the total number of denied isolation-boundary attempts."""
+        return sum(self.counters.values())
+
+    def __enter__(self) -> _ProductionBoundaryAudit:
+        _install_production_audit_hook()
+        self._activation_totals.append(self.total_attempt_count)
+        _ACTIVE_PRODUCTION_AUDITS.append(self)
         return self
 
     def __exit__(self, _error_type: object, _error: object, _traceback: object) -> None:
-        _ACTIVE_FILESYSTEM_AUDITS.remove(self)
+        _ACTIVE_PRODUCTION_AUDITS.remove(self)
+        starting_total = self._activation_totals.pop()
+        if self.total_attempt_count != starting_total:
+            raise GauntletSafetyError(f"tracker production boundary denied {self._last_attempt_class}")
 
     def observe(self, event: str, arguments: tuple[object, ...]) -> None:
-        """Record one audited mutation event when any target belongs to this root."""
-        if event == "open":
-            if len(arguments) >= 3 and _open_requests_write(arguments[1], arguments[2]):
-                self._record_path(arguments[0], None)
+        """Reject one audited attempt without retaining its arguments."""
+        attempt_class: str | None = None
+        if event == "open" and len(arguments) >= 3 and _open_requests_write(arguments[1], arguments[2]):
+            attempt_class = "filesystem write"
+            counter = "filesystem_write_attempts"
+        elif event in _FILESYSTEM_MUTATION_EVENTS:
+            attempt_class = "filesystem write"
+            counter = "filesystem_write_attempts"
+        elif event in _NETWORK_CONNECT_EVENTS:
+            attempt_class = "network connect"
+            counter = "network_connect_attempts"
+        elif event in _NETWORK_DNS_EVENTS:
+            attempt_class = "network dns"
+            counter = "network_dns_attempts"
+        else:
             return
-        for path_index, directory_fd_index in _MUTATING_PATH_EVENTS.get(event, ()):
-            directory_fd = (
-                arguments[directory_fd_index]
-                if directory_fd_index is not None and directory_fd_index < len(arguments)
-                else None
-            )
-            if path_index < len(arguments) and self._path_is_within_root(arguments[path_index], directory_fd):
-                self.attempt_count += 1
-                return
-
-    def _record_path(self, raw_path: object, directory_fd: object) -> None:
-        if self._path_is_within_root(raw_path, directory_fd):
-            self.attempt_count += 1
-
-    def _path_is_within_root(self, raw_path: object, directory_fd: object) -> bool:
-        if not isinstance(raw_path, (str, bytes, os.PathLike)):
-            return False
-        path = Path(os.fsdecode(raw_path))
-        if not path.is_absolute():
-            base = Path.cwd()
-            if isinstance(directory_fd, int) and directory_fd >= 0:
-                try:
-                    base = Path(f"/proc/self/fd/{directory_fd}").resolve(strict=True)
-                except OSError:
-                    return False
-            path = base / path
-        lexical_path = Path(os.path.abspath(path))
-        try:
-            resolved_path = path.resolve(strict=False)
-        except OSError:
-            resolved_path = lexical_path
-        return _is_relative_to(lexical_path, self.root) or _is_relative_to(resolved_path, self.root)
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    return path == root or root in path.parents
+        self.counters[counter] += 1
+        self._last_attempt_class = attempt_class
+        raise GauntletSafetyError(f"tracker production boundary denied {attempt_class}")
 
 
 def _open_requests_write(raw_mode: object, raw_flags: object) -> bool:
@@ -217,16 +227,16 @@ def _open_requests_write(raw_mode: object, raw_flags: object) -> bool:
     return isinstance(raw_flags, int) and bool(raw_flags & _WRITE_OPEN_FLAGS)
 
 
-def _filesystem_audit_hook(event: str, arguments: tuple[object, ...]) -> None:
-    for audit in tuple(_ACTIVE_FILESYSTEM_AUDITS):
+def _production_audit_hook(event: str, arguments: tuple[object, ...]) -> None:
+    for audit in tuple(_ACTIVE_PRODUCTION_AUDITS):
         audit.observe(event, arguments)
 
 
-def _install_filesystem_audit_hook() -> None:
-    global _FILESYSTEM_AUDIT_HOOK_INSTALLED
-    if not _FILESYSTEM_AUDIT_HOOK_INSTALLED:
-        sys.addaudithook(_filesystem_audit_hook)
-        _FILESYSTEM_AUDIT_HOOK_INSTALLED = True
+def _install_production_audit_hook() -> None:
+    global _PRODUCTION_AUDIT_HOOK_INSTALLED
+    if not _PRODUCTION_AUDIT_HOOK_INSTALLED:
+        sys.addaudithook(_production_audit_hook)
+        _PRODUCTION_AUDIT_HOOK_INSTALLED = True
 
 
 class _TrackerReconciliationCapture(logging.Handler):
@@ -479,10 +489,14 @@ def _execute_pipeline(fixture: TrackerGauntletFixture) -> _TrackerPipelineResult
 def _validate_unchanged_state(
     fixture: TrackerGauntletFixture,
     initial_filesystem_digest: str,
-    filesystem_audit: _FilesystemMutationAudit,
+    production_audit: _ProductionBoundaryAudit,
 ) -> None:
-    if filesystem_audit.attempt_count:
-        raise GauntletSafetyError("tracker dry-run attempted a filesystem mutation")
+    if production_audit.filesystem_attempt_count:
+        raise GauntletSafetyError("tracker production boundary denied filesystem write")
+    if production_audit.counters["network_connect_attempts"]:
+        raise GauntletSafetyError("tracker production boundary denied network connect")
+    if production_audit.counters["network_dns_attempts"]:
+        raise GauntletSafetyError("tracker production boundary denied network dns")
     if fixture.client.mutation_total:
         raise GauntletSafetyError("tracker dry-run attempted a qBittorrent mutation")
     if _filesystem_digest(fixture.root) != initial_filesystem_digest:
@@ -493,9 +507,9 @@ def _validate_pass(
     fixture: TrackerGauntletFixture,
     pipeline: _TrackerPipelineResult,
     initial_filesystem_digest: str,
-    filesystem_audit: _FilesystemMutationAudit,
+    production_audit: _ProductionBoundaryAudit,
 ) -> _TrackerPassEvidence:
-    _validate_unchanged_state(fixture, initial_filesystem_digest, filesystem_audit)
+    _validate_unchanged_state(fixture, initial_filesystem_digest, production_audit)
     endpoint_counters = dict(fixture.client.read_counts)
     validate_tracker_endpoint_counts(endpoint_counters, fixture.profile)
     candidate_counts = _candidate_counts(pipeline.summary)
@@ -543,61 +557,132 @@ def _validate_pass(
 def _checked_pipeline_pass(
     fixture: TrackerGauntletFixture,
     initial_filesystem_digest: str,
-    filesystem_audit: _FilesystemMutationAudit,
+    production_audit: _ProductionBoundaryAudit,
 ) -> _TrackerPassEvidence:
     _prepare_pass(fixture)
     try:
-        pipeline = _execute_pipeline(fixture)
+        with production_audit:
+            pipeline = _execute_pipeline(fixture)
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception:
-        _validate_unchanged_state(fixture, initial_filesystem_digest, filesystem_audit)
+        _validate_unchanged_state(fixture, initial_filesystem_digest, production_audit)
         raise
     finally:
         clear_cache()
-    return _validate_pass(fixture, pipeline, initial_filesystem_digest, filesystem_audit)
+    return _validate_pass(fixture, pipeline, initial_filesystem_digest, production_audit)
 
 
 def _timed_pipeline_pass(
     fixture: TrackerGauntletFixture,
     initial_filesystem_digest: str,
-    filesystem_audit: _FilesystemMutationAudit,
+    production_audit: _ProductionBoundaryAudit,
 ) -> tuple[_TrackerPassEvidence, float]:
     _prepare_pass(fixture)
     started_at = time.perf_counter()
     try:
-        pipeline = _execute_pipeline(fixture)
+        with production_audit:
+            pipeline = _execute_pipeline(fixture)
     except (KeyboardInterrupt, SystemExit):
         clear_cache()
         raise
     except Exception:
-        _validate_unchanged_state(fixture, initial_filesystem_digest, filesystem_audit)
+        _validate_unchanged_state(fixture, initial_filesystem_digest, production_audit)
         clear_cache()
         raise
     elapsed_seconds = time.perf_counter() - started_at
     clear_cache()
-    return _validate_pass(fixture, pipeline, initial_filesystem_digest, filesystem_audit), elapsed_seconds
+    return _validate_pass(fixture, pipeline, initial_filesystem_digest, production_audit), elapsed_seconds
 
 
 def _memory_pipeline_pass(
     fixture: TrackerGauntletFixture,
     initial_filesystem_digest: str,
-    filesystem_audit: _FilesystemMutationAudit,
+    production_audit: _ProductionBoundaryAudit,
 ) -> tuple[_TrackerPassEvidence, int]:
     _prepare_pass(fixture)
     tracemalloc.start()
     try:
-        pipeline = _execute_pipeline(fixture)
+        with production_audit:
+            pipeline = _execute_pipeline(fixture)
         _current_bytes, peak_bytes = tracemalloc.get_traced_memory()
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception:
-        _validate_unchanged_state(fixture, initial_filesystem_digest, filesystem_audit)
+        _validate_unchanged_state(fixture, initial_filesystem_digest, production_audit)
         raise
     finally:
         tracemalloc.stop()
         clear_cache()
-    return _validate_pass(fixture, pipeline, initial_filesystem_digest, filesystem_audit), peak_bytes
+    return _validate_pass(fixture, pipeline, initial_filesystem_digest, production_audit), peak_bytes
+
+
+def _action_record_digest(records: Sequence[TrackerActionRecord]) -> str:
+    digest = hashlib.sha256()
+    for record in sorted(records, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))):
+        _digest_record(digest, record)
+    return digest.hexdigest()
+
+
+def _shadow_execution_action_digest(
+    profile: TrackerGauntletProfile,
+    seed: int,
+    production_audit: _ProductionBoundaryAudit,
+) -> str:
+    """Verify exact mutating endpoint arguments against a fresh fixture oracle."""
+    with tempfile.TemporaryDirectory(prefix="qbitunregistered-tracker-shadow-") as temporary_root:
+        fixture = build_tracker_fixture(Path(temporary_root), profile, seed)
+        before = _filesystem_digest(fixture.root)
+        config = tracker_config()
+        clear_cache()
+        fixture.client.reset_read_counts()
+        try:
+            with production_audit:
+                summary = analyze_impact(
+                    fixture.client,
+                    _production_torrents(fixture),
+                    config,
+                    ["unregistered"],
+                )
+                plan = summary.unregistered_deletion_plan
+                if plan is None:
+                    raise GauntletSafetyError("tracker shadow preview did not produce a deletion plan")
+                unregistered_checks(
+                    fixture.client,
+                    _production_torrents(fixture),
+                    config,
+                    True,
+                    [DELETE_TAG],
+                    {DELETE_TAG: False},
+                    False,
+                    deletion_plan=plan,
+                )
+        finally:
+            clear_cache()
+        if _filesystem_digest(fixture.root) != before:
+            raise GauntletSafetyError("tracker shadow execution changed the filesystem")
+        if fixture.client.mutation_counts["torrents_add_tags"] != 2:
+            raise GauntletSafetyError("tracker shadow execution used an unexpected tag mutation shape")
+        if fixture.client.mutation_counts["torrents_delete"] != 1:
+            raise GauntletSafetyError("tracker shadow execution used an unexpected delete mutation shape")
+        unexpected_mutations = {
+            name: count
+            for name, count in fixture.client.mutation_counts.items()
+            if name not in {"torrents_add_tags", "torrents_delete"} and count
+        }
+        if unexpected_mutations:
+            raise GauntletSafetyError("tracker shadow execution used an unexpected mutation endpoint")
+        actual_records = sorted(
+            fixture.client.execution_action_records,
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+        expected_records = list(expected_tracker_action_records(profile, seed))
+        if actual_records != expected_records:
+            raise GauntletSafetyError("tracker execution action records did not match the independent fixture oracle")
+        action_digest = _action_record_digest(actual_records)
+        if action_digest != expected_tracker_action_digest(profile, seed):
+            raise GauntletSafetyError("tracker execution action digest did not match the independent fixture oracle")
+        return action_digest
 
 
 def _scenario_digest(name: str, outcome: str) -> str:
@@ -624,8 +709,12 @@ def _validate_scenario_unchanged(fixture: TrackerGauntletFixture, before: str) -
 
 def evaluate_tracker_scenarios(  # noqa: C901
     _fixture: TrackerGauntletFixture,
+    *,
+    production_audit: _ProductionBoundaryAudit | None = None,
 ) -> dict[str, TrackerScenarioEvidence]:
     """Run the transport-aware semantic matrix outside measured execution."""
+    if production_audit is None:
+        production_audit = _ProductionBoundaryAudit()
     scenario_profile = TrackerGauntletProfile(
         name="tracker-scenarios",
         torrent_count=6,
@@ -637,6 +726,18 @@ def evaluate_tracker_scenarios(  # noqa: C901
         tier="scenario",
     )
     evidence: dict[str, TrackerScenarioEvidence] = {}
+
+    def analyze_scenario(
+        fixture: TrackerGauntletFixture,
+        config: dict[str, object],
+    ) -> ImpactSummary:
+        with production_audit:
+            return analyze_impact(
+                fixture.client,
+                _production_torrents(fixture),
+                config,
+                ["unregistered"],
+            )
 
     def record(
         name: str,
@@ -651,6 +752,7 @@ def evaluate_tracker_scenarios(  # noqa: C901
             "outcome": "pass",
             "action_digest": action_digest or _scenario_digest(name, "fail_closed"),
             "endpoint_counters": counters,
+            "isolation_counters": dict(production_audit.counters),
         }
 
     with tempfile.TemporaryDirectory(prefix="qbitunregistered-tracker-scenarios-") as temporary_root:
@@ -671,12 +773,7 @@ def evaluate_tracker_scenarios(  # noqa: C901
             before = _filesystem_digest(fixture.root)
             clear_cache()
             try:
-                summary = analyze_impact(
-                    fixture.client,
-                    _production_torrents(fixture),
-                    tracker_config(),
-                    ["unregistered"],
-                )
+                summary = analyze_scenario(fixture, tracker_config())
             except ImpactAnalysisError:
                 counters = _scenario_endpoint_counters(fixture)
                 if mode != "malformed" or counters["torrents.info.include_trackers"] != 1:
@@ -705,7 +802,7 @@ def evaluate_tracker_scenarios(  # noqa: C901
         fixture.client.set_exact_trackers(fixture.initial_torrents[0].hash, None)
         clear_cache()
         try:
-            analyze_impact(fixture.client, _production_torrents(fixture), tracker_config(), ["unregistered"])
+            analyze_scenario(fixture, tracker_config())
         except ImpactAnalysisError:
             record("malformed_exact_fail_closed", fixture, before)
         else:
@@ -722,12 +819,7 @@ def evaluate_tracker_scenarios(  # noqa: C901
         fixture.client.set_exact_trackers(failed.hash, OSError("removed"))
         fixture.client.set_torrent_snapshot(fixture.initial_torrents[1:])
         clear_cache()
-        summary = analyze_impact(
-            fixture.client,
-            _production_torrents(fixture),
-            tracker_config(),
-            ["unregistered"],
-        )
+        summary = analyze_scenario(fixture, tracker_config())
         plan = summary.unregistered_deletion_plan
         if plan is None or plan.confirmed_absent_hashes != (failed.hash,):
             raise GauntletSafetyError("tracker disappearance scenario lacked an exact fresh absence proof")
@@ -747,7 +839,7 @@ def evaluate_tracker_scenarios(  # noqa: C901
         fixture.client.set_torrent_snapshot(current)
         clear_cache()
         try:
-            analyze_impact(fixture.client, _production_torrents(fixture), tracker_config(), ["unregistered"])
+            analyze_scenario(fixture, tracker_config())
         except ImpactAnalysisError:
             record("same_hash_readd_fail_closed", fixture, before)
         else:
@@ -770,12 +862,7 @@ def evaluate_tracker_scenarios(  # noqa: C901
             fixture.client.set_torrent_snapshot(snapshot)
             clear_cache()
             try:
-                analyze_impact(
-                    fixture.client,
-                    _production_torrents(fixture),
-                    tracker_config(),
-                    ["unregistered"],
-                )
+                analyze_scenario(fixture, tracker_config())
             except ImpactAnalysisError:
                 record(name, fixture, before)
             else:
@@ -791,27 +878,33 @@ def evaluate_tracker_scenarios(  # noqa: C901
             before = _filesystem_digest(fixture.root)
             clear_cache()
             config = tracker_config()
-            summary = analyze_impact(fixture.client, _production_torrents(fixture), config, ["unregistered"])
+            summary = analyze_scenario(fixture, config)
             plan = summary.unregistered_deletion_plan
             if plan is None:
                 raise GauntletSafetyError("tracker preflight scenario lacks a deletion plan")
             current = list(fixture.initial_torrents)
+            delete_index = next(
+                index
+                for index, torrent in enumerate(current)
+                if DELETE_TAG in {tag.strip() for tag in torrent.tags.split(",") if tag.strip()}
+            )
             if change == "disappear":
-                current = current[1:]
+                current.pop(delete_index)
             else:
-                current[0] = replace(current[0], tags="")
+                current[delete_index] = replace(current[delete_index], tags="")
             fixture.client.set_torrent_snapshot(current)
             try:
-                unregistered_checks(
-                    fixture.client,
-                    _production_torrents(fixture),
-                    config,
-                    True,
-                    [DELETE_TAG],
-                    {DELETE_TAG: False},
-                    False,
-                    deletion_plan=plan,
-                )
+                with production_audit:
+                    unregistered_checks(
+                        fixture.client,
+                        _production_torrents(fixture),
+                        config,
+                        True,
+                        [DELETE_TAG],
+                        {DELETE_TAG: False},
+                        False,
+                        deletion_plan=plan,
+                    )
             except SafetyCheckError:
                 record(name, fixture, before, action_digest=_intended_action_digest(summary))
             else:
@@ -822,22 +915,23 @@ def evaluate_tracker_scenarios(  # noqa: C901
         before = _filesystem_digest(fixture.root)
         clear_cache()
         config = tracker_config()
-        summary = analyze_impact(fixture.client, _production_torrents(fixture), config, ["unregistered"])
+        summary = analyze_scenario(fixture, config)
         plan = summary.unregistered_deletion_plan
         if plan is None:
             raise GauntletSafetyError("tracker snapshot-binding scenario lacks a deletion plan")
         changed_hash = fixture.initial_torrents[0].hash
         fixture.client.set_exact_trackers(changed_hash, fixture.client.trackers_by_hash[fixture.initial_torrents[-1].hash])
-        _paths, counts = unregistered_checks(
-            fixture.client,
-            _production_torrents(fixture),
-            config,
-            True,
-            [DELETE_TAG],
-            {DELETE_TAG: False},
-            True,
-            deletion_plan=plan,
-        )
+        with production_audit:
+            _paths, counts = unregistered_checks(
+                fixture.client,
+                _production_torrents(fixture),
+                config,
+                True,
+                [DELETE_TAG],
+                {DELETE_TAG: False},
+                True,
+                deletion_plan=plan,
+            )
         if sum(counts.values()) != scenario_profile.default_tag_count + scenario_profile.cross_seed_tag_count:
             raise GauntletSafetyError("tracker dry-run was not bound to the preview snapshot")
         record(name, fixture, before, action_digest=_intended_action_digest(summary))
@@ -855,23 +949,22 @@ def evaluate_tracker_fixture(
         raise ValueError(f"comparable gauntlet runs require exactly {DEFAULT_SAMPLES} timed samples")
     if tracemalloc.is_tracing():
         raise GauntletSafetyError("tracemalloc must be disabled before gauntlet evaluation")
-    scenarios = evaluate_tracker_scenarios(fixture)
+    production_audit = _ProductionBoundaryAudit()
+    scenarios = evaluate_tracker_scenarios(fixture, production_audit=production_audit)
     manifest_digest = tracker_fixture_manifest_digest(fixture)
     initial_filesystem_digest = _filesystem_digest(fixture.root)
-    filesystem_audit = _FilesystemMutationAudit(fixture.root)
-    with filesystem_audit:
-        warmup = _checked_pipeline_pass(fixture, initial_filesystem_digest, filesystem_audit)
-        timed_evidence: list[_TrackerPassEvidence] = []
-        runtimes: list[float] = []
-        for _sample_index in range(samples):
-            evidence, runtime = _timed_pipeline_pass(fixture, initial_filesystem_digest, filesystem_audit)
-            timed_evidence.append(evidence)
-            runtimes.append(runtime)
-        memory_evidence, peak_memory_bytes = _memory_pipeline_pass(
-            fixture,
-            initial_filesystem_digest,
-            filesystem_audit,
-        )
+    warmup = _checked_pipeline_pass(fixture, initial_filesystem_digest, production_audit)
+    timed_evidence: list[_TrackerPassEvidence] = []
+    runtimes: list[float] = []
+    for _sample_index in range(samples):
+        evidence, runtime = _timed_pipeline_pass(fixture, initial_filesystem_digest, production_audit)
+        timed_evidence.append(evidence)
+        runtimes.append(runtime)
+    memory_evidence, peak_memory_bytes = _memory_pipeline_pass(
+        fixture,
+        initial_filesystem_digest,
+        production_audit,
+    )
     all_evidence = [warmup, *timed_evidence, memory_evidence]
     if any(
         item.action_digest != warmup.action_digest
@@ -880,6 +973,11 @@ def evaluate_tracker_fixture(
         for item in all_evidence[1:]
     ):
         raise GauntletSafetyError("tracker evaluator evidence changed between passes")
+    execution_action_digest = _shadow_execution_action_digest(
+        fixture.profile,
+        fixture.seed,
+        production_audit,
+    )
 
     median_runtime = statistics.median(runtimes)
     median_absolute_deviation = statistics.median(abs(runtime - median_runtime) for runtime in runtimes)
@@ -903,6 +1001,7 @@ def evaluate_tracker_fixture(
         },
         "fixture_manifest_digest": manifest_digest,
         "intended_action_digest": warmup.action_digest,
+        "execution_action_digest": execution_action_digest,
         "reconciliation": warmup.reconciliation,
         "scenarios": scenarios,
         "candidate_counts": warmup.candidate_counts,
@@ -913,10 +1012,11 @@ def evaluate_tracker_fixture(
             "memory": dict(memory_evidence.endpoint_counters),
         },
         "mutation_counters": {
-            "filesystem": filesystem_audit.attempt_count,
+            "filesystem": production_audit.filesystem_attempt_count,
             "qbittorrent": fixture.client.mutation_total,
             **dict(sorted(fixture.client.mutation_counts.items())),
         },
+        "isolation_counters": dict(production_audit.counters),
         "measurement_policy": _measurement_policy(),
         "sample_runtime_seconds": runtimes,
         "median_runtime_seconds": median_runtime,

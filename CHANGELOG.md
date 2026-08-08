@@ -11,9 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Deterministic `tracker-quick` and `tracker-full` gauntlet profiles for the
   unregistered-torrent preview and dry-run pipeline, with realistic sanitized
-  embedded and exact tracker responses, independent action oracles, locked
-  preview and reconciliation digests, endpoint budgets, zero-mutation evidence,
-  and twelve compatibility and fail-closed scenarios.
+  embedded and exact tracker responses, complete nested endpoint mappings,
+  interleaved response roles, independent action oracles, locked preview,
+  shadow-execution, and reconciliation digests, endpoint budgets, global
+  filesystem/network isolation evidence, and twelve compatibility and
+  fail-closed scenarios.
 - Documented standalone tracker evaluation and isolated paired
   `tracker-full` comparison. The current exact-only control allows one tracker
   read per torrent; the optimization target is one combined bulk request with
@@ -26,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   production optimization, evaluator inputs stay unchanged on optimization
   branches, private review orchestration is not repository content, and a live
   installed-wheel dry-run requires separate explicit approval.
+- Tracker paired acceptance now requires exact-only control passes and one-bulk
+  candidate passes structurally. Synthetic runtime uses a `1.0` regression
+  ceiling without artificial latency; protected live evidence is required for
+  a wall-clock improvement claim.
 
 ## [2.3.1] - 2026-08-05
 

@@ -695,14 +695,23 @@ consume its immutable unregistered deletion plan, and call
 `unregistered_checks()` in genuine dry-run mode. An independent fixture
 blueprint supplies expected tag and torrent-only deletion actions; evaluator
 code does not reproduce production tracker classification or cache internals.
-Preview action hashes and execution reconciliation are locked separately
-because current dry-run logs expose tag-action counts but not the exact
-execution-time torrent hashes. The shared execution-scoped tracker snapshot
-binds both phases.
+The primary path remains a genuine dry-run. A separate untimed shadow executes
+the real mutating boundary against a fresh in-memory fake, records normalized
+per-hash endpoint arguments, and requires its exact digest to equal the
+fixture-independent preview oracle. The shadow sets `delete_files=False` and
+is excluded from runtime and peak-memory samples. A process audit denies all
+filesystem writes or mutations plus network connection and DNS events while
+production boundaries execute; artifacts and semantic scenarios require every
+sanitized isolation counter to remain zero.
 
 Tracker endpoint budgets accept the legacy control shape of zero bulk reads and
 one exact read per torrent, or the optimized shape of one bulk read and zero
-exact reads. Legacy responses that omit or reject embedded tracker metadata can
+exact reads. Paired comparison assigns those shapes to control and candidate
+roles respectively; generic allowed transports cannot substitute for the
+required exact-to-bulk collapse. Synthetic runtime has a `1.0` regression
+ceiling and peak memory retains `1.25`; live wall-clock improvement requires a
+separately approved protected dry-run. Legacy responses that omit or reject
+embedded tracker metadata can
 fall back to the exact endpoint. Metadata that is present but malformed, an
 uncertain refresh, same-hash re-addition, or pre-mutation disappearance/tag
 churn must fail closed with zero mutation attempts. The

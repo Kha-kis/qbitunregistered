@@ -1,6 +1,6 @@
-schema_version = 3
-evaluator_schema_version = 4
-evaluator_version = "1.4.0"
+schema_version = 4
+evaluator_schema_version = 5
+evaluator_version = "1.5.0"
 result_schema = "qbitunregistered.gauntlet.result"
 scope = "orphan_and_tracker_dry_run_evaluation"
 
@@ -18,6 +18,7 @@ sample_rejection = "none; all five timed samples are retained"
 
 [profiles.quick]
 kind = "orphan"
+tier = "round"
 seed = 20260729
 fixture_manifest_digest = "6686b7d19ce528f2c770d9800fc3aa7236b1702782a77b390858bf55e2426364"
 intended_action_digest = "3996ef55b845e6d45c2fa30ff9032b8317d06d90514c51402f6ec8ecf6d0f239"
@@ -70,6 +71,7 @@ relative_range_max = 0.50
 
 [profiles.full]
 kind = "orphan"
+tier = "candidate"
 seed = 20260729
 fixture_manifest_digest = "65914526552afb61cb6c2aca9186cd1d068a55257f195e0800208788d6afcac7"
 intended_action_digest = "7f0b9f0932623b7f66ac770e9ef2195f243b788fe8cdb085995dd4d68b16c4c7"
@@ -122,9 +124,11 @@ relative_range_max = 0.50
 
 [profiles.tracker-quick]
 kind = "tracker"
+tier = "round"
 seed = 20260729
-fixture_manifest_digest = "e0c51669a35115a45499c2be8a317b33d7bd8aeddc07ec933f7ae70464c47465"
+fixture_manifest_digest = "23043a6672a4942b1fc7a32247709eb9d3dcee59c6032066e9d1714c0082dd29"
 intended_action_digest = "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
+execution_action_digest = "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
 
 [profiles.tracker-quick.candidate_counts]
 default_tag_targets = 200
@@ -157,13 +161,18 @@ digest = "904285725ce961958fc807fa6f8713020c9769d3d1c341d75f1d57e8afa028f4"
 ordinary_info = 0
 allowed_transports = [[0, 1300], [1, 0]]
 
+[profiles.tracker-quick.isolation_counters]
+filesystem_write_attempts = 0
+network_connect_attempts = 0
+network_dns_attempts = 0
+
 [profiles.tracker-quick.scenario_action_digests]
 complete_embedded = "085848fdcec8d2aa317a2ce60a7e6bdda5d8213e4bd1f3ea2039f96d93710579"
 omitted_embedded_fallback = "54097cb85f5d77a899aa51a8fe3ac3123d6003a91b24002b98587c919a804817"
 rejected_embedded_fallback = "187126c184990bdc138ecd1b368540b9018b4ae58a89af3bb39c602bbc6f8e31"
 malformed_embedded_transport_aware = "7ff7f99fe189f50081dda2474954d9cf5b3522b8c5acfd987c8332c565fda5d3"
 malformed_exact_fail_closed = "992e237a25603f8430f45d77b4ed740ab845183c0016a3199e0aa661c188e340"
-proven_disappearance = "a81f803fa7d94436c583774aab39c139f2f1337143ef46befc8873532892fc83"
+proven_disappearance = "d8becbe2ee7406fdcbf3d2545755b31899d007ce50f178491b1724329bf4fd90"
 same_hash_readd_fail_closed = "5784ab464c16fbb56c80e82424b4c750935bedc9374bb8192d1b9c5d2c2f0d55"
 malformed_refresh_fail_closed = "bc5c44d47f611ab4404f06ac2b9cdc097dff07af929799e4aa137d749c0f82c4"
 duplicate_refresh_fail_closed = "c114a9595be446756fda7f55bc757ec38ae93fa0f9687b824e7ff6930093ed0d"
@@ -175,16 +184,18 @@ tracker_change_snapshot_bound = "9004115438e269458a60958ac9677a0c436cdde1cc2efd1
 status = "pending_clean_evaluator_commit"
 
 [profiles.tracker-quick.targets]
-runtime_baseline_fraction_max = 0.5
+runtime_baseline_fraction_max = 1.0
 peak_memory_baseline_fraction_max = 1.25
 relative_mad_max = 0.15
 relative_range_max = 0.50
 
 [profiles.tracker-full]
 kind = "tracker"
+tier = "candidate"
 seed = 20260729
-fixture_manifest_digest = "33af994b597e1dfdac1189ee35b561b6d1b9789d3a4210fa7026f9f84ba453f8"
+fixture_manifest_digest = "35493db55b33dcff61be5520cc66790f98a8a4fd69cf3aaa0c86d845f367f6f1"
 intended_action_digest = "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87"
+execution_action_digest = "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87"
 
 [profiles.tracker-full.candidate_counts]
 default_tag_targets = 2000
@@ -217,13 +228,18 @@ digest = "18eabfb8a3fc6ea3c455fc893339dc7fd8a6c3ed5ee50aea738e749cd9ddfe8d"
 ordinary_info = 0
 allowed_transports = [[0, 13000], [1, 0]]
 
+[profiles.tracker-full.isolation_counters]
+filesystem_write_attempts = 0
+network_connect_attempts = 0
+network_dns_attempts = 0
+
 [profiles.tracker-full.scenario_action_digests]
 complete_embedded = "085848fdcec8d2aa317a2ce60a7e6bdda5d8213e4bd1f3ea2039f96d93710579"
 omitted_embedded_fallback = "54097cb85f5d77a899aa51a8fe3ac3123d6003a91b24002b98587c919a804817"
 rejected_embedded_fallback = "187126c184990bdc138ecd1b368540b9018b4ae58a89af3bb39c602bbc6f8e31"
 malformed_embedded_transport_aware = "7ff7f99fe189f50081dda2474954d9cf5b3522b8c5acfd987c8332c565fda5d3"
 malformed_exact_fail_closed = "992e237a25603f8430f45d77b4ed740ab845183c0016a3199e0aa661c188e340"
-proven_disappearance = "a81f803fa7d94436c583774aab39c139f2f1337143ef46befc8873532892fc83"
+proven_disappearance = "d8becbe2ee7406fdcbf3d2545755b31899d007ce50f178491b1724329bf4fd90"
 same_hash_readd_fail_closed = "5784ab464c16fbb56c80e82424b4c750935bedc9374bb8192d1b9c5d2c2f0d55"
 malformed_refresh_fail_closed = "bc5c44d47f611ab4404f06ac2b9cdc097dff07af929799e4aa137d749c0f82c4"
 duplicate_refresh_fail_closed = "c114a9595be446756fda7f55bc757ec38ae93fa0f9687b824e7ff6930093ed0d"
@@ -235,7 +251,7 @@ tracker_change_snapshot_bound = "9004115438e269458a60958ac9677a0c436cdde1cc2efd1
 status = "pending_clean_evaluator_commit"
 
 [profiles.tracker-full.targets]
-runtime_baseline_fraction_max = 0.5
+runtime_baseline_fraction_max = 1.0
 peak_memory_baseline_fraction_max = 1.25
 relative_mad_max = 0.15
 relative_range_max = 0.50

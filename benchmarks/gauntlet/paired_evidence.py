@@ -8,6 +8,7 @@ from typing import cast
 
 from benchmarks.gauntlet.baseline import (
     ENVIRONMENT_KEYS,
+    ISOLATION_COUNTER_KEYS,
     MUTATION_COUNTER_KEYS,
     QualityBar,
 )
@@ -41,6 +42,11 @@ CHILD_RESULT_KEYS = {
     "maximum_runtime_seconds",
     "median_absolute_deviation_seconds",
     "peak_memory_bytes",
+}
+TRACKER_RESULT_KEYS = {
+    "execution_action_digest",
+    "isolation_counters",
+    "scenarios",
 }
 ORPHAN_WORKLOAD_KEYS = {
     "torrents",
@@ -226,7 +232,7 @@ def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: st
     for name in sorted(profile.scenario_action_digests):
         raw_evidence = _exact_mapping(
             scenarios[name],
-            {"outcome", "action_digest", "endpoint_counters"},
+            {"outcome", "action_digest", "endpoint_counters", "isolation_counters"},
             f"scenarios.{name}",
         )
         if raw_evidence["outcome"] != "pass":
@@ -234,6 +240,13 @@ def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: st
         action_digest = _digest(raw_evidence["action_digest"], f"scenarios.{name}.action_digest")
         if action_digest != profile.scenario_action_digests[name]:
             raise PairedEvidenceError(f"scenarios.{name}.action_digest is not canonical")
+        isolation_counters = _integer_mapping(
+            raw_evidence["isolation_counters"],
+            ISOLATION_COUNTER_KEYS,
+            f"scenarios.{name}.isolation_counters",
+        )
+        if isolation_counters != dict(profile.isolation_counters):
+            raise PairedEvidenceError(f"scenarios.{name}.isolation_counters are not canonical")
         sanitized[name] = {
             "outcome": "pass",
             "action_digest": action_digest,
@@ -242,6 +255,7 @@ def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: st
                 TRACKER_ENDPOINT_KEYS,
                 f"scenarios.{name}.endpoint_counters",
             ),
+            "isolation_counters": isolation_counters,
         }
     return sanitized
 
@@ -254,7 +268,7 @@ def sanitize_child_result(  # noqa: C901
     if not isinstance(value, dict):
         raise PairedEvidenceError("child result keys do not match the paired schema")
     raw_profile_kind = value.get("profile_kind")
-    result_keys = CHILD_RESULT_KEYS | ({"scenarios"} if raw_profile_kind == "tracker" else set())
+    result_keys = CHILD_RESULT_KEYS | (TRACKER_RESULT_KEYS if raw_profile_kind == "tracker" else set())
     result = _exact_mapping(value, result_keys, "child result")
     if (
         result["schema"] != quality_bar.result_schema
@@ -270,6 +284,9 @@ def sanitize_child_result(  # noqa: C901
     profile_kind = _bounded_string(result["profile_kind"], "profile_kind", maximum=16)
     if profile_kind != canonical_profile.kind:
         raise PairedEvidenceError("child profile kind is not canonical")
+    tier = _bounded_string(result["tier"], "tier", maximum=64)
+    if tier != canonical_profile.tier:
+        raise PairedEvidenceError("child profile tier is not canonical")
     workload_keys = ORPHAN_WORKLOAD_KEYS if profile_kind == "orphan" else TRACKER_WORKLOAD_KEYS
     endpoint_keys = ORPHAN_ENDPOINT_KEYS if profile_kind == "orphan" else TRACKER_ENDPOINT_KEYS
     candidate_keys = (
@@ -323,7 +340,7 @@ def sanitize_child_result(  # noqa: C901
         "scope": quality_bar.scope,
         "profile_kind": profile_kind,
         "profile": profile_name,
-        "tier": _bounded_string(result["tier"], "tier", maximum=64),
+        "tier": tier,
         "seed": _integer(result["seed"], "seed"),
         "workload": workload,
         "fixture_manifest_digest": _digest(
@@ -390,6 +407,21 @@ def sanitize_child_result(  # noqa: C901
         ),
     }
     if profile_kind == "tracker":
+        execution_action_digest = _digest(
+            result["execution_action_digest"],
+            "execution_action_digest",
+        )
+        if execution_action_digest != canonical_profile.execution_action_digest:
+            raise PairedEvidenceError("execution_action_digest is not canonical")
+        isolation_counters = _integer_mapping(
+            result["isolation_counters"],
+            ISOLATION_COUNTER_KEYS,
+            "isolation_counters",
+        )
+        if isolation_counters != dict(canonical_profile.isolation_counters):
+            raise PairedEvidenceError("isolation_counters are not canonical")
+        sanitized_result["execution_action_digest"] = execution_action_digest
+        sanitized_result["isolation_counters"] = isolation_counters
         sanitized_result["scenarios"] = _sanitize_scenarios(result["scenarios"], quality_bar, profile_name)
     return sanitized_result
 
