@@ -292,14 +292,19 @@ container it creates.
 
 ### Running the Deterministic Gauntlet
 
-The repository-local gauntlet measures the real orphan discovery, immutable
-plan, and dry-run reconciliation pipeline against a sanitized fake
-qBittorrent client and temporary filesystem. It never connects to a live
-client. Fixture construction is excluded from the reported runtime. Each run
-performs one untraced warm-up, retains five untraced timing samples, and then
-performs one separately traced, untimed memory pass. The application cache is
-cleared before every pass; the materialized fixture and operating system page
-cache remain warm after the explicit warm-up.
+The repository-local gauntlet has four independent profiles: `quick` and `full`
+exercise orphan discovery, while `tracker-quick` and `tracker-full` exercise
+unregistered-torrent preview and dry-run execution. All use sanitized fakes and
+never connect to a live client. See the
+[gauntlet evaluator guide](benchmarks/gauntlet/README.md) for locked workload
+sizes, evidence-field meanings, tracker compatibility behavior, and the shared
+trust boundary.
+
+Fixture construction is excluded from the reported runtime. Each run performs
+one untraced warm-up, retains five untraced timing samples, and then performs
+one separately traced, untimed memory pass. The application cache is cleared
+before every pass; the materialized fixture and operating system page cache
+remain warm after the explicit warm-up.
 
 Run the quick candidate profile and write its JSON result outside the source
 tree:
@@ -320,6 +325,19 @@ uv run python -m benchmarks.gauntlet \
     --output /tmp/qbitunregistered-gauntlet-full.json
 ```
 
+Run the tracker profiles separately so filesystem traversal does not conceal
+tracker processing costs:
+
+```bash
+uv run python -m benchmarks.gauntlet \
+    --profile tracker-quick \
+    --output /tmp/qbitunregistered-tracker-quick.json
+
+uv run python -m benchmarks.gauntlet \
+    --profile tracker-full \
+    --output /tmp/qbitunregistered-tracker-full.json
+```
+
 Results contain sanitized workload identity, intended-action digest, API read
 counts normalized per pass, mutation counters, sample median/minimum/maximum
 and median absolute deviation, and separately traced peak memory. Candidate
@@ -335,6 +353,23 @@ uv run python -m benchmarks.gauntlet \
     --output /tmp/qbitunregistered-gauntlet-quick.json
 ```
 
+For tracker work, use the corresponding quick comparison command:
+
+```bash
+uv run python -m benchmarks.gauntlet \
+    --profile tracker-quick \
+    --compare \
+    --output /tmp/qbitunregistered-tracker-quick.json
+```
+
+Standalone tracker baselines remain provisional. The canonical optimization
+decision is a paired `tracker-full` run with clean control and candidate
+worktrees, using the isolated launcher command in the
+[gauntlet evaluator guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation).
+The exact-only control makes `N` tracker requests; the target uses one bulk
+request and no exact tracker requests while preserving all deterministic
+actions and fail-closed scenarios.
+
 Comparison validates the fixture and action oracles, measurement policy,
 environment, API budgets, and zero-mutation evidence before evaluating runtime
 and memory. A result is non-comparable when its repository identity changes
@@ -344,6 +379,13 @@ Do not commit raw local benchmark results. Performance-baseline values belong
 only in the reviewed `benchmarks/gauntlet/quality-bar.toml`; a performance
 change must preserve the locked action digest and zero-mutation result before
 its speed is considered.
+
+Establish evaluator changes on an evaluator-only branch and merge them before
+starting a production optimization. Optimization branches must not edit the
+evaluator, fixtures, digests, or thresholds. Builder/critic coordination stays
+private; only the reviewable evaluator and sanitized specification belong in
+the repository. A real installed-wheel dry-run is a separate protected soak
+and requires explicit human approval after the synthetic and review gates pass.
 
 ## Continuous Integration
 

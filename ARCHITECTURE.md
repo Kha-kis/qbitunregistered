@@ -689,6 +689,28 @@ protected trees before and after the crossover; each isolated child closes the
 preflight-to-import gap by checking immediately before imports and after
 evaluation.
 
+The gauntlet exposes separate quick/full profile pairs for orphan ownership and
+tracker metadata. Tracker passes call the public `analyze_impact()` boundary,
+consume its immutable unregistered deletion plan, and call
+`unregistered_checks()` in genuine dry-run mode. An independent fixture
+blueprint supplies expected tag and torrent-only deletion actions; evaluator
+code does not reproduce production tracker classification or cache internals.
+Preview action hashes and execution reconciliation are locked separately
+because current dry-run logs expose tag-action counts but not the exact
+execution-time torrent hashes. The shared execution-scoped tracker snapshot
+binds both phases.
+
+Tracker endpoint budgets accept the legacy control shape of zero bulk reads and
+one exact read per torrent, or the optimized shape of one bulk read and zero
+exact reads. Legacy responses that omit or reject embedded tracker metadata can
+fall back to the exact endpoint. Metadata that is present but malformed, an
+uncertain refresh, same-hash re-addition, or pre-mutation disappearance/tag
+churn must fail closed with zero mutation attempts. The
+[tracker gauntlet design](docs/superpowers/specs/2026-08-08-tracker-gauntlet-design.md)
+defines these semantics; the
+[evaluator guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation)
+documents operator commands and evidence fields.
+
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,
 and no-bytecode interpreter flags; additional flags are permitted. It discovers
@@ -767,6 +789,14 @@ concurrent replacement and uniquely
 named recovery links remain preserved after rollback; restored prior-output
 backups are not unlinked based on a stale public-name identity check. Any
 uncertainty makes publication fail closed.
+
+Evaluator development and production optimization are deliberately separate.
+The public evaluator branch contains only reviewable evaluator inputs, tests,
+and documentation; private builder/critic orchestration remains outside the
+repository. The evaluator must be merged before an optimization branch is
+created, and that branch cannot alter locked evaluator inputs or thresholds.
+A live installed-wheel dry-run is not part of synthetic evaluation and remains
+a separate, explicitly approved soak gate.
 
 ## Extension Points
 

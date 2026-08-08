@@ -1,8 +1,114 @@
 # Gauntlet evaluator
 
-The gauntlet measures the real orphan-discovery, immutable-plan, and dry-run
-reconciliation pipeline against deterministic qBittorrent and filesystem
-fixtures. It never contacts a live qBittorrent instance.
+The gauntlet measures real production preview and dry-run boundaries against
+deterministic qBittorrent and filesystem fixtures. It never contacts a live
+qBittorrent instance.
+
+## Profiles
+
+| Profile | Pipeline | Locked workload | Intended use |
+|---|---|---:|---|
+| `quick` | Orphan discovery and reconciliation | 1,200 torrents / 9,400 files | Fast development feedback |
+| `full` | Orphan discovery and reconciliation | 12,000 torrents / 94,000 files | Candidate evaluation |
+| `tracker-quick` | Unregistered preview and dry-run | 1,300 torrents / 3,900 trackers | Fast tracker feedback |
+| `tracker-full` | Unregistered preview and dry-run | 13,000 torrents / 39,000 trackers | Tracker candidate evaluation |
+
+The tracker fixtures also lock 1,200/12,000 save-path groups, 200/2,000
+default-tag targets, 100/1,000 cross-seed-tag targets, and 13/130
+torrent-only deletion targets. Exact/prefix-message targets are 150/150 for
+`tracker-quick` and 1,500/1,500 for `tracker-full`. File deletion is disabled.
+
+## Tracker metadata evaluation
+
+Run either tracker profile without a comparison and keep the raw JSON outside
+the repository:
+
+```bash
+uv run python -m benchmarks.gauntlet \
+  --profile tracker-quick \
+  --output /tmp/qbitunregistered-tracker-quick.json
+
+uv run python -m benchmarks.gauntlet \
+  --profile tracker-full \
+  --output /tmp/qbitunregistered-tracker-full.json
+```
+
+The quick comparison entry point is:
+
+```bash
+uv run python -m benchmarks.gauntlet \
+  --profile tracker-quick \
+  --compare \
+  --output /tmp/qbitunregistered-tracker-quick.json
+```
+
+The checked-in standalone baselines intentionally remain
+`pending_clean_evaluator_commit`: contemporaneous paired comparison is the
+canonical optimization decision. Until a measured baseline is reviewed, the
+command still validates deterministic and safety evidence but reports an
+overall pending comparison and returns a nonzero comparison status.
+
+Run the canonical full tracker comparison from the evaluator checkout, with
+two distinct clean worktrees at the control and candidate revisions:
+
+```bash
+uv run python -I -S -B benchmarks/gauntlet/launcher.py \
+  --profile tracker-full \
+  --paired-control /path/to/control \
+  --paired-candidate /path/to/candidate \
+  --output /tmp/qbitunregistered-tracker-paired-full.json
+```
+
+The current control transport performs no ordinary torrent-list read, no bulk
+`includeTrackers` read, and exactly one `/torrents/trackers` read for each of
+`N` torrents. A supported optimization performs one `includeTrackers` read and
+no exact tracker reads. The evaluator rejects more than one bulk read, more
+than `N` exact reads, or redundant bulk plus exact reads. The locked target is
+one combined tracker-metadata request, at most 50% of the paired control
+runtime, and at most 125% of its peak memory; the existing variance limits also
+apply.
+
+### Evidence semantics
+
+- `fixture_manifest_digest` identifies the deterministic fixture, while
+  `intended_action_digest` locks the exact preview action, tag, and torrent-hash
+  tuples.
+- `workload` records the locked profile size, and `candidate_counts` records
+  the independently expected default-tag, cross-seed-tag, and torrent-only
+  deletion targets.
+- `reconciliation.digest` locks execution per-path results and sanitized
+  operator-visible action counts. Dry-run logs do not expose exact tag hashes,
+  so the preview digest and execution reconciliation are deliberately separate;
+  both phases use the same execution-scoped tracker snapshot.
+- `endpoint_counters`, per-pass endpoint counters, and
+  `mutation_counters` prove the selected transport and require zero qBittorrent
+  and filesystem mutations.
+- Runtime statistics retain all five untraced samples. Peak memory comes from a
+  separate traced, untimed pass. Fixture construction, manifest verification,
+  and semantic safety scenarios are outside the measured interval.
+- The twelve normalized scenario results lock compatibility and fail-closed
+  behavior. Legacy omission or rejection of embedded trackers may use the
+  exact fallback; malformed metadata, uncertain refreshes, hash re-addition,
+  or preflight churn must not authorize mutation.
+
+See the [tracker gauntlet design](../../docs/superpowers/specs/2026-08-08-tracker-gauntlet-design.md)
+for fixture and compatibility details. The longer trust-boundary and
+publication guarantees are documented once in
+[Evaluator Isolation](../../ARCHITECTURE.md#evaluator-isolation) and below.
+
+### Branch and live-test gates
+
+The public evaluator branch contains evaluator code, locked inputs, tests, and
+documentation only. Private builder/critic orchestration is not part of the
+repository. Merge and independently review the evaluator before creating the
+production optimization branch; optimization commits must not change evaluator
+sources, fixtures, deterministic digests, quality thresholds, or dependency
+inputs.
+
+Synthetic evaluation is not live acceptance. A protected installed-wheel
+dry-run against a real qBittorrent instance is a separate soak that requires
+explicit human approval after synthetic and review gates pass. It must never be
+inferred from permission to run the evaluator.
 
 ## Contemporaneous paired comparison
 
