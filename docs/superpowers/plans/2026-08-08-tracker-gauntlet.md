@@ -310,7 +310,9 @@ production optimization. Do not merge, tag, publish, or access the live instance
 
 **Interfaces:**
 - Produces exact untimed shadow-execution action records and `execution_action_digest` from a fresh fake fixture.
-- Produces sanitized `isolation_counters` for global filesystem-write, network-connect, and network-DNS attempt classes.
+- Produces sanitized `isolation_counters` for global filesystem-write,
+  network-connect, network-DNS, and destination-bearing network-outbound
+  attempt classes.
 - Extends scenario evidence with the same exact isolation-counter schema.
 - Locks `tier` and `execution_action_digest` in each tracker quality-bar profile.
 
@@ -382,3 +384,163 @@ Python file, pip-audit, Bandit, build, installed-wheel smoke, and
 `git diff --check`. Generate exact-only quick/full artifacts under `/tmp`, append
 the ignored report and progress ledger with sanitized evidence, and commit only
 evaluator/tests/docs/quality-bar files.
+
+### Task 4: Critic hardening round 3
+
+**Files:**
+- Modify: `benchmarks/gauntlet/tracker_fixture.py`
+- Modify: `benchmarks/gauntlet/tracker_runner.py`
+- Modify: `benchmarks/gauntlet/baseline.py`
+- Modify: `benchmarks/gauntlet/paired_evidence.py`
+- Modify: `benchmarks/gauntlet/paired.py`
+- Modify: `benchmarks/gauntlet/runner.py`
+- Modify: `benchmarks/gauntlet/quality-bar.toml`
+- Test: `tests/test_gauntlet_runner.py`
+- Test: `tests/test_gauntlet_safety.py`
+- Modify: evaluator and project documentation named in Task 3
+
+**Interfaces:**
+- Produces one canonical `transport_safe` digest for the malformed-embedded
+  scenario after validating either exact-success actions or bulk fail-closed
+  behavior.
+- Produces mapping-only embedded tracker metadata and real-client-style
+  `.trackers` exact endpoint delegation.
+- Produces a complete sanitized torrent-info mapping and a fourth zero-locked
+  `network_outbound_attempts` isolation counter.
+
+- [x] **Step 1: Write paired scenario RED tests**
+
+Add a regression that obtains exact-only scenario evidence, simulates a bulk
+consumer that raises on malformed embedded metadata, and proves both sanitize
+to the same literal transport-neutral digest before a paired exact-control /
+one-bulk-candidate comparison passes. Add negative cases in which exact success
+swaps a hash or bulk consumption succeeds and require `GauntletSafetyError`.
+
+- [x] **Step 2: Run the scenario nodes and verify RED**
+
+```bash
+uv run pytest tests/test_gauntlet_runner.py -k 'malformed_embedded_transport_neutral or malformed_embedded_wrong_actions or malformed_embedded_bulk_success' -q
+```
+
+Expected: the safe bulk candidate is rejected because its fail-closed digest
+differs from the exact-success quality-bar digest; wrong exact actions are not
+independently checked.
+
+- [x] **Step 3: Implement branch validation and normalization**
+
+Introduce one helper equivalent to:
+
+```python
+def _validated_scenario_action_digest(
+    summary: ImpactSummary,
+    profile: TrackerGauntletProfile,
+    seed: int,
+) -> str:
+    if _action_records(summary) != list(expected_tracker_action_records(profile, seed)):
+        raise GauntletSafetyError("tracker scenario actions did not match the fixture oracle")
+    return expected_tracker_action_digest(profile, seed)
+```
+
+For `malformed_embedded_transport_aware`, validate `(0, N)` plus exact records
+on success or `(1, 0)` plus fail-closed/no-mutation evidence on error, then
+record `_scenario_digest(name, "transport_safe")` in both branches.
+
+- [x] **Step 4: Run the scenario nodes and verify GREEN**
+
+Run the Step 2 command and the existing paired transport tests. Every selected
+test must pass; unchanged unsafe paths must still fail closed.
+
+- [x] **Step 5: Write wrapper and payload RED tests**
+
+Add literal assertions that one bulk response uses the complete qBittorrent
+torrent-info wrapper key set, exposes ordinary mapping fields as attributes,
+renames `reannounce` to `reannounce_in`, keeps embedded trackers under mapping
+access, and delegates `.trackers` to the exact endpoint. After reading
+`.trackers` for all `N` bulk items, require counters `(1, N)` and rejection by
+`validate_tracker_endpoint_counts`. Require compact JSON for one supported item
+to remain between 3,000 and 5,000 bytes.
+
+- [x] **Step 6: Run the wrapper/payload nodes and verify RED**
+
+```bash
+uv run pytest tests/test_gauntlet_runner.py -k 'torrent_info_payload or tracker_attribute_uses_exact_endpoint or redundant_bulk_attribute_transport' -q
+```
+
+Expected: seven-key payload and embedded-returning `.trackers` assertions fail.
+
+- [x] **Step 7: Implement the dependency-free faithful wrapper and payload**
+
+Build the raw torrent-info payload from deterministic synthetic values for the
+official Web API 2.15.1 serializer keys. Convert each decoded item with:
+
+```python
+class FakeTrackerBulkTorrent(dict[str, object]):
+    def __init__(self, payload: Mapping[str, object], client: FakeTrackerClient) -> None:
+        converted = dict(payload)
+        converted["reannounce_in"] = converted.pop("reannounce")
+        super().__init__(converted)
+        self._client = client
+
+    def __getattr__(self, name: str) -> object:
+        try:
+            return self[name]
+        except KeyError as error:
+            raise AttributeError(name) from error
+
+    @property
+    def trackers(self) -> object:
+        return self._client.torrents_trackers(torrent_hash=cast(str, self["hash"]))
+```
+
+Keep `trackers` in the mapping, bind wrappers to the fake client, and incorporate
+a path-normalized payload into the manifest oracle.
+
+- [x] **Step 8: Run the wrapper/payload nodes and verify GREEN**
+
+Run the Step 6 command plus existing fixture freshness, truncation, and endpoint
+budget tests. Recompute only manifest digests changed by the complete payload.
+
+- [x] **Step 9: Write outbound audit RED tests**
+
+Inject `sys.audit("socket.sendto", ...)` in a primary pass and
+`sys.audit("socket.sendmsg", ...)` in scenario and shadow boundaries. Assert a
+sanitized `network outbound` failure with no destination retained and no socket
+call or packet. Extend strict evidence tests to require
+`network_outbound_attempts = 0` and reject missing, extra, or nonzero values.
+
+- [x] **Step 10: Run outbound audit nodes and verify RED**
+
+```bash
+uv run pytest tests/test_gauntlet_safety.py -k 'sendto or sendmsg or outbound' -q
+```
+
+Expected: all injected outbound events are accepted because the audit boundary
+does not yet classify them.
+
+- [x] **Step 11: Implement outbound isolation and schema locks**
+
+Add `socket.sendto` and `socket.sendmsg` to a dedicated outbound event set and
+increment `network_outbound_attempts`. Bump evaluator, quality-bar, and paired
+schemas/versions; require the fourth exact zero counter at standalone, scenario,
+and paired boundaries.
+
+- [x] **Step 12: Run outbound audit nodes and verify GREEN**
+
+Run Step 10 plus all existing safety tests. Failures must contain only the
+sanitized attempt class and every normal artifact must emit zero.
+
+- [x] **Step 13: Update documentation and locked values**
+
+Correct all global-network claims, including root README and changelog, to say
+connection, DNS, `sendto`, and `sendmsg` attempts. Explicitly disclose that
+CPython audit hooks do not separately expose `send`/`sendall` on a pre-connected
+socket. Update scenario/manifest digests and evidence schema without changing
+runtime/memory thresholds.
+
+- [x] **Step 14: Verify, commit, and regenerate clean artifacts**
+
+Run focused/full pytest, `gauntlet_full`, Black, fatal and changed-file Flake8,
+BasedPyright CLI, mypy, actual LSP over every changed Python file, pip-audit,
+Bandit, build, installed-wheel smoke, and `git diff --check`. Commit one coherent
+evaluator-only change, generate `round3` quick/full JSON under `/tmp` from the
+clean commit, and append the ignored task report and progress ledger.

@@ -700,9 +700,12 @@ the real mutating boundary against a fresh in-memory fake, records normalized
 per-hash endpoint arguments, and requires its exact digest to equal the
 fixture-independent preview oracle. The shadow sets `delete_files=False` and
 is excluded from runtime and peak-memory samples. A process audit denies all
-filesystem writes or mutations plus network connection and DNS events while
-production boundaries execute; artifacts and semantic scenarios require every
-sanitized isolation counter to remain zero.
+filesystem writes or mutations plus network connection, DNS, `sendto`, and
+`sendmsg` events while production boundaries execute; artifacts and semantic
+scenarios require every sanitized isolation counter to remain zero. This is an
+audit-event boundary, not a syscall-level network sandbox: CPython does not
+emit separate events for `send` or `sendall` on a socket connected before the
+guarded boundary.
 
 Tracker endpoint budgets accept the legacy control shape of zero bulk reads and
 one exact read per torrent, or the optimized shape of one bulk read and zero

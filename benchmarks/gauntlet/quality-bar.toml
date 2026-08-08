@@ -1,6 +1,6 @@
-schema_version = 4
-evaluator_schema_version = 5
-evaluator_version = "1.5.0"
+schema_version = 5
+evaluator_schema_version = 6
+evaluator_version = "1.6.0"
 result_schema = "qbitunregistered.gauntlet.result"
 scope = "orphan_and_tracker_dry_run_evaluation"
 
@@ -126,7 +126,7 @@ relative_range_max = 0.50
 kind = "tracker"
 tier = "round"
 seed = 20260729
-fixture_manifest_digest = "23043a6672a4942b1fc7a32247709eb9d3dcee59c6032066e9d1714c0082dd29"
+fixture_manifest_digest = "a521c20c06e08a00db46c7f9c8bab747e5af891f2b95c10a6786c03ecddcd809"
 intended_action_digest = "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
 execution_action_digest = "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
 
@@ -165,12 +165,13 @@ allowed_transports = [[0, 1300], [1, 0]]
 filesystem_write_attempts = 0
 network_connect_attempts = 0
 network_dns_attempts = 0
+network_outbound_attempts = 0
 
 [profiles.tracker-quick.scenario_action_digests]
 complete_embedded = "085848fdcec8d2aa317a2ce60a7e6bdda5d8213e4bd1f3ea2039f96d93710579"
 omitted_embedded_fallback = "54097cb85f5d77a899aa51a8fe3ac3123d6003a91b24002b98587c919a804817"
 rejected_embedded_fallback = "187126c184990bdc138ecd1b368540b9018b4ae58a89af3bb39c602bbc6f8e31"
-malformed_embedded_transport_aware = "7ff7f99fe189f50081dda2474954d9cf5b3522b8c5acfd987c8332c565fda5d3"
+malformed_embedded_transport_aware = "9915630d6e4c3f77b50cb0a16c7c71be9ab2ed66ad89d73e4c7bad801319bd8b"
 malformed_exact_fail_closed = "992e237a25603f8430f45d77b4ed740ab845183c0016a3199e0aa661c188e340"
 proven_disappearance = "d8becbe2ee7406fdcbf3d2545755b31899d007ce50f178491b1724329bf4fd90"
 same_hash_readd_fail_closed = "5784ab464c16fbb56c80e82424b4c750935bedc9374bb8192d1b9c5d2c2f0d55"
@@ -193,7 +194,7 @@ relative_range_max = 0.50
 kind = "tracker"
 tier = "candidate"
 seed = 20260729
-fixture_manifest_digest = "35493db55b33dcff61be5520cc66790f98a8a4fd69cf3aaa0c86d845f367f6f1"
+fixture_manifest_digest = "48d95abc70cb540409644aa5c709ce110d79e9a0b5c0e629374d2c51e16b90c6"
 intended_action_digest = "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87"
 execution_action_digest = "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87"
 
@@ -232,12 +233,13 @@ allowed_transports = [[0, 13000], [1, 0]]
 filesystem_write_attempts = 0
 network_connect_attempts = 0
 network_dns_attempts = 0
+network_outbound_attempts = 0
 
 [profiles.tracker-full.scenario_action_digests]
 complete_embedded = "085848fdcec8d2aa317a2ce60a7e6bdda5d8213e4bd1f3ea2039f96d93710579"
 omitted_embedded_fallback = "54097cb85f5d77a899aa51a8fe3ac3123d6003a91b24002b98587c919a804817"
 rejected_embedded_fallback = "187126c184990bdc138ecd1b368540b9018b4ae58a89af3bb39c602bbc6f8e31"
-malformed_embedded_transport_aware = "7ff7f99fe189f50081dda2474954d9cf5b3522b8c5acfd987c8332c565fda5d3"
+malformed_embedded_transport_aware = "9915630d6e4c3f77b50cb0a16c7c71be9ab2ed66ad89d73e4c7bad801319bd8b"
 malformed_exact_fail_closed = "992e237a25603f8430f45d77b4ed740ab845183c0016a3199e0aa661c188e340"
 proven_disappearance = "d8becbe2ee7406fdcbf3d2545755b31899d007ce50f178491b1724329bf4fd90"
 same_hash_readd_fail_closed = "5784ab464c16fbb56c80e82424b4c750935bedc9374bb8192d1b9c5d2c2f0d55"

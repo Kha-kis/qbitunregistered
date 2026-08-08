@@ -54,6 +54,7 @@ ISOLATION_COUNTER_KEYS = {
     "filesystem_write_attempts",
     "network_connect_attempts",
     "network_dns_attempts",
+    "network_outbound_attempts",
 }
 COMMON_RESULT_KEYS = {
     "schema",

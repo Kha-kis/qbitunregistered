@@ -89,8 +89,10 @@ evidence.
 - `endpoint_counters`, per-pass endpoint counters, and
   `mutation_counters` prove the selected transport and require zero primary
   qBittorrent mutations. `isolation_counters` require zero filesystem-write,
-  network-connect, and network-DNS attempts for measured passes, the shadow,
-  and every semantic scenario.
+  network-connect, network-DNS, and destination-bearing network-outbound
+  (`sendto`/`sendmsg`) attempts for measured passes, the shadow, and every
+  semantic scenario. This audit-event boundary cannot separately observe
+  `send` or `sendall` on a socket connected before the boundary.
 - Runtime statistics retain all five untraced samples. Peak memory comes from a
   separate traced, untimed pass. Fixture construction, manifest verification,
   and semantic safety scenarios are outside the measured interval.

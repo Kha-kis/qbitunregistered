@@ -675,8 +675,11 @@ Your contributions make this project better! Feel free to report bugs, suggest f
 Tracker batching changes are evaluated with deterministic `tracker-quick` and
 `tracker-full` gauntlets before any protected live dry-run. The evaluator locks
 the preview and fresh-fake shadow execution actions, globally denies filesystem
-writes and network access during production calls, and requires paired control
-and candidate passes to prove the exact-to-bulk endpoint collapse. See the
+writes plus audited connection, DNS, `sendto`, and `sendmsg` attempts during
+production calls, and requires paired control and candidate passes to prove the
+exact-to-bulk endpoint collapse. This audit hook is not a syscall-level network
+sandbox and cannot separately observe `send` or `sendall` on a socket connected
+before the guarded boundary. See the
 [gauntlet guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation).
 
 ## License

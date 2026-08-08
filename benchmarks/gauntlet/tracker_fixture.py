@@ -128,24 +128,25 @@ class TrackerTorrent:
 
 
 class FakeTrackerBulkTorrent(dict[str, object]):
-    """Mapping-shaped bulk torrent response with qBittorrent-style attributes."""
+    """Dependency-free equivalent of qBittorrent's torrent dictionary wrapper."""
 
-    def __init__(self, payload: Mapping[str, object]) -> None:
-        super().__init__(payload)
-        self.hash = cast(str, payload["hash"])
-        self.name = cast(str, payload["name"])
-        self.save_path = cast(str, payload["save_path"])
-        self.content_path = cast(str, payload["content_path"])
-        self.category = cast(str, payload["category"])
-        self.tags = cast(str, payload["tags"])
+    def __init__(self, payload: Mapping[str, object], client: FakeTrackerClient) -> None:
+        converted = dict(payload)
+        converted["reannounce_in"] = converted.pop("reannounce")
+        super().__init__(converted)
+        self._client = client
+
+    def __getattr__(self, name: str) -> object:
+        """Expose ordinary mapping fields with the installed client's attribute shape."""
+        try:
+            return self[name]
+        except KeyError as error:
+            raise AttributeError(name) from error
 
     @property
     def trackers(self) -> object:
-        """Expose the embedded field without normalizing malformed metadata."""
-        try:
-            return self["trackers"]
-        except KeyError as error:
-            raise AttributeError("trackers") from error
+        """Fetch exact tracker metadata as the installed client property does."""
+        return self._client.torrents_trackers(torrent_hash=cast(str, self["hash"]))
 
 
 EmbeddedTrackersMode = Literal["supported", "omitted", "rejected", "malformed"]
@@ -153,6 +154,86 @@ EmbeddedTrackersMode = Literal["supported", "omitted", "rejected", "malformed"]
 
 def _fresh_decoded_payload(value: object) -> object:
     return json.loads(json.dumps(value, separators=(",", ":")))
+
+
+def torrent_info_payload(torrent: TrackerTorrent, index: int) -> dict[str, object]:
+    """Return a deterministic sanitized Web API 2.15.1 torrent-info mapping."""
+    total_size = 1_073_741_824 + index * 4_096
+    downloaded = total_size + index * 1_024
+    uploaded = downloaded * 2
+    save_path = Path(torrent.save_path)
+    return {
+        "added_on": 1_700_000_000 + index,
+        "amount_left": 0,
+        "auto_tmm": False,
+        "availability": 1.0,
+        "category": torrent.category,
+        "comment": (
+            "Sanitized deterministic gauntlet fixture metadata for offline evaluator fidelity; "
+            "contains no operator data, credentials, routable hosts, or live tracker addresses."
+        ),
+        "completed": total_size,
+        "completion_on": 1_700_003_600 + index,
+        "connections_count": 4 + index % 5,
+        "connections_limit": 100,
+        "content_path": torrent.content_path,
+        "created_by": "qbitunregistered-gauntlet/fixture",
+        "creation_date": 1_699_900_000 + index,
+        "dl_limit": 0,
+        "dlspeed": 0,
+        "download_path": str(save_path / ".unfinished"),
+        "downloaded": downloaded,
+        "downloaded_session": index * 128,
+        "eta": 8_640_000,
+        "f_l_piece_prio": False,
+        "force_start": False,
+        "has_metadata": True,
+        "hash": torrent.hash,
+        "inactive_seeding_time_limit": -2,
+        "infohash_v1": torrent.hash,
+        "infohash_v2": hashlib.sha256(f"gauntlet:tracker:v2:{torrent.hash}".encode("ascii")).hexdigest(),
+        "last_activity": 1_700_100_000 + index,
+        "magnet_uri": f"magnet:?xt=urn:btih:{torrent.hash}&dn={torrent.name}&tr=https%3A%2F%2Ftracker.invalid%2Fannounce",
+        "max_inactive_seeding_time": -1,
+        "max_ratio": -1.0,
+        "max_seeding_time": -1,
+        "name": torrent.name,
+        "num_complete": 20 + index % 7,
+        "num_incomplete": index % 3,
+        "num_leechs": index % 4,
+        "num_seeds": 5 + index % 6,
+        "piece_size": 4_194_304,
+        "pieces_have": 256 + index % 8,
+        "pieces_num": 256 + index % 8,
+        "popularity": 1.0 + (index % 10) / 100,
+        "priority": 0,
+        "private": False,
+        "progress": 1.0,
+        "ratio": 2.0,
+        "ratio_limit": -2.0,
+        "reannounce": 1_800 + index % 300,
+        "root_path": torrent.content_path,
+        "save_path": torrent.save_path,
+        "seeding_time": 96_400 + index,
+        "seeding_time_limit": -2,
+        "seen_complete": 1_700_090_000 + index,
+        "seq_dl": False,
+        "share_limit_action": "Stop",
+        "share_limits_mode": "Default",
+        "size": total_size,
+        "state": "stoppedUP",
+        "super_seeding": False,
+        "tags": torrent.tags,
+        "time_active": 100_000 + index,
+        "total_size": total_size,
+        "total_wasted": index * 64,
+        "tracker": "https://tracker.invalid/announce",
+        "trackers_count": 3,
+        "up_limit": 0,
+        "uploaded": uploaded,
+        "uploaded_session": index * 256,
+        "upspeed": 0,
+    }
 
 
 class _FakeTrackerTorrents:
@@ -176,14 +257,22 @@ class _FakeTrackerTorrents:
         for index, torrent in enumerate(snapshot):
             if not isinstance(torrent, TrackerTorrent):
                 return snapshot
-            payload: dict[str, object] = {
-                "hash": torrent.hash,
-                "name": torrent.name,
-                "save_path": torrent.save_path,
-                "content_path": torrent.content_path,
-                "category": torrent.category,
-                "tags": torrent.tags,
-            }
+            payload = dict(self._client.torrent_info_by_hash[torrent.hash])
+            save_path = Path(torrent.save_path)
+            payload.update(
+                {
+                    "category": torrent.category,
+                    "content_path": torrent.content_path,
+                    "download_path": str(save_path / ".unfinished"),
+                    "magnet_uri": (
+                        f"magnet:?xt=urn:btih:{torrent.hash}&dn={torrent.name}" "&tr=https%3A%2F%2Ftracker.invalid%2Fannounce"
+                    ),
+                    "name": torrent.name,
+                    "root_path": torrent.content_path,
+                    "save_path": torrent.save_path,
+                    "tags": torrent.tags,
+                }
+            )
             if include_trackers and self._client.embedded_trackers_mode != "omitted":
                 payload["trackers"] = (
                     {"malformed": True}
@@ -194,7 +283,7 @@ class _FakeTrackerTorrents:
         decoded = _fresh_decoded_payload(response)
         if not isinstance(decoded, list):
             raise TypeError("tracker snapshot did not decode to a list")
-        return [FakeTrackerBulkTorrent(item) for item in decoded if isinstance(item, Mapping)]
+        return [FakeTrackerBulkTorrent(item, self._client) for item in decoded if isinstance(item, Mapping)]
 
 
 class FakeTrackerClient:
@@ -212,6 +301,9 @@ class FakeTrackerClient:
         self.trackers_by_hash: dict[str, object] = {
             torrent_hash: list(trackers) if isinstance(trackers, Sequence) else trackers
             for torrent_hash, trackers in trackers_by_hash.items()
+        }
+        self.torrent_info_by_hash = {
+            torrent.hash: torrent_info_payload(torrent, index) for index, torrent in enumerate(self.initial_torrents)
         }
         self.embedded_trackers_mode = embedded_trackers_mode
         self.read_counts: Counter[str] = Counter({endpoint: 0 for endpoint in TRACKER_READ_ENDPOINTS})
@@ -548,4 +640,5 @@ __all__ = [
     "build_tracker_fixture",
     "expected_tracker_action_digest",
     "expected_tracker_action_records",
+    "torrent_info_payload",
 ]

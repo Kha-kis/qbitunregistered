@@ -7,6 +7,7 @@ import importlib
 import json
 import logging
 import os
+import socket
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -272,6 +273,32 @@ def test_tracker_evaluator_rejects_primary_network_connect_audit(
     assert "forbidden.example.invalid" not in str(error.value)
 
 
+def test_tracker_evaluator_rejects_primary_connectionless_send_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a measured production call attempting connectionless outbound I/O."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    real_execute_pipeline = tracker_runner._execute_pipeline
+
+    def send_before_pipeline(current_fixture):
+        sys.audit("socket.sendto", object(), ("forbidden.example.invalid", 443))
+        return real_execute_pipeline(current_fixture)
+
+    monkeypatch.setattr(tracker_runner, "_execute_pipeline", send_before_pipeline)
+
+    with pytest.raises(runner.GauntletSafetyError, match="network outbound") as error:
+        tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+    assert "forbidden.example.invalid" not in str(error.value)
+
+
 def test_tracker_semantic_scenario_rejects_network_dns_audit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -293,6 +320,33 @@ def test_tracker_semantic_scenario_rejects_network_dns_audit(
     monkeypatch.setattr(tracker_runner, "analyze_impact", resolve_before_analysis)
 
     with pytest.raises(runner.GauntletSafetyError, match="network dns") as error:
+        tracker_runner.evaluate_tracker_scenarios(fixture)
+
+    assert "forbidden.example.invalid" not in str(error.value)
+
+
+@pytest.mark.skipif(not hasattr(socket.socket, "sendmsg"), reason="socket.sendmsg is unavailable")
+def test_tracker_semantic_scenario_rejects_connectionless_sendmsg_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a semantic scenario attempting vectorized connectionless outbound I/O."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    real_analyze_impact = tracker_runner.analyze_impact
+
+    def sendmsg_before_analysis(*args, **kwargs):
+        sys.audit("socket.sendmsg", object(), (b"blocked",), (), ("forbidden.example.invalid", 443))
+        return real_analyze_impact(*args, **kwargs)
+
+    monkeypatch.setattr(tracker_runner, "analyze_impact", sendmsg_before_analysis)
+
+    with pytest.raises(runner.GauntletSafetyError, match="network outbound") as error:
         tracker_runner.evaluate_tracker_scenarios(fixture)
 
     assert "forbidden.example.invalid" not in str(error.value)
@@ -346,6 +400,32 @@ def test_tracker_shadow_execution_rejects_network_connect_audit(
     monkeypatch.setattr(tracker_fixture.FakeTrackerClient, "torrents_add_tags", connect_before_adding_tags)
 
     with pytest.raises(runner.GauntletSafetyError, match="network connect") as error:
+        tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+    assert "shadow.example.invalid" not in str(error.value)
+
+
+def test_tracker_shadow_execution_rejects_connectionless_send_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch the untimed mutating shadow attempting connectionless outbound I/O."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    real_add_tags = tracker_fixture.FakeTrackerClient.torrents_add_tags
+
+    def send_before_adding_tags(client, *args, **kwargs):
+        sys.audit("socket.sendto", object(), ("shadow.example.invalid", 443))
+        return real_add_tags(client, *args, **kwargs)
+
+    monkeypatch.setattr(tracker_fixture.FakeTrackerClient, "torrents_add_tags", send_before_adding_tags)
+
+    with pytest.raises(runner.GauntletSafetyError, match="network outbound") as error:
         tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
 
     assert "shadow.example.invalid" not in str(error.value)
@@ -804,6 +884,7 @@ def test_tracker_semantic_matrix_emits_only_normalized_sanitized_pass_evidence(t
             "filesystem_write_attempts": 0,
             "network_connect_attempts": 0,
             "network_dns_attempts": 0,
+            "network_outbound_attempts": 0,
         }
     assert fixture.client.mutation_total == 0
 

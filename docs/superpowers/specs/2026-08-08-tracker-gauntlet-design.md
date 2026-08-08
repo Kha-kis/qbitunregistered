@@ -75,7 +75,8 @@ Each pass emits and validates:
   operator-visible action counts;
 - candidate counts for default tags, cross-seed tags, and torrent-only deletes;
 - explicit zero values for every primary qBittorrent mutation counter and
-  every filesystem-write, network-connect, and network-DNS attempt class;
+  every filesystem-write, network-connect, network-DNS, and destination-bearing
+  network-outbound attempt class;
 - ordinary `torrents.info`, `torrents.info.include_trackers`, and
   `torrents_trackers` request counts.
 
@@ -192,3 +193,44 @@ runtime regression guard: before a candidate exists its maximum paired ratio
 is `1.0`; peak memory remains at most `1.25`. No artificial latency or local
 network service is part of the evaluator. A real wall-clock improvement can be
 accepted only from separately approved paired protected live dry-run evidence.
+
+## Critic hardening round 3
+
+The malformed-embedded scenario has two transport-specific safe outcomes. An
+exact-only control ignores the unrequested malformed mapping and must produce
+the complete fixture-derived action records. A bulk candidate consumes the
+malformed mapping and must fail closed before producing any action or mutation.
+The evaluator validates those branch-specific facts and endpoint counts first,
+then emits one `transport_safe` scenario digest for both. The paired sanitizer
+therefore compares one transport-neutral safety fact while retaining each
+child's transport counters. Exact success with wrong action hashes and bulk
+success or mutation remain failures.
+
+The fake response wrapper mirrors the installed `qbittorrent-api`
+`TorrentDictionary` boundary without importing that dependency into isolated
+paired children. Embedded trackers remain available only through mapping access
+(`torrent["trackers"]` or `torrent.get("trackers")`). Attribute access through
+`torrent.trackers` delegates to `torrents_trackers()` and increments the exact
+endpoint counter. Wrapper construction exposes ordinary mapping fields as
+attributes and converts the raw `reannounce` key to `reannounce_in`, matching
+the installed model. Consequently, reading `.trackers` after one bulk response
+produces the redundant `(bulk=1, exact=N)` shape and fails the transport gate.
+
+Each raw torrent-list item contains the complete sanitized torrent-info field
+set serialized by qBittorrent Web API 2.15.1, plus the optional `trackers`
+field. Values are deterministic and realistic but contain only fixture paths,
+reserved `.invalid` URLs, and synthetic hashes. Tests lock the exact wrapper
+key set and require one supported embedded item serialized as compact JSON to
+remain between 3,000 and 5,000 bytes. The fixture manifest incorporates a
+path-normalized form of these fields so field/value drift changes the reviewed
+oracle without retaining temporary host paths.
+
+The guarded production boundary records a fourth sanitized isolation class,
+`network_outbound_attempts`. CPython audit events `socket.sendto` and
+`socket.sendmsg` are denied in that class before the underlying call proceeds;
+connection establishment (`connect`/`connect_ex`) and DNS events retain their
+existing classes. This is not a complete syscall-level network sandbox:
+CPython does not publish separate audit events for `send` or `sendall` on a
+socket connected before the guarded boundary. Documentation therefore claims
+only the connection, DNS, and destination-bearing outbound attempts that the
+audit hook actually observes and denies.

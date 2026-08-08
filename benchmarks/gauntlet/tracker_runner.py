@@ -36,6 +36,7 @@ from benchmarks.gauntlet.tracker_fixture import (
     build_tracker_fixture,
     expected_tracker_action_digest,
     expected_tracker_action_records,
+    torrent_info_payload,
 )
 from qbitunregistered.cache import clear_cache
 from qbitunregistered.file_operations import SafetyCheckError
@@ -155,6 +156,7 @@ _FILESYSTEM_MUTATION_EVENTS = {
     "os.utime",
 }
 _NETWORK_CONNECT_EVENTS = {"socket.connect", "socket.connect_ex"}
+_NETWORK_OUTBOUND_EVENTS = {"socket.sendmsg", "socket.sendto"}
 _NETWORK_DNS_EVENTS = {
     "socket.getaddrinfo",
     "socket.gethostbyaddr",
@@ -166,6 +168,7 @@ _ISOLATION_COUNTER_KEYS = (
     "filesystem_write_attempts",
     "network_connect_attempts",
     "network_dns_attempts",
+    "network_outbound_attempts",
 )
 
 
@@ -214,6 +217,9 @@ class _ProductionBoundaryAudit:
         elif event in _NETWORK_DNS_EVENTS:
             attempt_class = "network dns"
             counter = "network_dns_attempts"
+        elif event in _NETWORK_OUTBOUND_EVENTS:
+            attempt_class = "network outbound"
+            counter = "network_outbound_attempts"
         else:
             return
         self.counters[counter] += 1
@@ -315,20 +321,27 @@ def tracker_fixture_manifest_digest(fixture: TrackerGauntletFixture) -> str:
     )
     tracker_count = 0
     seen_hashes: set[str] = set()
-    for torrent in fixture.initial_torrents:
+    for index, torrent in enumerate(fixture.initial_torrents):
         if torrent.hash in seen_hashes:
             raise GauntletSafetyError("tracker fixture contains a duplicate torrent hash")
         seen_hashes.add(torrent.hash)
         save_path_group = Path(torrent.save_path).name
         if not re.fullmatch(r"group-[0-9]{5}", save_path_group):
             raise GauntletSafetyError("tracker fixture contains an unsafe save-path group")
+        normalized_info = torrent_info_payload(torrent, index)
+        normalized_info["reannounce_in"] = normalized_info.pop("reannounce")
+        normalized_info.update(
+            {
+                "save_path": save_path_group,
+                "download_path": f"{save_path_group}/.unfinished",
+                "content_path": Path(torrent.content_path).name,
+                "root_path": Path(torrent.content_path).name,
+            }
+        )
         _digest_record(
             digest,
             {
-                "hash": torrent.hash,
-                "name": torrent.name,
-                "save_path_group": save_path_group,
-                "tags": torrent.tags,
+                "torrent_info": normalized_info,
             },
         )
         trackers = fixture.client.trackers_by_hash.get(torrent.hash)
@@ -371,6 +384,22 @@ def _intended_action_digest(summary: ImpactSummary) -> str:
     for record in _action_records(summary):
         _digest_record(digest, record)
     return digest.hexdigest()
+
+
+def _validated_scenario_action_digest(
+    summary: ImpactSummary,
+    profile: TrackerGauntletProfile,
+    seed: int,
+) -> str:
+    """Validate exact scenario actions against fixture roles and return their digest."""
+    action_records = _action_records(summary)
+    expected_records = list(expected_tracker_action_records(profile, seed))
+    if action_records != expected_records:
+        raise GauntletSafetyError("tracker scenario action records did not match the independent fixture oracle")
+    action_digest = _intended_action_digest(summary)
+    if action_digest != expected_tracker_action_digest(profile, seed):
+        raise GauntletSafetyError("tracker scenario action digest did not match the independent fixture oracle")
+    return action_digest
 
 
 def _candidate_counts(summary: ImpactSummary) -> dict[str, int]:
@@ -497,6 +526,8 @@ def _validate_unchanged_state(
         raise GauntletSafetyError("tracker production boundary denied network connect")
     if production_audit.counters["network_dns_attempts"]:
         raise GauntletSafetyError("tracker production boundary denied network dns")
+    if production_audit.counters["network_outbound_attempts"]:
+        raise GauntletSafetyError("tracker production boundary denied network outbound")
     if fixture.client.mutation_total:
         raise GauntletSafetyError("tracker dry-run attempted a qBittorrent mutation")
     if _filesystem_digest(fixture.root) != initial_filesystem_digest:
@@ -764,10 +795,11 @@ def evaluate_tracker_scenarios(  # noqa: C901
             ("malformed_embedded_transport_aware", "malformed"),
         )
         for offset, (name, mode) in enumerate(compatibility_modes):
+            scenario_seed = 30_000 + offset
             fixture = build_tracker_fixture(
                 scenario_root / name,
                 scenario_profile,
-                30_000 + offset,
+                scenario_seed,
                 embedded_trackers_mode=mode,
             )
             before = _filesystem_digest(fixture.root)
@@ -780,7 +812,14 @@ def evaluate_tracker_scenarios(  # noqa: C901
                     raise GauntletSafetyError(
                         "tracker compatibility scenario failed without consuming malformed bulk metadata"
                     )
-                record(name, fixture, before)
+                if counters["torrents_trackers"] != 0:
+                    raise GauntletSafetyError("malformed bulk tracker scenario used a redundant exact fallback")
+                record(
+                    name,
+                    fixture,
+                    before,
+                    action_digest=_scenario_digest(name, "transport_safe"),
+                )
             else:
                 counters = _scenario_endpoint_counters(fixture)
                 transport = (counters["torrents.info.include_trackers"], counters["torrents_trackers"])
@@ -790,7 +829,10 @@ def evaluate_tracker_scenarios(  # noqa: C901
                     raise GauntletSafetyError("tracker compatibility fallback evidence is incomplete")
                 if mode == "malformed" and transport != (0, 6):
                     raise GauntletSafetyError("malformed embedded metadata was normalized without a safe exact-only control")
-                record(name, fixture, before, action_digest=_intended_action_digest(summary))
+                action_digest = _validated_scenario_action_digest(summary, scenario_profile, scenario_seed)
+                if mode == "malformed":
+                    action_digest = _scenario_digest(name, "transport_safe")
+                record(name, fixture, before, action_digest=action_digest)
 
         fixture = build_tracker_fixture(
             scenario_root / "malformed-exact",

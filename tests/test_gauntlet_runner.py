@@ -896,11 +896,11 @@ def test_tracker_fixture_interleaves_roles_and_keeps_action_targets_at_tail(tmp_
     )
 
 
-def test_tracker_fake_missing_embedded_attribute_raises_attribute_error(tmp_path: Path) -> None:
-    """Catch an omitted mapping key leaking a KeyError through attribute access."""
+def test_tracker_bulk_torrent_info_payload_is_complete_and_representative(tmp_path: Path) -> None:
+    """Lock the sanitized Web API torrent-info shape and a realistic payload size."""
     tracker_fixture = _tracker_fixture_module()
     profile = tracker_fixture.TrackerGauntletProfile(
-        name="tracker-missing-attribute",
+        name="tracker-info-shape",
         torrent_count=4,
         tracker_record_count=12,
         save_path_group_count=3,
@@ -913,14 +913,119 @@ def test_tracker_fake_missing_embedded_attribute_raises_attribute_error(tmp_path
         tmp_path / "fixture",
         profile,
         seed=101,
-        embedded_trackers_mode="omitted",
     )
 
     response = fixture.client.torrents.info(include_trackers=True)
+    torrent = response[0]
 
-    assert "trackers" not in response[0]
-    with pytest.raises(AttributeError, match="trackers"):
-        _ = response[0].trackers
+    assert set(torrent) == {
+        "added_on",
+        "amount_left",
+        "auto_tmm",
+        "availability",
+        "category",
+        "comment",
+        "completed",
+        "completion_on",
+        "connections_count",
+        "connections_limit",
+        "content_path",
+        "created_by",
+        "creation_date",
+        "dl_limit",
+        "dlspeed",
+        "download_path",
+        "downloaded",
+        "downloaded_session",
+        "eta",
+        "f_l_piece_prio",
+        "force_start",
+        "has_metadata",
+        "hash",
+        "inactive_seeding_time_limit",
+        "infohash_v1",
+        "infohash_v2",
+        "last_activity",
+        "magnet_uri",
+        "max_inactive_seeding_time",
+        "max_ratio",
+        "max_seeding_time",
+        "name",
+        "num_complete",
+        "num_incomplete",
+        "num_leechs",
+        "num_seeds",
+        "piece_size",
+        "pieces_have",
+        "pieces_num",
+        "popularity",
+        "priority",
+        "private",
+        "progress",
+        "ratio",
+        "ratio_limit",
+        "reannounce_in",
+        "root_path",
+        "save_path",
+        "seeding_time",
+        "seeding_time_limit",
+        "seen_complete",
+        "seq_dl",
+        "share_limit_action",
+        "share_limits_mode",
+        "size",
+        "state",
+        "super_seeding",
+        "tags",
+        "time_active",
+        "total_size",
+        "total_wasted",
+        "tracker",
+        "trackers",
+        "trackers_count",
+        "up_limit",
+        "uploaded",
+        "uploaded_session",
+        "upspeed",
+    }
+    assert "reannounce" not in torrent
+    assert torrent.reannounce_in == torrent["reannounce_in"]
+    assert torrent.downloaded == torrent["downloaded"]
+    assert torrent["share_limits_mode"] == "Default"
+    assert torrent["share_limit_action"] == "Stop"
+    assert torrent["state"] == "stoppedUP"
+    serialized_size = len(json.dumps(torrent, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    assert 3_000 <= serialized_size <= 5_000
+
+
+def test_tracker_attribute_uses_exact_endpoint_and_redundant_transport_is_rejected(tmp_path: Path) -> None:
+    """Catch a fake wrapper that misrepresents attribute access as embedded data."""
+    tracker_fixture = _tracker_fixture_module()
+    tracker_runner = _tracker_runner_module()
+    profile = tracker_fixture.TrackerGauntletProfile(
+        name="tracker-attribute-transport",
+        torrent_count=4,
+        tracker_record_count=12,
+        save_path_group_count=3,
+        default_tag_count=1,
+        cross_seed_tag_count=1,
+        delete_count=1,
+        tier="test",
+    )
+    fixture = tracker_fixture.build_tracker_fixture(tmp_path / "fixture", profile, seed=101)
+
+    response = fixture.client.torrents.info(include_trackers=True)
+    embedded = [torrent["trackers"] for torrent in response]
+    exact = [torrent.trackers for torrent in response]
+
+    assert embedded == [trackers[3:] for trackers in exact]
+    assert fixture.client.read_counts == {
+        "torrents.info": 0,
+        "torrents.info.include_trackers": 1,
+        "torrents_trackers": profile.torrent_count,
+    }
+    with pytest.raises(GauntletSafetyError, match="tracker API"):
+        tracker_runner.validate_tracker_endpoint_counts(fixture.client.read_counts, profile)
 
 
 @pytest.mark.parametrize("mode", ["omitted", "rejected", "malformed"])
@@ -1026,7 +1131,7 @@ def test_tracker_pipeline_uses_real_preview_and_dry_run_with_locked_oracles(tmp_
         "cross_seed_tag_targets": 100,
         "torrent_only_deletes": 13,
     }
-    assert result["fixture_manifest_digest"] == "23043a6672a4942b1fc7a32247709eb9d3dcee59c6032066e9d1714c0082dd29"
+    assert result["fixture_manifest_digest"] == "a521c20c06e08a00db46c7f9c8bab747e5af891f2b95c10a6786c03ecddcd809"
     assert result["intended_action_digest"] == "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
     assert result["execution_action_digest"] == result["intended_action_digest"]
     assert result["reconciliation"]["digest"] == "904285725ce961958fc807fa6f8713020c9769d3d1c341d75f1d57e8afa028f4"
@@ -1046,6 +1151,7 @@ def test_tracker_pipeline_uses_real_preview_and_dry_run_with_locked_oracles(tmp_
         "filesystem_write_attempts": 0,
         "network_connect_attempts": 0,
         "network_dns_attempts": 0,
+        "network_outbound_attempts": 0,
     }
 
 
@@ -1084,8 +1190,8 @@ def test_tracker_oracle_dispatches_through_shared_versioned_result(tmp_path: Pat
     assert result["profile_kind"] == "tracker"
     assert result["profile"] == "tracker-quick"
     assert result["schema"] == "qbitunregistered.gauntlet.result"
-    assert result["schema_version"] == 5
-    assert result["evaluator_version"] == "1.5.0"
+    assert result["schema_version"] == 6
+    assert result["evaluator_version"] == "1.6.0"
     assert result["scope"] == "orphan_and_tracker_dry_run_evaluation"
     assert result["commit"] == "unknown"
     assert result["candidate_state"] == {"clean": None, "diff_sha256": "unknown"}
@@ -1132,11 +1238,11 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
     assert quick.kind == full.kind == "tracker"
     assert quick.tier == "round"
     assert full.tier == "candidate"
-    assert quick.fixture_manifest_digest == "23043a6672a4942b1fc7a32247709eb9d3dcee59c6032066e9d1714c0082dd29"
+    assert quick.fixture_manifest_digest == "a521c20c06e08a00db46c7f9c8bab747e5af891f2b95c10a6786c03ecddcd809"
     assert quick.intended_action_digest == "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
     assert quick.execution_action_digest == quick.intended_action_digest
     assert quick.reconciliation["digest"] == "904285725ce961958fc807fa6f8713020c9769d3d1c341d75f1d57e8afa028f4"
-    assert full.fixture_manifest_digest == "35493db55b33dcff61be5520cc66790f98a8a4fd69cf3aaa0c86d845f367f6f1"
+    assert full.fixture_manifest_digest == "48d95abc70cb540409644aa5c709ce110d79e9a0b5c0e629374d2c51e16b90c6"
     assert full.intended_action_digest == "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87"
     assert full.execution_action_digest == full.intended_action_digest
     assert full.reconciliation["digest"] == "18eabfb8a3fc6ea3c455fc893339dc7fd8a6c3ed5ee50aea738e749cd9ddfe8d"
@@ -1161,6 +1267,7 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
             "filesystem_write_attempts": 0,
             "network_connect_attempts": 0,
             "network_dns_attempts": 0,
+            "network_outbound_attempts": 0,
         }
     )
     assert quick.runtime_baseline_fraction_max == full.runtime_baseline_fraction_max == 1.0
@@ -1291,6 +1398,16 @@ def test_tracker_paired_comparison_requires_exact_to_bulk_endpoint_collapse(tmp_
     result["commit"] = "a" * 40
     result["candidate_state"] = {"clean": True, "diff_sha256": "b" * 64}
     result["environment"] = _test_environment()
+    result.update(
+        {
+            "sample_runtime_seconds": [1.0] * DEFAULT_SAMPLES,
+            "median_runtime_seconds": 1.0,
+            "minimum_runtime_seconds": 1.0,
+            "maximum_runtime_seconds": 1.0,
+            "median_absolute_deviation_seconds": 0.0,
+            "peak_memory_bytes": 1,
+        }
+    )
     runs = [
         {"position": position, "role": role, "result": copy.deepcopy(result)} for position, role in enumerate(PAIRED_ORDER)
     ]
@@ -1321,6 +1438,161 @@ def test_tracker_paired_comparison_requires_exact_to_bulk_endpoint_collapse(tmp_
     assert collapsed["gates"]["transport"]["status"] == "pass"
     assert collapsed["gates"]["runtime"]["target"] == 1.0
     assert collapsed["overall"] == "pass"
+
+
+def _bulk_fail_closed_malformed_scenarios(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Any]:
+    """Return scenarios from a candidate that consumes malformed bulk metadata."""
+    tracker_fixture = _tracker_fixture_module()
+    tracker_runner = _tracker_runner_module()
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "bulk-malformed-scenarios",
+        tracker_fixture.TRACKER_QUICK_PROFILE,
+        seed=20_260_729,
+    )
+    real_analyze_impact = tracker_runner.analyze_impact
+
+    def analyze_with_bulk_failure(client, torrents, config, operations):
+        if client.embedded_trackers_mode == "malformed":
+            snapshot = client.torrents.info(include_trackers=True)
+            if not isinstance(snapshot[0].get("trackers"), list):
+                raise tracker_runner.ImpactAnalysisError("malformed embedded tracker metadata")
+        return real_analyze_impact(client, torrents, config, operations)
+
+    monkeypatch.setattr(tracker_runner, "analyze_impact", analyze_with_bulk_failure)
+    return cast(dict[str, Any], tracker_runner.evaluate_tracker_scenarios(fixture))
+
+
+def test_malformed_embedded_scenario_normalizes_exact_and_bulk_safe_outcomes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch transport-specific safe outcomes emitting incompatible action digests."""
+    tracker_fixture = _tracker_fixture_module()
+    tracker_runner = _tracker_runner_module()
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "exact-malformed-scenarios",
+        tracker_fixture.TRACKER_QUICK_PROFILE,
+        seed=20_260_729,
+    )
+    exact_scenarios = tracker_runner.evaluate_tracker_scenarios(fixture)
+    bulk_scenarios = _bulk_fail_closed_malformed_scenarios(tmp_path, monkeypatch)
+    expected_digest = "9915630d6e4c3f77b50cb0a16c7c71be9ab2ed66ad89d73e4c7bad801319bd8b"
+
+    assert exact_scenarios["malformed_embedded_transport_aware"]["action_digest"] == expected_digest
+    assert bulk_scenarios["malformed_embedded_transport_aware"]["action_digest"] == expected_digest
+    assert exact_scenarios["malformed_embedded_transport_aware"]["endpoint_counters"] == {
+        "torrents.info": 0,
+        "torrents.info.include_trackers": 0,
+        "torrents_trackers": 6,
+    }
+    assert bulk_scenarios["malformed_embedded_transport_aware"]["endpoint_counters"] == {
+        "torrents.info": 0,
+        "torrents.info.include_trackers": 1,
+        "torrents_trackers": 0,
+    }
+
+
+def test_tracker_paired_comparison_accepts_transport_neutral_safe_malformed_scenario(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch paired sanitization rejecting a correct bulk fail-closed candidate."""
+    result = run_gauntlet(
+        "tracker-quick",
+        seed=20_260_729,
+        samples=DEFAULT_SAMPLES,
+        repository_root=tmp_path,
+    )
+    result["commit"] = "a" * 40
+    result["candidate_state"] = {"clean": True, "diff_sha256": "b" * 64}
+    result["environment"] = _test_environment()
+    bulk_scenarios = _bulk_fail_closed_malformed_scenarios(tmp_path, monkeypatch)
+    runs = [
+        {"position": position, "role": role, "result": copy.deepcopy(result)} for position, role in enumerate(PAIRED_ORDER)
+    ]
+    for run in runs:
+        if run["role"] != "candidate":
+            continue
+        candidate = run["result"]
+        candidate["scenarios"] = copy.deepcopy(bulk_scenarios)
+        for counters in (
+            candidate["endpoint_counters"],
+            *candidate["timed_sample_endpoint_counters"],
+            *candidate["pass_endpoint_counters"].values(),
+        ):
+            counters.update(
+                {
+                    "torrents.info": 0,
+                    "torrents.info.include_trackers": 1,
+                    "torrents_trackers": 0,
+                }
+            )
+
+    comparison = compare_paired_results(runs, load_quality_bar(QUALITY_BAR_PATH))
+
+    assert comparison["gates"]["transport"]["status"] == "pass"
+    assert comparison["gates"]["child_gates"]["status"] == "pass"
+    assert comparison["overall"] == "pass"
+
+
+def test_malformed_embedded_exact_success_rejects_wrong_action_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch exact-control scenario normalization without hash-level validation."""
+    tracker_fixture = _tracker_fixture_module()
+    tracker_runner = _tracker_runner_module()
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "wrong-exact-actions",
+        tracker_fixture.TRACKER_QUICK_PROFILE,
+        seed=20_260_729,
+    )
+    real_analyze_impact = tracker_runner.analyze_impact
+
+    def analyze_with_wrong_exact_action(client, torrents, config, operations):
+        summary = real_analyze_impact(client, torrents, config, operations)
+        if client.embedded_trackers_mode == "malformed":
+            used_hashes = {
+                torrent_hash for torrent_hashes in summary.torrents_to_tag.values() for torrent_hash in torrent_hashes
+            }
+            replacement_hash = next(torrent.hash for torrent in client.initial_torrents if torrent.hash not in used_hashes)
+            summary.torrents_to_tag["unregistered"][0] = replacement_hash
+        return summary
+
+    monkeypatch.setattr(tracker_runner, "analyze_impact", analyze_with_wrong_exact_action)
+
+    with pytest.raises(GauntletSafetyError, match="scenario action records"):
+        tracker_runner.evaluate_tracker_scenarios(fixture)
+
+
+def test_malformed_embedded_bulk_success_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a candidate treating present malformed bulk metadata as safe success."""
+    tracker_fixture = _tracker_fixture_module()
+    tracker_runner = _tracker_runner_module()
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "unsafe-bulk-success",
+        tracker_fixture.TRACKER_QUICK_PROFILE,
+        seed=20_260_729,
+    )
+    real_analyze_impact = tracker_runner.analyze_impact
+
+    def analyze_with_unsafe_bulk_success(client, torrents, config, operations):
+        summary = real_analyze_impact(client, torrents, config, operations)
+        if client.embedded_trackers_mode == "malformed":
+            client.reset_read_counts()
+            client.torrents.info(include_trackers=True)
+        return summary
+
+    monkeypatch.setattr(tracker_runner, "analyze_impact", analyze_with_unsafe_bulk_success)
+
+    with pytest.raises(GauntletSafetyError, match="malformed embedded metadata"):
+        tracker_runner.evaluate_tracker_scenarios(fixture)
 
 
 @pytest.mark.parametrize(
