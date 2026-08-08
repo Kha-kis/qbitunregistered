@@ -447,6 +447,27 @@ def test_quality_bar_rejects_extra_kind_specific_profile_keys() -> None:
             load_quality_bar_bytes(malformed)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("private_path", "/secret"),
+        ("scenarios", None),
+    ),
+)
+def test_standalone_comparator_rejects_extra_and_cross_kind_top_level_fields(
+    field: str,
+    value: object,
+) -> None:
+    """Catch standalone comparison accepting unknown or tracker-only orphan evidence."""
+    result = _valid_quick_result()
+    result[field] = value
+
+    report = compare_result(result, load_quality_bar(QUALITY_BAR_PATH))
+
+    assert report["overall"] == "fail"
+    assert report["gates"]["result"]["status"] == "fail"
+
+
 def _paired_runs(
     *,
     control_runtimes: tuple[float, float, float, float] = (2.0, 2.0, 2.0, 2.0),
@@ -653,6 +674,85 @@ def test_tracker_profiles_lock_distinct_quick_and_full_workloads() -> None:
         full.delete_count,
         full.tier,
     ) == ("tracker-full", 13_000, 39_000, 12_000, 2_000, 1_000, 130, "candidate")
+
+
+def test_tracker_fixture_derives_quick_and_full_action_oracles_without_impact_summary() -> None:
+    """Catch expected tracker actions being copied from the production preview."""
+    tracker_fixture = _tracker_fixture_module()
+    if not hasattr(tracker_fixture, "expected_tracker_action_records"):
+        pytest.fail("tracker fixture does not expose an independent action oracle")
+    seed = 20_260_729
+    expected_digests = {
+        "tracker-quick": "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5",
+        "tracker-full": "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87",
+    }
+
+    for profile in (tracker_fixture.TRACKER_QUICK_PROFILE, tracker_fixture.TRACKER_FULL_PROFILE):
+        records = tracker_fixture.expected_tracker_action_records(profile, seed)
+        default_hashes = {
+            hashlib.sha256(f"gauntlet:tracker:torrent:{seed}:{index}".encode("ascii")).hexdigest()
+            for index in range(profile.default_tag_count)
+        }
+        cross_seed_hashes = {
+            hashlib.sha256(f"gauntlet:tracker:torrent:{seed}:{index}".encode("ascii")).hexdigest()
+            for index in range(
+                profile.default_tag_count,
+                profile.default_tag_count + profile.cross_seed_tag_count,
+            )
+        }
+        delete_hashes = {
+            hashlib.sha256(f"gauntlet:tracker:torrent:{seed}:{index}".encode("ascii")).hexdigest()
+            for index in range(profile.delete_count)
+        }
+        assert {
+            record["torrent_hash"] for record in records if record["action"] == "add_tag" and record["tag"] == "unregistered"
+        } == default_hashes
+        assert {
+            record["torrent_hash"]
+            for record in records
+            if record["action"] == "add_tag" and record["tag"] == "unregistered:crossseeding"
+        } == cross_seed_hashes
+        assert {record["torrent_hash"] for record in records if record["action"] == "delete_torrent_only"} == delete_hashes
+        digest = hashlib.sha256()
+        for record in records:
+            digest.update(json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            digest.update(b"\n")
+        assert digest.hexdigest() == expected_digests[profile.name]
+
+
+def test_tracker_evaluator_rejects_hash_level_action_drift_with_unchanged_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch one wrong preview hash hiding behind correct tag and delete aggregates."""
+    tracker_fixture = _tracker_fixture_module()
+    tracker_runner = _tracker_runner_module()
+    profile = tracker_fixture.TrackerGauntletProfile(
+        name="tracker-action-drift",
+        torrent_count=6,
+        tracker_record_count=18,
+        save_path_group_count=4,
+        default_tag_count=2,
+        cross_seed_tag_count=2,
+        delete_count=1,
+        tier="test",
+    )
+    fixture = tracker_fixture.build_tracker_fixture(tmp_path / "fixture", profile, seed=20_260_729)
+    real_analyze_impact = tracker_runner.analyze_impact
+
+    def analyze_with_wrong_hash(*args, **kwargs):
+        summary = real_analyze_impact(*args, **kwargs)
+        default_hashes = list(summary.torrents_to_tag["unregistered"])
+        default_hashes[0] = "f" * 64
+        summary.torrents_to_tag["unregistered"] = default_hashes
+        return summary
+
+    monkeypatch.setattr(tracker_runner, "analyze_impact", analyze_with_wrong_hash)
+
+    with pytest.raises(runner.GauntletSafetyError, match="action records"):
+        tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+    assert fixture.client.mutation_total == 0
 
 
 def test_tracker_fixture_uses_complete_sanitized_fresh_tracker_payloads(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypedDict, cast
 
 from benchmarks.gauntlet.fixture_factory import MUTATING_ENDPOINTS
 
@@ -19,6 +19,17 @@ TRACKER_READ_ENDPOINTS = (
 )
 EXACT_UNREGISTERED_MESSAGE = "torrent is not registered"
 PREFIX_UNREGISTERED_MESSAGE = "tracker prefix unavailable: fixture"
+DEFAULT_UNREGISTERED_TAG = "unregistered"
+CROSS_SEED_UNREGISTERED_TAG = "unregistered:crossseeding"
+DELETE_TAG = "tracker-delete"
+
+
+class TrackerActionRecord(TypedDict):
+    """One independently expected tag or torrent-only deletion action."""
+
+    action: str
+    tag: str
+    torrent_hash: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,6 +332,51 @@ def _torrent_hash(seed: int, index: int) -> str:
     return hashlib.sha256(f"gauntlet:tracker:torrent:{seed}:{index}".encode("ascii")).hexdigest()
 
 
+def expected_tracker_action_records(
+    profile: TrackerGauntletProfile,
+    seed: int,
+) -> tuple[TrackerActionRecord, ...]:
+    """Derive the complete expected action set from fixture roles alone."""
+    records: list[TrackerActionRecord] = []
+    for index in range(profile.default_tag_count):
+        records.append(
+            {
+                "action": "add_tag",
+                "tag": DEFAULT_UNREGISTERED_TAG,
+                "torrent_hash": _torrent_hash(seed, index),
+            }
+        )
+    for index in range(
+        profile.default_tag_count,
+        profile.default_tag_count + profile.cross_seed_tag_count,
+    ):
+        records.append(
+            {
+                "action": "add_tag",
+                "tag": CROSS_SEED_UNREGISTERED_TAG,
+                "torrent_hash": _torrent_hash(seed, index),
+            }
+        )
+    for index in range(profile.delete_count):
+        records.append(
+            {
+                "action": "delete_torrent_only",
+                "tag": DELETE_TAG,
+                "torrent_hash": _torrent_hash(seed, index),
+            }
+        )
+    return tuple(sorted(records, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))))
+
+
+def expected_tracker_action_digest(profile: TrackerGauntletProfile, seed: int) -> str:
+    """Hash independently derived fixture actions without production output."""
+    digest = hashlib.sha256()
+    for record in expected_tracker_action_records(profile, seed):
+        digest.update(json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def _real_trackers(index: int, role: Literal["exact", "prefix", "healthy"]) -> list[dict[str, object]]:
     primary_status = {"exact": 4, "prefix": 5, "healthy": 2}[role]
     primary_message = {
@@ -404,6 +460,7 @@ def build_tracker_fixture(
 
 __all__ = [
     "EmbeddedTrackersMode",
+    "TrackerActionRecord",
     "FakeTrackerBulkTorrent",
     "FakeTrackerClient",
     "TRACKER_FULL_PROFILE",
@@ -413,4 +470,6 @@ __all__ = [
     "TrackerGauntletProfile",
     "TrackerTorrent",
     "build_tracker_fixture",
+    "expected_tracker_action_digest",
+    "expected_tracker_action_records",
 ]

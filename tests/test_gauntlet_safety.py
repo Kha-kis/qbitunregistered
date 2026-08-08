@@ -90,6 +90,68 @@ def _filesystem_snapshot(root: Path) -> dict[str, tuple[int, int, int, int, int,
     return snapshot
 
 
+def test_tracker_evaluator_rejects_transient_create_remove_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a dry-run creating and removing a file before final-state validation."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    marker = fixture.root / "transient-mutation"
+    real_execute_pipeline = tracker_runner._execute_pipeline
+
+    def create_then_remove(current_fixture):
+        result = real_execute_pipeline(current_fixture)
+        marker.write_text("transient", encoding="utf-8")
+        marker.unlink()
+        return result
+
+    monkeypatch.setattr(tracker_runner, "_execute_pipeline", create_then_remove)
+
+    with pytest.raises(runner.GauntletSafetyError, match="filesystem mutation"):
+        tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+    assert not marker.exists()
+    assert fixture.client.mutation_total == 0
+
+
+def test_tracker_evaluator_rejects_write_restore_attempts_independent_of_final_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a dry-run restoring bytes after a write so the final digest appears stable."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_729,
+    )
+    marker = fixture.root / "restored-mutation"
+    marker.write_bytes(b"original")
+    real_execute_pipeline = tracker_runner._execute_pipeline
+
+    def write_then_restore(current_fixture):
+        result = real_execute_pipeline(current_fixture)
+        marker.write_bytes(b"changed")
+        marker.write_bytes(b"original")
+        return result
+
+    monkeypatch.setattr(tracker_runner, "_execute_pipeline", write_then_restore)
+    monkeypatch.setattr(tracker_runner, "_filesystem_digest", lambda _root: "stable-final-state")
+
+    with pytest.raises(runner.GauntletSafetyError, match="filesystem mutation"):
+        tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+    assert marker.read_bytes() == b"original"
+    assert fixture.client.mutation_total == 0
+
+
 def test_actual_cli_dry_run_keeps_qbittorrent_and_file_contents_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

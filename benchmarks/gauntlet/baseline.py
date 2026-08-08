@@ -50,6 +50,36 @@ TRACKER_SCENARIO_NAMES = {
     "delete_tag_change_preflight",
     "tracker_change_snapshot_bound",
 }
+COMMON_RESULT_KEYS = {
+    "schema",
+    "schema_version",
+    "evaluator_version",
+    "commit",
+    "candidate_state",
+    "identity_verified",
+    "environment",
+    "scope",
+    "profile_kind",
+    "profile",
+    "tier",
+    "seed",
+    "workload",
+    "fixture_manifest_digest",
+    "intended_action_digest",
+    "reconciliation",
+    "candidate_counts",
+    "endpoint_counters",
+    "timed_sample_endpoint_counters",
+    "pass_endpoint_counters",
+    "mutation_counters",
+    "measurement_policy",
+    "sample_runtime_seconds",
+    "median_runtime_seconds",
+    "minimum_runtime_seconds",
+    "maximum_runtime_seconds",
+    "median_absolute_deviation_seconds",
+    "peak_memory_bytes",
+}
 ORPHAN_WORKLOAD_KEYS = {
     "torrents",
     "filesystem_files",
@@ -668,6 +698,9 @@ def _result_gate(
     profile: ProfileQualityBar,
     profile_name: str,
 ) -> GateResult:
+    expected_keys = COMMON_RESULT_KEYS | ({"scenarios"} if profile.kind == "tracker" else set())
+    if set(result) != expected_keys:
+        return _gate("fail", f"top-level result keys do not match the {profile.kind} schema")
     workload = _mapping_of_ints(result.get("workload"))
     candidates = _mapping_of_ints(result.get("candidate_counts"))
     reconciliation = _runtime_reconciliation(result.get("reconciliation"), profile.kind)

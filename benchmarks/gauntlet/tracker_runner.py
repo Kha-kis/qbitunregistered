@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import statistics
+import sys
 import tempfile
 import time
 import tracemalloc
@@ -31,6 +33,8 @@ from benchmarks.gauntlet.tracker_fixture import (
     TrackerGauntletFixture,
     TrackerGauntletProfile,
     build_tracker_fixture,
+    expected_tracker_action_digest,
+    expected_tracker_action_records,
 )
 from qbitunregistered.cache import clear_cache
 from qbitunregistered.file_operations import SafetyCheckError
@@ -126,6 +130,103 @@ class _TrackerPassEvidence:
     reconciliation: TrackerReconciliationEvidence
     candidate_counts: dict[str, int]
     endpoint_counters: dict[str, int]
+
+
+_ACTIVE_FILESYSTEM_AUDITS: list[_FilesystemMutationAudit] = []
+_FILESYSTEM_AUDIT_HOOK_INSTALLED = False
+_WRITE_OPEN_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
+_MUTATING_PATH_EVENTS: Mapping[str, tuple[tuple[int, int | None], ...]] = {
+    "os.chmod": ((0, 2),),
+    "os.chown": ((0, 3),),
+    "os.link": ((0, 2), (1, 3)),
+    "os.mkdir": ((0, 2),),
+    "os.remove": ((0, 1),),
+    "os.rename": ((0, 2), (1, 3)),
+    "os.rmdir": ((0, 1),),
+    "os.symlink": ((1, 2),),
+    "os.truncate": ((0, None),),
+    "os.utime": ((0, 3),),
+}
+
+
+@dataclass(slots=True)
+class _FilesystemMutationAudit:
+    """Count filesystem mutation attempts lexically or physically inside one root."""
+
+    root: Path
+    attempt_count: int = 0
+
+    def __post_init__(self) -> None:
+        self.root = self.root.resolve()
+
+    def __enter__(self) -> _FilesystemMutationAudit:
+        _install_filesystem_audit_hook()
+        _ACTIVE_FILESYSTEM_AUDITS.append(self)
+        return self
+
+    def __exit__(self, _error_type: object, _error: object, _traceback: object) -> None:
+        _ACTIVE_FILESYSTEM_AUDITS.remove(self)
+
+    def observe(self, event: str, arguments: tuple[object, ...]) -> None:
+        """Record one audited mutation event when any target belongs to this root."""
+        if event == "open":
+            if len(arguments) >= 3 and _open_requests_write(arguments[1], arguments[2]):
+                self._record_path(arguments[0], None)
+            return
+        for path_index, directory_fd_index in _MUTATING_PATH_EVENTS.get(event, ()):
+            directory_fd = (
+                arguments[directory_fd_index]
+                if directory_fd_index is not None and directory_fd_index < len(arguments)
+                else None
+            )
+            if path_index < len(arguments) and self._path_is_within_root(arguments[path_index], directory_fd):
+                self.attempt_count += 1
+                return
+
+    def _record_path(self, raw_path: object, directory_fd: object) -> None:
+        if self._path_is_within_root(raw_path, directory_fd):
+            self.attempt_count += 1
+
+    def _path_is_within_root(self, raw_path: object, directory_fd: object) -> bool:
+        if not isinstance(raw_path, (str, bytes, os.PathLike)):
+            return False
+        path = Path(os.fsdecode(raw_path))
+        if not path.is_absolute():
+            base = Path.cwd()
+            if isinstance(directory_fd, int) and directory_fd >= 0:
+                try:
+                    base = Path(f"/proc/self/fd/{directory_fd}").resolve(strict=True)
+                except OSError:
+                    return False
+            path = base / path
+        lexical_path = Path(os.path.abspath(path))
+        try:
+            resolved_path = path.resolve(strict=False)
+        except OSError:
+            resolved_path = lexical_path
+        return _is_relative_to(lexical_path, self.root) or _is_relative_to(resolved_path, self.root)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _open_requests_write(raw_mode: object, raw_flags: object) -> bool:
+    if isinstance(raw_mode, str) and any(marker in raw_mode for marker in "wax+"):
+        return True
+    return isinstance(raw_flags, int) and bool(raw_flags & _WRITE_OPEN_FLAGS)
+
+
+def _filesystem_audit_hook(event: str, arguments: tuple[object, ...]) -> None:
+    for audit in tuple(_ACTIVE_FILESYSTEM_AUDITS):
+        audit.observe(event, arguments)
+
+
+def _install_filesystem_audit_hook() -> None:
+    global _FILESYSTEM_AUDIT_HOOK_INSTALLED
+    if not _FILESYSTEM_AUDIT_HOOK_INSTALLED:
+        sys.addaudithook(_filesystem_audit_hook)
+        _FILESYSTEM_AUDIT_HOOK_INSTALLED = True
 
 
 class _TrackerReconciliationCapture(logging.Handler):
@@ -375,7 +476,13 @@ def _execute_pipeline(fixture: TrackerGauntletFixture) -> _TrackerPipelineResult
     )
 
 
-def _validate_unchanged_state(fixture: TrackerGauntletFixture, initial_filesystem_digest: str) -> None:
+def _validate_unchanged_state(
+    fixture: TrackerGauntletFixture,
+    initial_filesystem_digest: str,
+    filesystem_audit: _FilesystemMutationAudit,
+) -> None:
+    if filesystem_audit.attempt_count:
+        raise GauntletSafetyError("tracker dry-run attempted a filesystem mutation")
     if fixture.client.mutation_total:
         raise GauntletSafetyError("tracker dry-run attempted a qBittorrent mutation")
     if _filesystem_digest(fixture.root) != initial_filesystem_digest:
@@ -386,8 +493,9 @@ def _validate_pass(
     fixture: TrackerGauntletFixture,
     pipeline: _TrackerPipelineResult,
     initial_filesystem_digest: str,
+    filesystem_audit: _FilesystemMutationAudit,
 ) -> _TrackerPassEvidence:
-    _validate_unchanged_state(fixture, initial_filesystem_digest)
+    _validate_unchanged_state(fixture, initial_filesystem_digest, filesystem_audit)
     endpoint_counters = dict(fixture.client.read_counts)
     validate_tracker_endpoint_counts(endpoint_counters, fixture.profile)
     candidate_counts = _candidate_counts(pipeline.summary)
@@ -398,6 +506,13 @@ def _validate_pass(
     }
     if candidate_counts != expected_candidates:
         raise GauntletSafetyError("tracker candidates did not match the fixture oracle")
+    action_records = _action_records(pipeline.summary)
+    expected_action_records = list(expected_tracker_action_records(fixture.profile, fixture.seed))
+    if action_records != expected_action_records:
+        raise GauntletSafetyError("tracker action records did not match the independent fixture oracle")
+    action_digest = _intended_action_digest(pipeline.summary)
+    if action_digest != expected_tracker_action_digest(fixture.profile, fixture.seed):
+        raise GauntletSafetyError("tracker action digest did not match the independent fixture oracle")
     reconciliation = _reconciliation_evidence(fixture, pipeline)
     expected_reconciliation_counts = (
         fixture.profile.save_path_group_count,
@@ -418,7 +533,7 @@ def _validate_pass(
     if actual_reconciliation_counts != expected_reconciliation_counts:
         raise GauntletSafetyError("tracker dry-run reconciliation did not match the fixture oracle")
     return _TrackerPassEvidence(
-        action_digest=_intended_action_digest(pipeline.summary),
+        action_digest=action_digest,
         reconciliation=reconciliation,
         candidate_counts=candidate_counts,
         endpoint_counters=endpoint_counters,
@@ -428,6 +543,7 @@ def _validate_pass(
 def _checked_pipeline_pass(
     fixture: TrackerGauntletFixture,
     initial_filesystem_digest: str,
+    filesystem_audit: _FilesystemMutationAudit,
 ) -> _TrackerPassEvidence:
     _prepare_pass(fixture)
     try:
@@ -435,16 +551,17 @@ def _checked_pipeline_pass(
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception:
-        _validate_unchanged_state(fixture, initial_filesystem_digest)
+        _validate_unchanged_state(fixture, initial_filesystem_digest, filesystem_audit)
         raise
     finally:
         clear_cache()
-    return _validate_pass(fixture, pipeline, initial_filesystem_digest)
+    return _validate_pass(fixture, pipeline, initial_filesystem_digest, filesystem_audit)
 
 
 def _timed_pipeline_pass(
     fixture: TrackerGauntletFixture,
     initial_filesystem_digest: str,
+    filesystem_audit: _FilesystemMutationAudit,
 ) -> tuple[_TrackerPassEvidence, float]:
     _prepare_pass(fixture)
     started_at = time.perf_counter()
@@ -454,17 +571,18 @@ def _timed_pipeline_pass(
         clear_cache()
         raise
     except Exception:
-        _validate_unchanged_state(fixture, initial_filesystem_digest)
+        _validate_unchanged_state(fixture, initial_filesystem_digest, filesystem_audit)
         clear_cache()
         raise
     elapsed_seconds = time.perf_counter() - started_at
     clear_cache()
-    return _validate_pass(fixture, pipeline, initial_filesystem_digest), elapsed_seconds
+    return _validate_pass(fixture, pipeline, initial_filesystem_digest, filesystem_audit), elapsed_seconds
 
 
 def _memory_pipeline_pass(
     fixture: TrackerGauntletFixture,
     initial_filesystem_digest: str,
+    filesystem_audit: _FilesystemMutationAudit,
 ) -> tuple[_TrackerPassEvidence, int]:
     _prepare_pass(fixture)
     tracemalloc.start()
@@ -474,12 +592,12 @@ def _memory_pipeline_pass(
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception:
-        _validate_unchanged_state(fixture, initial_filesystem_digest)
+        _validate_unchanged_state(fixture, initial_filesystem_digest, filesystem_audit)
         raise
     finally:
         tracemalloc.stop()
         clear_cache()
-    return _validate_pass(fixture, pipeline, initial_filesystem_digest), peak_bytes
+    return _validate_pass(fixture, pipeline, initial_filesystem_digest, filesystem_audit), peak_bytes
 
 
 def _scenario_digest(name: str, outcome: str) -> str:
@@ -740,14 +858,20 @@ def evaluate_tracker_fixture(
     scenarios = evaluate_tracker_scenarios(fixture)
     manifest_digest = tracker_fixture_manifest_digest(fixture)
     initial_filesystem_digest = _filesystem_digest(fixture.root)
-    warmup = _checked_pipeline_pass(fixture, initial_filesystem_digest)
-    timed_evidence: list[_TrackerPassEvidence] = []
-    runtimes: list[float] = []
-    for _sample_index in range(samples):
-        evidence, runtime = _timed_pipeline_pass(fixture, initial_filesystem_digest)
-        timed_evidence.append(evidence)
-        runtimes.append(runtime)
-    memory_evidence, peak_memory_bytes = _memory_pipeline_pass(fixture, initial_filesystem_digest)
+    filesystem_audit = _FilesystemMutationAudit(fixture.root)
+    with filesystem_audit:
+        warmup = _checked_pipeline_pass(fixture, initial_filesystem_digest, filesystem_audit)
+        timed_evidence: list[_TrackerPassEvidence] = []
+        runtimes: list[float] = []
+        for _sample_index in range(samples):
+            evidence, runtime = _timed_pipeline_pass(fixture, initial_filesystem_digest, filesystem_audit)
+            timed_evidence.append(evidence)
+            runtimes.append(runtime)
+        memory_evidence, peak_memory_bytes = _memory_pipeline_pass(
+            fixture,
+            initial_filesystem_digest,
+            filesystem_audit,
+        )
     all_evidence = [warmup, *timed_evidence, memory_evidence]
     if any(
         item.action_digest != warmup.action_digest
@@ -789,7 +913,7 @@ def evaluate_tracker_fixture(
             "memory": dict(memory_evidence.endpoint_counters),
         },
         "mutation_counters": {
-            "filesystem": 0,
+            "filesystem": filesystem_audit.attempt_count,
             "qbittorrent": fixture.client.mutation_total,
             **dict(sorted(fixture.client.mutation_counts.items())),
         },
