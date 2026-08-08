@@ -21,6 +21,7 @@ CHILD_RESULT_KEYS = {
     "identity_verified",
     "environment",
     "scope",
+    "profile_kind",
     "profile",
     "tier",
     "seed",
@@ -41,7 +42,7 @@ CHILD_RESULT_KEYS = {
     "median_absolute_deviation_seconds",
     "peak_memory_bytes",
 }
-WORKLOAD_KEYS = {
+ORPHAN_WORKLOAD_KEYS = {
     "torrents",
     "filesystem_files",
     "owned_files",
@@ -54,18 +55,45 @@ WORKLOAD_KEYS = {
     "warmup_passes",
     "memory_passes",
 }
-RECONCILIATION_KEYS = {
+TRACKER_WORKLOAD_KEYS = {
+    "torrents",
+    "tracker_records",
+    "save_path_groups",
+    "exact_message_targets",
+    "prefix_message_targets",
+    "default_tag_targets",
+    "cross_seed_tag_targets",
+    "torrent_only_delete_targets",
+    "timed_samples",
+    "warmup_passes",
+    "memory_passes",
+}
+ORPHAN_RECONCILIATION_KEYS = {
     "file_action_count",
     "empty_directory_count",
     "file_action_digest",
     "empty_directory_digest",
     "digest",
 }
-ENDPOINT_KEYS = {
+TRACKER_RECONCILIATION_KEYS = {
+    "save_path_group_count",
+    "torrent_path_count",
+    "unregistered_tracker_count",
+    "default_tag_action_count",
+    "cross_seed_tag_action_count",
+    "torrent_only_delete_action_count",
+    "digest",
+}
+ORPHAN_ENDPOINT_KEYS = {
     "application.default_save_path",
     "torrent_categories.categories",
     "torrents.info",
     "torrents_files",
+}
+TRACKER_ENDPOINT_KEYS = {
+    "torrents.info",
+    "torrents.info.include_trackers",
+    "torrents_trackers",
 }
 MEASUREMENT_POLICY_KEYS = {
     "sequence",
@@ -136,8 +164,8 @@ def _integer_mapping(
     return {key: _integer(mapping[key], f"{description}.{key}", minimum=minimum) for key in sorted(keys)}
 
 
-def _endpoint_mapping(value: object, description: str) -> dict[str, int]:
-    return _integer_mapping(value, ENDPOINT_KEYS, description)
+def _endpoint_mapping(value: object, keys: set[str], description: str) -> dict[str, int]:
+    return _integer_mapping(value, keys, description)
 
 
 def _sanitize_candidate_state(value: object) -> dict[str, object]:
@@ -156,29 +184,15 @@ def _sanitize_environment(value: object) -> dict[str, str]:
     return {key: _bounded_string(environment[key], f"environment.{key}") for key in sorted(ENVIRONMENT_KEYS)}
 
 
-def _sanitize_reconciliation(value: object) -> dict[str, object]:
-    reconciliation = _exact_mapping(value, RECONCILIATION_KEYS, "reconciliation")
-    return {
-        "file_action_count": _integer(
-            reconciliation["file_action_count"],
-            "reconciliation.file_action_count",
-            minimum=1,
-        ),
-        "empty_directory_count": _integer(
-            reconciliation["empty_directory_count"],
-            "reconciliation.empty_directory_count",
-            minimum=1,
-        ),
-        "file_action_digest": _digest(
-            reconciliation["file_action_digest"],
-            "reconciliation.file_action_digest",
-        ),
-        "empty_directory_digest": _digest(
-            reconciliation["empty_directory_digest"],
-            "reconciliation.empty_directory_digest",
-        ),
-        "digest": _digest(reconciliation["digest"], "reconciliation.digest"),
-    }
+def _sanitize_reconciliation(value: object, *, profile_kind: str) -> dict[str, object]:
+    keys = ORPHAN_RECONCILIATION_KEYS if profile_kind == "orphan" else TRACKER_RECONCILIATION_KEYS
+    reconciliation = _exact_mapping(value, keys, "reconciliation")
+    sanitized: dict[str, object] = {}
+    for key in sorted(keys - {"digest", "file_action_digest", "empty_directory_digest"}):
+        sanitized[key] = _integer(reconciliation[key], f"reconciliation.{key}", minimum=1)
+    for key in sorted(keys & {"digest", "file_action_digest", "empty_directory_digest"}):
+        sanitized[key] = _digest(reconciliation[key], f"reconciliation.{key}")
+    return sanitized
 
 
 def _sanitize_measurement_policy(
@@ -205,12 +219,43 @@ def _sanitize_measurement_policy(
     return sanitized
 
 
-def sanitize_child_result(
+def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: str) -> dict[str, object]:
+    profile = quality_bar.profiles[profile_name]
+    scenarios = _exact_mapping(value, set(profile.scenario_action_digests), "scenarios")
+    sanitized: dict[str, object] = {}
+    for name in sorted(profile.scenario_action_digests):
+        raw_evidence = _exact_mapping(
+            scenarios[name],
+            {"outcome", "action_digest", "endpoint_counters"},
+            f"scenarios.{name}",
+        )
+        if raw_evidence["outcome"] != "pass":
+            raise PairedEvidenceError(f"scenarios.{name}.outcome must be pass")
+        action_digest = _digest(raw_evidence["action_digest"], f"scenarios.{name}.action_digest")
+        if action_digest != profile.scenario_action_digests[name]:
+            raise PairedEvidenceError(f"scenarios.{name}.action_digest is not canonical")
+        sanitized[name] = {
+            "outcome": "pass",
+            "action_digest": action_digest,
+            "endpoint_counters": _endpoint_mapping(
+                raw_evidence["endpoint_counters"],
+                TRACKER_ENDPOINT_KEYS,
+                f"scenarios.{name}.endpoint_counters",
+            ),
+        }
+    return sanitized
+
+
+def sanitize_child_result(  # noqa: C901
     value: object,
     quality_bar: QualityBar,
 ) -> dict[str, object]:
     """Validate and reconstruct one child artifact without retaining unknown data."""
-    result = _exact_mapping(value, CHILD_RESULT_KEYS, "child result")
+    if not isinstance(value, dict):
+        raise PairedEvidenceError("child result keys do not match the paired schema")
+    raw_profile_kind = value.get("profile_kind")
+    result_keys = CHILD_RESULT_KEYS | ({"scenarios"} if raw_profile_kind == "tracker" else set())
+    result = _exact_mapping(value, result_keys, "child result")
     if (
         result["schema"] != quality_bar.result_schema
         or result["schema_version"] != quality_bar.evaluator_schema_version
@@ -221,6 +266,21 @@ def sanitize_child_result(
     profile_name = _bounded_string(result["profile"], "profile", maximum=64)
     if profile_name not in quality_bar.profiles:
         raise PairedEvidenceError("child profile is not canonical")
+    canonical_profile = quality_bar.profiles[profile_name]
+    profile_kind = _bounded_string(result["profile_kind"], "profile_kind", maximum=16)
+    if profile_kind != canonical_profile.kind:
+        raise PairedEvidenceError("child profile kind is not canonical")
+    workload_keys = ORPHAN_WORKLOAD_KEYS if profile_kind == "orphan" else TRACKER_WORKLOAD_KEYS
+    endpoint_keys = ORPHAN_ENDPOINT_KEYS if profile_kind == "orphan" else TRACKER_ENDPOINT_KEYS
+    candidate_keys = (
+        {"orphan_files"}
+        if profile_kind == "orphan"
+        else {
+            "default_tag_targets",
+            "cross_seed_tag_targets",
+            "torrent_only_deletes",
+        }
+    )
     expected_samples = quality_bar.measurement_policy.get("timed_samples")
     if isinstance(expected_samples, bool) or not isinstance(expected_samples, int):
         raise PairedEvidenceError("canonical timed sample count is malformed")
@@ -241,18 +301,18 @@ def sanitize_child_result(
         "pass_endpoint_counters",
     )
     environment = _sanitize_environment(result["environment"])
-    workload = _integer_mapping(result["workload"], WORKLOAD_KEYS, "workload")
-    reconciliation = _sanitize_reconciliation(result["reconciliation"])
+    workload = _integer_mapping(result["workload"], workload_keys, "workload")
+    reconciliation = _sanitize_reconciliation(result["reconciliation"], profile_kind=profile_kind)
     candidate_counts = _integer_mapping(
         result["candidate_counts"],
-        {"orphan_files"},
+        candidate_keys,
         "candidate_counts",
         minimum=1,
     )
     identity_verified = result["identity_verified"]
     if not isinstance(identity_verified, bool):
         raise PairedEvidenceError("identity_verified must be a boolean")
-    return {
+    sanitized_result: dict[str, object] = {
         "schema": quality_bar.result_schema,
         "schema_version": quality_bar.evaluator_schema_version,
         "evaluator_version": quality_bar.evaluator_version,
@@ -261,6 +321,7 @@ def sanitize_child_result(
         "identity_verified": identity_verified,
         "environment": environment,
         "scope": quality_bar.scope,
+        "profile_kind": profile_kind,
         "profile": profile_name,
         "tier": _bounded_string(result["tier"], "tier", maximum=64),
         "seed": _integer(result["seed"], "seed"),
@@ -277,18 +338,22 @@ def sanitize_child_result(
         "candidate_counts": candidate_counts,
         "endpoint_counters": _endpoint_mapping(
             result["endpoint_counters"],
+            endpoint_keys,
             "endpoint_counters",
         ),
         "timed_sample_endpoint_counters": [
-            _endpoint_mapping(item, f"timed_sample_endpoint_counters[{index}]") for index, item in enumerate(timed_counters)
+            _endpoint_mapping(item, endpoint_keys, f"timed_sample_endpoint_counters[{index}]")
+            for index, item in enumerate(timed_counters)
         ],
         "pass_endpoint_counters": {
             "warmup": _endpoint_mapping(
                 pass_counters["warmup"],
+                endpoint_keys,
                 "pass_endpoint_counters.warmup",
             ),
             "memory": _endpoint_mapping(
                 pass_counters["memory"],
+                endpoint_keys,
                 "pass_endpoint_counters.memory",
             ),
         },
@@ -324,6 +389,9 @@ def sanitize_child_result(
             minimum=1,
         ),
     }
+    if profile_kind == "tracker":
+        sanitized_result["scenarios"] = _sanitize_scenarios(result["scenarios"], quality_bar, profile_name)
+    return sanitized_result
 
 
 __all__ = ["PairedEvidenceError", "sanitize_child_result"]

@@ -36,6 +36,56 @@ ENVIRONMENT_KEYS = {
     "processor",
     "python",
 }
+TRACKER_SCENARIO_NAMES = {
+    "complete_embedded",
+    "omitted_embedded_fallback",
+    "rejected_embedded_fallback",
+    "malformed_embedded_transport_aware",
+    "malformed_exact_fail_closed",
+    "proven_disappearance",
+    "same_hash_readd_fail_closed",
+    "malformed_refresh_fail_closed",
+    "duplicate_refresh_fail_closed",
+    "delete_disappearance_preflight",
+    "delete_tag_change_preflight",
+    "tracker_change_snapshot_bound",
+}
+ORPHAN_WORKLOAD_KEYS = {
+    "torrents",
+    "filesystem_files",
+    "owned_files",
+    "orphan_files",
+    "exact_metadata_torrents",
+    "bulk_path_torrents",
+    "configured_roots",
+    "shards",
+    "timed_samples",
+    "warmup_passes",
+    "memory_passes",
+}
+TRACKER_WORKLOAD_KEYS = {
+    "torrents",
+    "tracker_records",
+    "save_path_groups",
+    "exact_message_targets",
+    "prefix_message_targets",
+    "default_tag_targets",
+    "cross_seed_tag_targets",
+    "torrent_only_delete_targets",
+    "timed_samples",
+    "warmup_passes",
+    "memory_passes",
+}
+COMMON_PROFILE_KEYS = {
+    "kind",
+    "seed",
+    "fixture_manifest_digest",
+    "intended_action_digest",
+    "workload",
+    "reconciliation",
+    "baseline",
+    "targets",
+}
 
 
 class QualityBarError(ValueError):
@@ -82,18 +132,26 @@ class EndpointBudget:
 class ProfileQualityBar:
     """Correctness oracle, baseline, and independent targets for one profile."""
 
+    kind: Literal["orphan", "tracker"]
     seed: int
     fixture_manifest_digest: str
     intended_action_digest: str
     reconciliation: Mapping[str, int | str]
-    candidate_count: int
+    candidate_counts: Mapping[str, int]
     workload: Mapping[str, int]
     api_budgets: Mapping[str, EndpointBudget]
+    allowed_tracker_transports: tuple[tuple[int, int], ...]
+    scenario_action_digests: Mapping[str, str]
     baseline: BaselineMeasurement
     runtime_baseline_fraction_max: float
     peak_memory_baseline_fraction_max: float
     relative_mad_max: float
     relative_range_max: float
+
+    @property
+    def candidate_count(self) -> int:
+        """Return the legacy orphan candidate count for existing callers."""
+        return self.candidate_counts["orphan_files"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +256,49 @@ def _reconciliation(value: object, description: str) -> dict[str, int | str]:
     }
 
 
+def _tracker_reconciliation(value: object, description: str) -> dict[str, int | str]:
+    table = _table(value, description)
+    count_keys = {
+        "save_path_group_count",
+        "torrent_path_count",
+        "unregistered_tracker_count",
+        "default_tag_action_count",
+        "cross_seed_tag_action_count",
+        "torrent_only_delete_action_count",
+    }
+    if set(table) != {*count_keys, "digest"}:
+        raise QualityBarError(f"{description} keys do not match the tracker evaluator schema")
+    return {
+        **{key: _integer(table[key], f"{description}.{key}", minimum=1) for key in count_keys},
+        "digest": _sha256(table["digest"], f"{description}.digest"),
+    }
+
+
+def _tracker_api_evidence(value: object, description: str) -> tuple[tuple[int, int], ...]:
+    table = _table(value, description)
+    if set(table) != {"ordinary_info", "allowed_transports"}:
+        raise QualityBarError(f"{description} keys do not match the tracker evaluator schema")
+    if _integer(table["ordinary_info"], f"{description}.ordinary_info") != 0:
+        raise QualityBarError(f"{description}.ordinary_info must be zero")
+    raw_transports = table["allowed_transports"]
+    if not isinstance(raw_transports, list) or len(raw_transports) != 2:
+        raise QualityBarError(f"{description}.allowed_transports must contain exactly two pairs")
+    transports: list[tuple[int, int]] = []
+    for index, raw_transport in enumerate(raw_transports):
+        if not isinstance(raw_transport, list) or len(raw_transport) != 2:
+            raise QualityBarError(f"{description}.allowed_transports[{index}] must be a pair")
+        transports.append(
+            (
+                _integer(raw_transport[0], f"{description}.allowed_transports[{index}][0]"),
+                _integer(raw_transport[1], f"{description}.allowed_transports[{index}][1]"),
+            )
+        )
+    resolved = tuple(transports)
+    if resolved[1] != (1, 0) or resolved[0][0] != 0 or resolved[0][1] < 1:
+        raise QualityBarError(f"{description}.allowed_transports do not lock exact and bulk responses")
+    return resolved
+
+
 def _baseline_measurement(value: object, description: str) -> BaselineMeasurement:
     table = _table(value, description)
     status = _string(table.get("status"), f"{description}.status")
@@ -233,7 +334,7 @@ def _baseline_measurement(value: object, description: str) -> BaselineMeasuremen
     )
 
 
-def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:
+def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noqa: C901
     """Build one fully validated quality bar from a parsed TOML document."""
     schema_version = _integer(document.get("schema_version"), "schema_version", minimum=1)
     evaluator_schema_version = _integer(
@@ -279,8 +380,74 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:
     profiles: dict[str, ProfileQualityBar] = {}
     for profile_name, raw_profile in profile_tables.items():
         profile = _table(raw_profile, f"profiles.{profile_name}")
+        kind = _string(profile.get("kind"), f"profiles.{profile_name}.kind")
+        if kind not in {"orphan", "tracker"}:
+            raise QualityBarError(f"profiles.{profile_name}.kind must be 'orphan' or 'tracker'")
+        kind_specific_keys = (
+            {"candidate_count", "api_budgets"}
+            if kind == "orphan"
+            else {"candidate_counts", "api_evidence", "scenario_action_digests"}
+        )
+        if set(profile) != COMMON_PROFILE_KEYS | kind_specific_keys:
+            raise QualityBarError(f"profiles.{profile_name} profile keys do not match the {kind} schema")
         targets = _table(profile.get("targets"), f"profiles.{profile_name}.targets")
+        if kind == "orphan":
+            candidate_counts = {
+                "orphan_files": _integer(
+                    profile.get("candidate_count"),
+                    f"profiles.{profile_name}.candidate_count",
+                    minimum=1,
+                )
+            }
+            reconciliation = _reconciliation(
+                profile.get("reconciliation"),
+                f"profiles.{profile_name}.reconciliation",
+            )
+            api_budgets = _endpoint_budgets(
+                profile.get("api_budgets"),
+                f"profiles.{profile_name}.api_budgets",
+            )
+            allowed_tracker_transports: tuple[tuple[int, int], ...] = ()
+            scenario_action_digests: dict[str, str] = {}
+        else:
+            candidate_counts = _integer_table(
+                profile.get("candidate_counts"),
+                f"profiles.{profile_name}.candidate_counts",
+            )
+            if set(candidate_counts) != {
+                "default_tag_targets",
+                "cross_seed_tag_targets",
+                "torrent_only_deletes",
+            } or any(value < 1 for value in candidate_counts.values()):
+                raise QualityBarError(f"profiles.{profile_name}.candidate_counts keys do not match the tracker schema")
+            reconciliation = _tracker_reconciliation(
+                profile.get("reconciliation"),
+                f"profiles.{profile_name}.reconciliation",
+            )
+            api_budgets = {}
+            allowed_tracker_transports = _tracker_api_evidence(
+                profile.get("api_evidence"),
+                f"profiles.{profile_name}.api_evidence",
+            )
+            scenario_table = _table(
+                profile.get("scenario_action_digests"),
+                f"profiles.{profile_name}.scenario_action_digests",
+            )
+            if set(scenario_table) != TRACKER_SCENARIO_NAMES:
+                raise QualityBarError(f"profiles.{profile_name}.scenario_action_digests keys do not match the tracker schema")
+            scenario_action_digests = {
+                name: _sha256(value, f"profiles.{profile_name}.scenario_action_digests.{name}")
+                for name, value in scenario_table.items()
+            }
+        workload = _integer_table(
+            profile.get("workload"),
+            f"profiles.{profile_name}.workload",
+        )
+        expected_workload_keys = ORPHAN_WORKLOAD_KEYS if kind == "orphan" else TRACKER_WORKLOAD_KEYS
+        if set(workload) != expected_workload_keys:
+            raise QualityBarError(f"profiles.{profile_name}.workload keys do not match the {kind} schema")
         profiles[profile_name] = ProfileQualityBar(
+            kind=cast(Literal["orphan", "tracker"], kind),
             seed=_integer(profile.get("seed"), f"profiles.{profile_name}.seed"),
             fixture_manifest_digest=_sha256(
                 profile.get("fixture_manifest_digest"),
@@ -290,23 +457,12 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:
                 profile.get("intended_action_digest"),
                 f"profiles.{profile_name}.intended_action_digest",
             ),
-            candidate_count=_integer(
-                profile.get("candidate_count"),
-                f"profiles.{profile_name}.candidate_count",
-                minimum=1,
-            ),
-            workload=_integer_table(
-                profile.get("workload"),
-                f"profiles.{profile_name}.workload",
-            ),
-            reconciliation=_reconciliation(
-                profile.get("reconciliation"),
-                f"profiles.{profile_name}.reconciliation",
-            ),
-            api_budgets=_endpoint_budgets(
-                profile.get("api_budgets"),
-                f"profiles.{profile_name}.api_budgets",
-            ),
+            candidate_counts=candidate_counts,
+            workload=workload,
+            reconciliation=reconciliation,
+            api_budgets=api_budgets,
+            allowed_tracker_transports=allowed_tracker_transports,
+            scenario_action_digests=scenario_action_digests,
             baseline=_baseline_measurement(
                 profile.get("baseline"),
                 f"profiles.{profile_name}.baseline",
@@ -385,31 +541,75 @@ def _mapping_of_ints(value: object, *, nonnegative: bool = True) -> dict[str, in
     return resolved
 
 
-def _runtime_reconciliation(value: object) -> dict[str, int | str] | None:
+def _runtime_reconciliation(
+    value: object,
+    kind: Literal["orphan", "tracker"],
+) -> dict[str, int | str] | None:
     if not isinstance(value, dict):
         return None
-    expected_keys = {
-        "file_action_count",
-        "empty_directory_count",
-        "file_action_digest",
-        "empty_directory_digest",
-        "digest",
-    }
+    count_keys = (
+        {"file_action_count", "empty_directory_count"}
+        if kind == "orphan"
+        else {
+            "save_path_group_count",
+            "torrent_path_count",
+            "unregistered_tracker_count",
+            "default_tag_action_count",
+            "cross_seed_tag_action_count",
+            "torrent_only_delete_action_count",
+        }
+    )
+    digest_keys = {"file_action_digest", "empty_directory_digest", "digest"} if kind == "orphan" else {"digest"}
+    expected_keys = count_keys | digest_keys
     if set(value) != expected_keys:
         return None
     counts: dict[str, int] = {}
-    for key in ("file_action_count", "empty_directory_count"):
+    for key in count_keys:
         item = value[key]
         if isinstance(item, bool) or not isinstance(item, int) or item < 1:
             return None
         counts[key] = item
     digests: dict[str, str] = {}
-    for key in ("file_action_digest", "empty_directory_digest", "digest"):
+    for key in digest_keys:
         item = value[key]
         if not isinstance(item, str) or len(item) != 64 or any(character not in "0123456789abcdef" for character in item):
             return None
         digests[key] = item
     return {**counts, **digests}
+
+
+def _runtime_tracker_scenarios(
+    value: object,
+    profile: ProfileQualityBar,
+) -> dict[str, object] | None:
+    if profile.kind != "tracker":
+        return {} if value is None else None
+    if not isinstance(value, dict) or set(value) != TRACKER_SCENARIO_NAMES:
+        return None
+    sanitized: dict[str, object] = {}
+    endpoint_keys = {
+        "torrents.info",
+        "torrents.info.include_trackers",
+        "torrents_trackers",
+    }
+    for name, raw_evidence in value.items():
+        if not isinstance(raw_evidence, dict) or set(raw_evidence) != {"outcome", "action_digest", "endpoint_counters"}:
+            return None
+        action_digest = raw_evidence["action_digest"]
+        endpoints = _mapping_of_ints(raw_evidence["endpoint_counters"])
+        if (
+            raw_evidence["outcome"] != "pass"
+            or action_digest != profile.scenario_action_digests.get(name)
+            or endpoints is None
+            or set(endpoints) != endpoint_keys
+        ):
+            return None
+        sanitized[name] = {
+            "outcome": "pass",
+            "action_digest": action_digest,
+            "endpoint_counters": endpoints,
+        }
+    return sanitized
 
 
 def _measurement_policy_matches(
@@ -470,18 +670,21 @@ def _result_gate(
 ) -> GateResult:
     workload = _mapping_of_ints(result.get("workload"))
     candidates = _mapping_of_ints(result.get("candidate_counts"))
-    reconciliation = _runtime_reconciliation(result.get("reconciliation"))
+    reconciliation = _runtime_reconciliation(result.get("reconciliation"), profile.kind)
+    scenarios = _runtime_tracker_scenarios(result.get("scenarios"), profile)
     matches = (
         result.get("schema") == quality_bar.result_schema
         and result.get("schema_version") == quality_bar.evaluator_schema_version
         and result.get("evaluator_version") == quality_bar.evaluator_version
         and result.get("scope") == quality_bar.scope
+        and result.get("profile_kind") == profile.kind
         and result.get("profile") == profile_name
         and result.get("seed") == profile.seed
         and result.get("fixture_manifest_digest") == profile.fixture_manifest_digest
         and result.get("intended_action_digest") == profile.intended_action_digest
         and reconciliation == dict(profile.reconciliation)
-        and candidates == {"orphan_files": profile.candidate_count}
+        and scenarios is not None
+        and candidates == dict(profile.candidate_counts)
         and workload == dict(profile.workload)
     )
     if not matches:
@@ -508,6 +711,15 @@ def _api_gate(
 
     def within_budget(value: object) -> bool:
         counters = _mapping_of_ints(value)
+        if profile.kind == "tracker":
+            if counters is None or set(counters) != {
+                "torrents.info",
+                "torrents.info.include_trackers",
+                "torrents_trackers",
+            }:
+                return False
+            transport = (counters["torrents.info.include_trackers"], counters["torrents_trackers"])
+            return counters["torrents.info"] == 0 and transport in profile.allowed_tracker_transports
         if counters is None or set(counters) != set(profile.api_budgets):
             return False
         return all(
@@ -517,6 +729,13 @@ def _api_gate(
     all_passes = [normalized, *timed_samples, pass_counters["warmup"], pass_counters["memory"]]
     if not all(within_budget(item) for item in all_passes):
         return _gate("fail", "one or more per-pass API counts violate the locked budget")
+    if profile.kind == "tracker":
+        return _gate(
+            "pass",
+            "all passes use one locked complete tracker transport",
+            actual=normalized["torrents_trackers"] if normalized is not None else None,
+            target=profile.allowed_tracker_transports[0][1],
+        )
     maximum = profile.api_budgets["torrents_files"].maximum
     return _gate(
         "pass",

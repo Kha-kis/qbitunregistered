@@ -43,7 +43,7 @@ from benchmarks.gauntlet.identity import (
     require_same_identity,
 )
 
-PROFILE_NAMES = ("quick", "full")
+PROFILE_NAMES = ("quick", "full", "tracker-quick", "tracker-full")
 DEFAULT_QUALITY_BAR = Path(__file__).with_name("quality-bar.toml")
 COMPARISON_FAILED_EXIT = 2
 ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
