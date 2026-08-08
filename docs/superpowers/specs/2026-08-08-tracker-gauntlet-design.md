@@ -42,6 +42,9 @@ Every torrent has three complete, sanitized tracker mappings with reserved
 prefix-message status 5, and harmless inactive values. The payload mirrors the
 Web API 2.15.1 fields used by a real `includeTrackers=true` response, including
 endpoint data, so memory evidence reflects a realistic bulk response shape.
+The exact `/torrents/trackers` fake additionally prepends qBittorrent's three
+fixed DHT, PeX, and LSD pseudo records; the embedded response contains only the
+three real records, matching qBittorrent 5.2.3 semantics.
 File deletion is disabled; deletion candidates are torrent-only operations.
 
 Fixture construction, manifest verification, and semantic safety scenarios are
@@ -97,7 +100,9 @@ Untimed deterministic scenarios cover:
 - complete embedded tracker metadata;
 - a legacy response omitting the `trackers` key, followed by exact fallback;
 - rejection of `include_trackers` with a compatible exact fallback;
-- a present malformed embedded tracker field, which must fail closed;
+- a present malformed embedded tracker field, which must fail closed when an
+  implementation consumes the bulk response; a control that never requests
+  bulk metadata remains valid on its exact path;
 - a missing or malformed exact response for an active torrent, which must fail
   closed;
 - a failed exact read followed by a fresh snapshot that proves disappearance;
@@ -107,6 +112,12 @@ Untimed deterministic scenarios cover:
   mutation attempts;
 - tracker registration metadata changing after preview while dry-run remains
   bound to the accepted execution-scoped snapshot.
+
+Scenario artifacts normalize transport-specific safe outcomes to the same
+strict `pass` evidence. For example, the current control safely ignores an
+unrequested malformed optional field, while a bulk candidate must reject that
+field; both are safe but their endpoint counts differ. The evaluator validates
+the transport-specific evidence before normalization.
 
 The primary evaluator and CLI acceptance scenario are always genuine dry-runs.
 The two mutating-preflight tests may call the operation with `dry_run=False`

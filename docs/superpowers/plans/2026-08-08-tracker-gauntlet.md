@@ -15,7 +15,7 @@
 - Follow strict TDD: each production-evaluator behavior starts with a test observed failing for the expected missing behavior.
 - Keep all fixtures sanitized and deterministic; never contact a live qBittorrent client or network.
 - Primary measured and CLI paths are dry-run and must record zero qBittorrent and filesystem mutations.
-- Missing optional embedded `trackers` metadata may use exact fallback; a present malformed embedded value must fail closed.
+- Missing optional embedded `trackers` metadata may use exact fallback; a present malformed embedded value must fail closed when consumed, while a control that never requests bulk metadata remains valid on its exact path.
 - Preserve existing orphan profiles, actions, digests, and performance semantics while bumping the evaluator schema/version for the new profile variant.
 - `tracker-quick`: 1,300 torrents, 3,900 tracker records, 1,200 save-path groups, 200 default-tag targets, 100 cross-seed-tag targets, 13 torrent-only delete targets.
 - `tracker-full`: 13,000 torrents, 39,000 tracker records, 12,000 save-path groups, 2,000 default-tag targets, 1,000 cross-seed-tag targets, 130 torrent-only delete targets.
@@ -91,7 +91,10 @@ Generate three realistic Web API 2.15.1 tracker mappings per torrent using
 only deterministic `.invalid` URLs. Count `torrents.info.include_trackers`,
 ordinary `torrents.info`, and `torrents_trackers` separately. A missing key or
 rejected parameter represents compatibility; a present malformed value remains
-distinguishable and is never silently converted to an empty list.
+distinguishable and is never silently converted to an empty list. The exact
+endpoint fake prepends literal DHT, PeX, and LSD pseudo records with qBittorrent
+5.2.3 URL/status/message values; the embedded response contains only real
+trackers.
 
 - [ ] **Step 4: Run fixture tests and verify GREEN**
 
@@ -151,7 +154,10 @@ fallback; present malformed embedded metadata fail-closed; malformed exact
 metadata fail-closed; proven disappearance; same-hash re-addition; malformed or
 duplicate refresh hashes; delete disappearance/tag change before mutating
 preflight; and tracker state change after preview. Every failure scenario asserts
-zero mutation counters and an unchanged temporary filesystem.
+zero mutation counters and an unchanged temporary filesystem. The malformed
+embedded case is transport-aware: an exact-only control passes without requesting
+the malformed optional field; an implementation that requests it must fail
+closed. Normalize only after validating the applicable endpoint evidence.
 
 - [ ] **Step 10: Run semantic tests and verify RED**
 
@@ -203,7 +209,7 @@ git commit -m "test: establish tracker metadata gauntlet"
 - Modify: `CONTRIBUTING.md`
 - Modify: `ARCHITECTURE.md`
 - Modify: `CHANGELOG.md`
-- Modify: `benchmarks/gauntlet/quality-bar.toml` only to insert digests or clean-commit baseline evidence required by its established schema; do not change thresholds after observing candidate results.
+- Modify: `benchmarks/gauntlet/quality-bar.toml` only if clean-commit evidence exposes an incorrect deterministic digest; do not change thresholds after observing candidate results.
 
 **Interfaces:**
 - Documents exact tracker commands, evidence fields, profile sizes, supported compatibility behavior, and the evaluator-only/optimization-branch separation.
@@ -221,17 +227,18 @@ uv run python -m benchmarks.gauntlet --profile tracker-full --output /tmp/qbitun
 Expected: both exit zero, report the locked candidate/action/scenario digests,
 control endpoint counts of `N` exact tracker reads, and zero mutations.
 
-- [ ] **Step 2: Write documentation and quality-bar consistency tests first**
+- [ ] **Step 2: Validate the locked schema against clean artifacts**
 
-Extend existing executable schema/profile tests to assert all four CLI profile
-names, exact tracker workload sizes, locked digests, endpoint budgets, and
-provisional baseline status. Run the selected tests and observe failure before
-changing quality-bar bytes or documentation commands.
+Use `jq` to compare each raw artifact's profile, workload, deterministic digests,
+endpoint counters, mutation counters, and provisional comparison status with the
+already-tested quality-bar values. Any mismatch is a Task 1 defect: return it to
+the PythonPro builder with a focused failing regression test before changing the
+quality bar. Human documentation prose does not receive a source-text test.
 
 - [ ] **Step 3: Update the quality bar and documentation**
 
-Record only sanitized deterministic digests and schema-required provisional
-measurements from the clean evaluator commit. Document:
+Retain the tested deterministic digests and schema-required provisional baseline
+status. Document:
 
 ```bash
 uv run python -m benchmarks.gauntlet --profile tracker-quick --compare --output /tmp/qbitunregistered-tracker-quick.json
