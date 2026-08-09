@@ -43,6 +43,7 @@ _IMMUTABLE_TQDM_ORIGIN = "<qbitunregistered-gauntlet-immutable-tqdm>"
 _QBITTORRENTAPI_ROOT_NAME = "qbittorrentapi"
 _QBITTORRENTAPI_EXCEPTIONS_NAME = "qbittorrentapi.exceptions"
 _QBITTORRENTAPI_SHIM_ORIGIN = "<qbitunregistered-gauntlet-qbittorrentapi-shim>"
+_WINDOWS_PATH_STAT_CTIME_IS_UNSTABLE = os.name == "nt"
 
 
 class DependencyEnvironmentError(RuntimeError):
@@ -332,7 +333,7 @@ def _stable_entry_identity(file_stat: os.stat_result) -> tuple[int, int, int, in
 def _path_descriptor_entry_identity(file_stat: os.stat_result) -> tuple[int, ...]:
     """Return metadata comparable across path and descriptor stat APIs."""
     stable_identity = _stable_entry_identity(file_stat)
-    if os.name == "nt":
+    if _WINDOWS_PATH_STAT_CTIME_IS_UNSTABLE:
         # Windows path stat preserves creation time in deprecated st_ctime,
         # while descriptor stat can expose metadata-change time instead.
         return stable_identity[:-1]

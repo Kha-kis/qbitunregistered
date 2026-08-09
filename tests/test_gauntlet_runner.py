@@ -3952,7 +3952,12 @@ def _mock_dependency_source_read(
     path_after: os.stat_result,
     platform_name: str,
 ) -> None:
-    monkeypatch.setattr(import_bootstrap.os, "name", platform_name)
+    monkeypatch.setattr(
+        import_bootstrap,
+        "_WINDOWS_PATH_STAT_CTIME_IS_UNSTABLE",
+        platform_name == "nt",
+        raising=False,
+    )
     monkeypatch.delattr(import_bootstrap.os, "O_NOFOLLOW", raising=False)
     monkeypatch.setattr(import_bootstrap.os, "open", Mock(return_value=31))
     monkeypatch.setattr(
@@ -3969,6 +3974,7 @@ def test_windows_bounded_dependency_reader_tolerates_only_cross_interface_ctime_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = b"verified source\n"
+    process_os_name = os.name
     path_before = _dependency_source_stat(payload, ctime_ns=17)
     descriptor_stat = _dependency_source_stat(payload, ctime_ns=19)
     path_after = _dependency_source_stat(payload, ctime_ns=23)
@@ -3989,6 +3995,7 @@ def test_windows_bounded_dependency_reader_tolerates_only_cross_interface_ctime_
         )
         == payload
     )
+    assert os.name == process_os_name
 
 
 @pytest.mark.parametrize(
