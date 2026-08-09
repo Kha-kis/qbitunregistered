@@ -2906,6 +2906,7 @@ def test_paired_comparison_passes_supported_api_reduction_and_retains_all_sample
 
 def test_tracker_paired_comparison_requires_exact_to_bulk_endpoint_collapse(tmp_path: Path) -> None:
     """Catch timing-only acceptance when the candidate retains N exact tracker calls."""
+    tracker_fixture = _tracker_fixture_module()
     result = run_gauntlet(
         "tracker-quick",
         seed=20_260_729,
@@ -2948,23 +2949,28 @@ def test_tracker_paired_comparison_requires_exact_to_bulk_endpoint_collapse(tmp_
     assert aggregate_gate["status"] == "fail"
     assert aggregate_rejected["overall"] == "fail"
     for run in runs:
-        if run["role"] != "candidate":
-            continue
-        candidate = run["result"]
+        current_role = run["role"]
+        current_result = run["result"]
+        if current_role == "control":
+            endpoint_shape = (1, 0, tracker_fixture.TRACKER_QUICK_PROFILE.torrent_count)
+            contract_role = "control"
+        else:
+            endpoint_shape = (0, 1, 0)
+            contract_role = "candidate"
         for counters in (
-            candidate["endpoint_counters"],
-            *candidate["timed_sample_endpoint_counters"],
-            *candidate["pass_endpoint_counters"].values(),
+            current_result["endpoint_counters"],
+            *current_result["timed_sample_endpoint_counters"],
+            *current_result["pass_endpoint_counters"].values(),
         ):
             counters.update(
                 {
-                    "torrents.info": 0,
-                    "torrents.info.include_trackers": 1,
-                    "torrents_trackers": 0,
+                    "torrents.info": endpoint_shape[0],
+                    "torrents.info.include_trackers": endpoint_shape[1],
+                    "torrents_trackers": endpoint_shape[2],
                 }
             )
-        for name, (shape, exit_code, terminal_phase, observation_order) in _tracker_scenario_contract("candidate").items():
-            scenario = candidate["scenarios"][name]
+        for name, (shape, exit_code, terminal_phase, observation_order) in _tracker_scenario_contract(contract_role).items():
+            scenario = current_result["scenarios"][name]
             scenario["endpoint_counters"] = {
                 "torrents.info": shape[0],
                 "torrents.info.include_trackers": shape[1],
@@ -3038,7 +3044,7 @@ def _bulk_fail_closed_malformed_scenarios(
     return cast(dict[str, Any], tracker_runner.evaluate_tracker_scenarios(fixture))
 
 
-def test_malformed_embedded_scenario_normalizes_exact_and_bulk_safe_outcomes(
+def test_malformed_embedded_scenario_normalizes_candidate_bulk_safe_outcomes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3050,16 +3056,16 @@ def test_malformed_embedded_scenario_normalizes_exact_and_bulk_safe_outcomes(
         tracker_fixture.TRACKER_QUICK_PROFILE,
         seed=20_260_729,
     )
-    exact_scenarios = tracker_runner.evaluate_tracker_scenarios(fixture)
+    candidate_scenarios = tracker_runner.evaluate_tracker_scenarios(fixture)
     bulk_scenarios = _bulk_fail_closed_malformed_scenarios(tmp_path, monkeypatch)
     expected_digest = "9915630d6e4c3f77b50cb0a16c7c71be9ab2ed66ad89d73e4c7bad801319bd8b"
 
-    assert exact_scenarios["malformed_embedded_transport_aware"]["action_digest"] == expected_digest
+    assert candidate_scenarios["malformed_embedded_transport_aware"]["action_digest"] == expected_digest
     assert bulk_scenarios["malformed_embedded_transport_aware"]["action_digest"] == expected_digest
-    assert exact_scenarios["malformed_embedded_transport_aware"]["endpoint_counters"] == {
-        "torrents.info": 1,
-        "torrents.info.include_trackers": 0,
-        "torrents_trackers": 6,
+    assert candidate_scenarios["malformed_embedded_transport_aware"]["endpoint_counters"] == {
+        "torrents.info": 0,
+        "torrents.info.include_trackers": 1,
+        "torrents_trackers": 0,
     }
     assert bulk_scenarios["malformed_embedded_transport_aware"]["endpoint_counters"] == {
         "torrents.info": 0,
@@ -3100,23 +3106,23 @@ def test_tracker_paired_comparison_requires_candidate_bulk_scenario_semantics() 
         assert rejected["overall"] == "fail"
 
 
-def test_malformed_embedded_exact_success_rejects_wrong_action_records(
+def test_candidate_bulk_success_rejects_wrong_action_records(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Catch exact-control scenario normalization without hash-level validation."""
+    """Catch candidate bulk success normalization without hash-level validation."""
     tracker_fixture = _tracker_fixture_module()
     tracker_runner = _tracker_runner_module()
     fixture = tracker_fixture.build_tracker_fixture(
-        tmp_path / "wrong-exact-actions",
+        tmp_path / "wrong-candidate-actions",
         tracker_fixture.TRACKER_QUICK_PROFILE,
         seed=20_260_729,
     )
     real_analyze_impact = tracker_runner.analyze_impact
 
-    def analyze_with_wrong_exact_action(client, torrents, config, operations):
+    def analyze_with_wrong_candidate_action(client, torrents, config, operations):
         summary = real_analyze_impact(client, torrents, config, operations)
-        if client.embedded_trackers_mode == "malformed":
+        if client.embedded_trackers_mode != "malformed":
             used_hashes = {
                 torrent_hash for torrent_hashes in summary.torrents_to_tag.values() for torrent_hash in torrent_hashes
             }
@@ -3124,17 +3130,17 @@ def test_malformed_embedded_exact_success_rejects_wrong_action_records(
             summary.torrents_to_tag["unregistered"][0] = replacement_hash
         return summary
 
-    monkeypatch.setattr(tracker_runner, "analyze_impact", analyze_with_wrong_exact_action)
+    monkeypatch.setattr(tracker_runner, "analyze_impact", analyze_with_wrong_candidate_action)
 
     with pytest.raises(GauntletSafetyError, match="scenario action records"):
         tracker_runner.evaluate_tracker_scenarios(fixture)
 
 
-def test_malformed_embedded_bulk_success_is_rejected(
+def test_malformed_embedded_candidate_exact_fallback_is_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Catch a candidate treating present malformed bulk metadata as safe success."""
+    """Catch a candidate treating present malformed bulk metadata as an exact-read fallback."""
     tracker_fixture = _tracker_fixture_module()
     tracker_runner = _tracker_runner_module()
     fixture = tracker_fixture.build_tracker_fixture(
@@ -3144,16 +3150,14 @@ def test_malformed_embedded_bulk_success_is_rejected(
     )
     real_analyze_impact = tracker_runner.analyze_impact
 
-    def analyze_with_unsafe_bulk_success(client, torrents, config, operations):
-        summary = real_analyze_impact(client, torrents, config, operations)
+    def analyze_with_unsafe_exact_fallback(client, torrents, config, operations):
         if client.embedded_trackers_mode == "malformed":
-            client.reset_read_counts()
-            client.torrents.info(include_trackers=True)
-        return summary
+            clear_cache()
+        return real_analyze_impact(client, torrents, config, operations)
 
-    monkeypatch.setattr(tracker_runner, "analyze_impact", analyze_with_unsafe_bulk_success)
+    monkeypatch.setattr(tracker_runner, "analyze_impact", analyze_with_unsafe_exact_fallback)
 
-    with pytest.raises(GauntletSafetyError, match="malformed embedded metadata"):
+    with pytest.raises(GauntletSafetyError, match="locked transport role"):
         tracker_runner.evaluate_tracker_scenarios(fixture)
 
 
