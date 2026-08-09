@@ -8,6 +8,7 @@ import importlib
 import importlib.machinery
 import importlib.util
 import json
+import logging
 import math
 import os
 import py_compile
@@ -1746,6 +1747,43 @@ def test_tracker_measured_pipeline_uses_real_cli_and_reuses_preview_plan(
     }
     assert fixture.client.mutation_total == 0
     assert fixture.client.logout_count == 1
+
+
+def test_tracker_cli_harnesses_preserve_externally_owned_logging_handlers(tmp_path: Path) -> None:
+    """Keep real CLI logging setup from closing its caller's handlers."""
+    tracker_runner = _tracker_runner_module()
+    fixture = _small_tracker_fixture(tmp_path, seed=133)
+    scenario_fixture = _small_tracker_fixture(tmp_path / "scenario", seed=134)
+    root_logger = logging.getLogger()
+
+    class CallerHandler(logging.Handler):
+        close_count = 0
+
+        def emit(self, record: logging.LogRecord) -> None:
+            del record
+
+        def close(self) -> None:
+            self.close_count += 1
+            super().close()
+
+    handler = CallerHandler()
+    root_logger.addHandler(handler)
+    try:
+        tracker_runner._execute_pipeline(fixture)
+
+        assert handler in root_logger.handlers
+        assert handler.close_count == 0
+        tracker_runner._execute_scenario_cli(
+            scenario_fixture,
+            before_preview=None,
+            before_execution=None,
+            dry_run=True,
+            production_audit=tracker_runner._ProductionBoundaryAudit(),
+        )
+        assert handler in root_logger.handlers
+        assert handler.close_count == 0
+    finally:
+        root_logger.removeHandler(handler)
 
 
 @pytest.mark.parametrize("exit_code", [0, 1])

@@ -77,8 +77,8 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip "setuptools>=83" build
       - run: python -m pip install -e ".[dev]"
-      - name: "Temporary diagnostic: locate first leaked regular descriptor"
-        run: pytest --capture=sys --maxfail=1
+      - name: Run tests
+        run: python -m pytest -p tests.windows_pytest_plugin --capture=sys
       - name: Build wheel
         run: python -m build
       - name: Install wheel

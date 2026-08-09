@@ -755,6 +755,8 @@ def _execute_pipeline(fixture: TrackerGauntletFixture) -> _TrackerPipelineResult
         execution_results.append(result)
         return result
 
+    for handler in previous_handlers:
+        root_logger.removeHandler(handler)
     try:
         with (
             patch.object(cli_module, "create_client", observed_create_client),
@@ -1136,6 +1138,8 @@ def _execute_scenario_cli(  # noqa: C901
     arguments = ["--config", str(config_path), "--unregistered"]
     if dry_run:
         arguments.append("--dry-run")
+    for handler in previous_handlers:
+        root_logger.removeHandler(handler)
     try:
         with (
             patch.object(cli_module, "create_client", observed_create_client),
