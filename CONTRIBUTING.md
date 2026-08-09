@@ -345,7 +345,7 @@ deviation, and separately traced peak memory. Tracker scenario results also
 retain exact endpoint counters, CLI exit code, terminal phase, observation
 order, and zero mutation/isolation counters. Candidate identity covers the
 commit plus staged, unstaged, and untracked content without including raw paths
-or diffs in the result. Tracker artifacts before schema 9 / evaluator 1.11.0
+or diffs in the result. Tracker artifacts before schema 9 / evaluator 1.12.0
 are non-comparable. The evaluator derives one role from primary endpoint
 evidence and requires every primary pass plus all twelve scenarios to match
 that same canonical control or candidate role before paired comparison checks
@@ -399,8 +399,17 @@ change must preserve the locked action digest and zero-mutation result before
 its speed is considered.
 
 Tracker evidence is comparable only when it uses result schema 9 and evaluator
-version 1.11.0. Round-7 and earlier quick/full artifacts are invalid; regenerate
+version 1.12.0. Round-7 and earlier quick/full artifacts are invalid; regenerate
 evidence from the exact clean evaluator revision.
+
+The paired child trust boundary keeps all installed dependency roots off child
+`sys.path`; real `tqdm` executes only from captured manifest-matching bytes;
+the evaluator-owned, fail-closed fake-client shim is the locked qBittorrent API
+boundary; and Apprise is intentionally unavailable for tracker fixtures. The
+normal optional-Apprise path remains unchanged outside paired evaluation. The
+complete dependency tree remains fingerprinted before and after every child.
+The evaluator neither verifies installed qBittorrent-client imports nor
+supports arbitrary third-party packages.
 
 Establish evaluator changes on an evaluator-only branch and merge them before
 starting a production optimization. Optimization branches must not edit the

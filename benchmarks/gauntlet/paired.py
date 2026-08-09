@@ -55,7 +55,7 @@ from benchmarks.gauntlet.runner import DEFAULT_SAMPLES
 
 PAIRED_SCHEMA_NAME = "qbitunregistered.gauntlet.paired-result"
 PAIRED_SCHEMA_VERSION = 6
-PAIRING_VERSION = "2.7.0"
+PAIRING_VERSION = "2.8.0"
 PAIRED_ORDER: tuple[Literal["control", "candidate"], ...] = (
     "control",
     "candidate",

@@ -256,6 +256,15 @@ protected finder and manifest finder to remain first and second on
 `sys.meta_path`, and requires loaded `tqdm` modules to retain the expected
 loader, spec, synthetic origin, and package status.
 
+The paired child trust boundary keeps all installed dependency roots off child
+`sys.path`; real `tqdm` executes only from captured manifest-matching bytes;
+the evaluator-owned, fail-closed fake-client shim is the locked qBittorrent API
+boundary; and Apprise is intentionally unavailable for tracker fixtures. The
+normal optional-Apprise path remains unchanged outside paired evaluation. The
+complete dependency tree remains fingerprinted before and after every child.
+The evaluator neither verifies installed qBittorrent-client imports nor
+supports arbitrary third-party packages.
+
 This boundary assumes verified evaluator/bootstrap bytes, conforming CPython,
 and control, candidate, and dependency code that does not deliberately inspect
 or mutate evaluator-private Python state. Deliberate mutation of evaluator
@@ -330,7 +339,7 @@ must use one bulk request while control passes must use exact requests.
 
 Earlier tracker artifacts predate artifact-wide role enforcement. They are
 non-comparable and must not be used as control evidence; regenerate quick and
-full artifacts with schema version 9 and evaluator version 1.11.0. One role is
+full artifacts with schema version 9 and evaluator version 1.12.0. One role is
 derived from the aggregate primary endpoint triple, every primary pass must
 retain it, and all twelve scenarios must match that same role's canonical
 contracts.

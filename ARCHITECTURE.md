@@ -753,7 +753,7 @@ exit, terminal-phase, and observation-order evidence. The aggregate primary
 triple derives exactly one artifact role; every other primary pass and all
 twelve scenarios must match it. Earlier tracker artifacts lack this
 artifact-wide enforcement and pre-existing descriptor rejection; they are
-non-comparable before schema 9 / evaluator 1.11.0.
+non-comparable before schema 9 / evaluator 1.12.0.
 
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,
@@ -825,6 +825,15 @@ never reopened, and the complete dependency fingerprint is revalidated after
 evaluation.
 Ordinary non-paired launcher execution retains its installed-dependency import
 behavior.
+
+The paired child trust boundary keeps all installed dependency roots off child
+`sys.path`; real `tqdm` executes only from captured manifest-matching bytes;
+the evaluator-owned, fail-closed fake-client shim is the locked qBittorrent API
+boundary; and Apprise is intentionally unavailable for tracker fixtures. The
+normal optional-Apprise path remains unchanged outside paired evaluation. The
+complete dependency tree remains fingerprinted before and after every child.
+The evaluator neither verifies installed qBittorrent-client imports nor
+supports arbitrary third-party packages.
 
 The invoking checkout's quality bar is captured as a regular, visible stage-0
 blob that must exactly match the originally recorded evaluator commit. One

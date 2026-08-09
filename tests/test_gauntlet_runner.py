@@ -2392,7 +2392,7 @@ def test_tracker_oracle_dispatches_through_shared_versioned_result(tmp_path: Pat
     assert result["profile"] == "tracker-quick"
     assert result["schema"] == "qbitunregistered.gauntlet.result"
     assert result["schema_version"] == 9
-    assert result["evaluator_version"] == "1.11.0"
+    assert result["evaluator_version"] == "1.12.0"
     assert result["scope"] == "orphan_and_tracker_dry_run_evaluation"
     assert result["commit"] == "unknown"
     assert result["candidate_state"] == {"clean": None, "diff_sha256": "unknown"}
@@ -2438,7 +2438,7 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
 
     assert quick.kind == full.kind == "tracker"
     assert paired.PAIRED_SCHEMA_VERSION == 6
-    assert paired.PAIRING_VERSION == "2.7.0"
+    assert paired.PAIRING_VERSION == "2.8.0"
     assert quick.tier == "round"
     assert full.tier == "candidate"
     assert quick.fixture_manifest_digest == "348948093b6f400156f97e29c4314a1b0836f31e4d7b3b59d16781008e1a0988"
@@ -2476,6 +2476,37 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
     assert quick.runtime_baseline_fraction_max == full.runtime_baseline_fraction_max == 1.0
     assert quick.peak_memory_baseline_fraction_max == full.peak_memory_baseline_fraction_max == 1.25
     assert set(tracker_fixture.TRACKER_PROFILES) <= set(quality_bar.profiles)
+
+
+def test_evaluator_identity_versions_preserve_existing_result_schemas() -> None:
+    """Catch identity drift without accepting a result-schema change."""
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+
+    assert quality_bar.evaluator_schema_version == SCHEMA_VERSION == 9
+    assert quality_bar.evaluator_version == EVALUATOR_VERSION == "1.12.0"
+    assert paired.PAIRED_SCHEMA_VERSION == 6
+    assert paired.PAIRING_VERSION == "2.8.0"
+
+
+def test_paired_documentation_defines_immutable_child_import_boundary() -> None:
+    """Catch paired docs that omit a protected child-import constraint."""
+    documentation_paths = (
+        REPOSITORY_ROOT / "benchmarks" / "gauntlet" / "README.md",
+        REPOSITORY_ROOT / "ARCHITECTURE.md",
+        REPOSITORY_ROOT / "CONTRIBUTING.md",
+    )
+    required_boundary_statements = (
+        "all installed dependency roots off child `sys.path`",
+        "real `tqdm` executes only from captured manifest-matching bytes",
+        "evaluator-owned, fail-closed fake-client shim",
+        "Apprise is intentionally unavailable for tracker fixtures",
+        "complete dependency tree remains fingerprinted before and after every child",
+    )
+
+    for documentation_path in documentation_paths:
+        content = " ".join(documentation_path.read_text(encoding="utf-8").split())
+        for statement in required_boundary_statements:
+            assert statement in content, f"{documentation_path} omits: {statement}"
 
 
 @pytest.mark.parametrize(
