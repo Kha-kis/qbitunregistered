@@ -2091,9 +2091,9 @@ def test_tracker_measured_pipeline_uses_real_cli_and_reuses_preview_plan(
     assert events[1][2] is events[0][2]
     assert pipeline.summary.unregistered_deletion_plan is events[0][2]
     assert fixture.client.read_counts == {
-        "torrents.info": 1,
-        "torrents.info.include_trackers": 0,
-        "torrents_trackers": fixture.profile.torrent_count,
+        "torrents.info": 0,
+        "torrents.info.include_trackers": 1,
+        "torrents_trackers": 0,
     }
     assert fixture.client.mutation_total == 0
     assert fixture.client.logout_count == 1
@@ -2265,26 +2265,26 @@ def test_tracker_primary_passes_use_fresh_fixture_state(
     assert len(set(roots)) == len(roots)
 
 
-def test_local_tracker_result_rejects_scenarios_opposite_primary_role(
+def test_local_tracker_result_rejects_control_scenarios_opposite_candidate_primary_role(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reject local result construction when scenarios disagree with primary transport."""
+    """Reject control scenarios when the primary result uses candidate transport."""
     tracker_runner = _tracker_runner_module()
     fixture = _small_tracker_fixture(tmp_path, seed=159)
-    candidate_scenarios = copy.deepcopy(_valid_tracker_quick_result("candidate")["scenarios"])
+    control_scenarios = copy.deepcopy(_valid_tracker_quick_result("control")["scenarios"])
 
     monkeypatch.setattr(
         tracker_runner,
         "evaluate_tracker_scenarios",
-        lambda _fixture, *, production_audit: copy.deepcopy(candidate_scenarios),
+        lambda _fixture, *, production_audit: copy.deepcopy(control_scenarios),
     )
 
     with pytest.raises(GauntletSafetyError, match="role|transport|scenario"):
         tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
 
 
-def test_tracker_scenarios_use_real_cli_and_lock_control_phase_contracts(
+def test_tracker_scenarios_use_real_cli_and_lock_candidate_phase_contracts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2315,7 +2315,7 @@ def test_tracker_scenarios_use_real_cli_and_lock_control_phase_contracts(
         "mutation_counters",
         "isolation_counters",
     }
-    for name, (shape, exit_code, terminal_phase, observation_order) in _tracker_scenario_contract("control").items():
+    for name, (shape, exit_code, terminal_phase, observation_order) in _tracker_scenario_contract("candidate").items():
         evidence = scenarios[name]
         assert set(evidence) == expected_keys
         assert evidence["exit_code"] == exit_code
@@ -2370,8 +2370,8 @@ def test_tracker_scenario_cli_hooks_follow_initial_acquisition_and_preview(
     )
 
     assert hook_events == [
-        ("before_preview", (1, 0, 0)),
-        ("before_execution", (1, 0, fixture.profile.torrent_count)),
+        ("before_preview", (0, 1, 0)),
+        ("before_execution", (0, 1, 0)),
     ]
     assert result.exit_code == 0
     assert result.observation_order == ["preview", "execution"]
