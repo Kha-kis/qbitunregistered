@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, TypedDict, cast
 
 GateStatus = Literal["pass", "fail", "pending", "non_comparable"]
+TrackerScenarioRole = Literal["control", "candidate"]
+TrackerTerminalPhase = Literal["execution_complete", "preview_fail_closed", "execution_fail_closed"]
 MUTATION_COUNTER_KEYS = {
     "filesystem",
     "qbittorrent",
@@ -35,6 +37,98 @@ ENVIRONMENT_KEYS = {
     "operating_system",
     "processor",
     "python",
+}
+TRACKER_SCENARIO_NAMES = {
+    "complete_embedded",
+    "omitted_embedded_fallback",
+    "rejected_embedded_fallback",
+    "malformed_embedded_transport_aware",
+    "malformed_exact_fail_closed",
+    "proven_disappearance",
+    "same_hash_readd_fail_closed",
+    "malformed_refresh_fail_closed",
+    "duplicate_refresh_fail_closed",
+    "delete_disappearance_preflight",
+    "delete_tag_change_preflight",
+    "tracker_change_snapshot_bound",
+}
+ISOLATION_COUNTER_KEYS = {
+    "filesystem_write_attempts",
+    "network_connect_attempts",
+    "network_dns_attempts",
+    "network_outbound_attempts",
+}
+COMMON_RESULT_KEYS = {
+    "schema",
+    "schema_version",
+    "evaluator_version",
+    "commit",
+    "candidate_state",
+    "identity_verified",
+    "environment",
+    "scope",
+    "profile_kind",
+    "profile",
+    "tier",
+    "seed",
+    "workload",
+    "fixture_manifest_digest",
+    "intended_action_digest",
+    "reconciliation",
+    "candidate_counts",
+    "endpoint_counters",
+    "timed_sample_endpoint_counters",
+    "pass_endpoint_counters",
+    "mutation_counters",
+    "measurement_policy",
+    "sample_runtime_seconds",
+    "median_runtime_seconds",
+    "minimum_runtime_seconds",
+    "maximum_runtime_seconds",
+    "median_absolute_deviation_seconds",
+    "peak_memory_bytes",
+}
+TRACKER_RESULT_KEYS = {
+    "execution_action_digest",
+    "isolation_counters",
+    "scenarios",
+}
+ORPHAN_WORKLOAD_KEYS = {
+    "torrents",
+    "filesystem_files",
+    "owned_files",
+    "orphan_files",
+    "exact_metadata_torrents",
+    "bulk_path_torrents",
+    "configured_roots",
+    "shards",
+    "timed_samples",
+    "warmup_passes",
+    "memory_passes",
+}
+TRACKER_WORKLOAD_KEYS = {
+    "torrents",
+    "tracker_records",
+    "save_path_groups",
+    "exact_message_targets",
+    "prefix_message_targets",
+    "default_tag_targets",
+    "cross_seed_tag_targets",
+    "torrent_only_delete_targets",
+    "timed_samples",
+    "warmup_passes",
+    "memory_passes",
+}
+COMMON_PROFILE_KEYS = {
+    "kind",
+    "tier",
+    "seed",
+    "fixture_manifest_digest",
+    "intended_action_digest",
+    "workload",
+    "reconciliation",
+    "baseline",
+    "targets",
 }
 
 
@@ -79,21 +173,50 @@ class EndpointBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackerScenarioContract:
+    """Exact observable transport and terminal behavior for one scenario role."""
+
+    endpoint_shape: tuple[int, int, int]
+    exit_code: Literal[0, 1]
+    terminal_phase: TrackerTerminalPhase
+    observation_order: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TrackerScenarioRoleContracts:
+    """Control and candidate contracts for one named tracker scenario."""
+
+    control: TrackerScenarioContract
+    candidate: TrackerScenarioContract
+
+
+@dataclass(frozen=True, slots=True)
 class ProfileQualityBar:
     """Correctness oracle, baseline, and independent targets for one profile."""
 
+    kind: Literal["orphan", "tracker"]
+    tier: str
     seed: int
     fixture_manifest_digest: str
     intended_action_digest: str
+    execution_action_digest: str | None
     reconciliation: Mapping[str, int | str]
-    candidate_count: int
+    candidate_counts: Mapping[str, int]
     workload: Mapping[str, int]
     api_budgets: Mapping[str, EndpointBudget]
+    allowed_tracker_endpoint_shapes: tuple[tuple[int, int, int], ...]
+    scenario_action_digests: Mapping[str, str]
+    isolation_counters: Mapping[str, int]
     baseline: BaselineMeasurement
     runtime_baseline_fraction_max: float
     peak_memory_baseline_fraction_max: float
     relative_mad_max: float
     relative_range_max: float
+
+    @property
+    def candidate_count(self) -> int:
+        """Return the legacy orphan candidate count for existing callers."""
+        return self.candidate_counts["orphan_files"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +229,7 @@ class QualityBar:
     result_schema: str
     scope: str
     measurement_policy: Mapping[str, object]
+    tracker_scenario_contracts: Mapping[str, TrackerScenarioRoleContracts]
     profiles: Mapping[str, ProfileQualityBar]
 
 
@@ -198,6 +322,101 @@ def _reconciliation(value: object, description: str) -> dict[str, int | str]:
     }
 
 
+def _tracker_reconciliation(value: object, description: str) -> dict[str, int | str]:
+    table = _table(value, description)
+    count_keys = {
+        "save_path_group_count",
+        "torrent_path_count",
+        "unregistered_tracker_count",
+        "default_tag_action_count",
+        "cross_seed_tag_action_count",
+        "torrent_only_delete_action_count",
+    }
+    if set(table) != {*count_keys, "digest"}:
+        raise QualityBarError(f"{description} keys do not match the tracker evaluator schema")
+    return {
+        **{key: _integer(table[key], f"{description}.{key}", minimum=1) for key in count_keys},
+        "digest": _sha256(table["digest"], f"{description}.digest"),
+    }
+
+
+def _tracker_api_evidence(value: object, description: str) -> tuple[tuple[int, int, int], ...]:
+    table = _table(value, description)
+    if set(table) != {"allowed_endpoint_shapes"}:
+        raise QualityBarError(f"{description} keys do not match the tracker evaluator schema")
+    raw_transports = table["allowed_endpoint_shapes"]
+    if not isinstance(raw_transports, list) or len(raw_transports) != 2:
+        raise QualityBarError(f"{description}.allowed_endpoint_shapes must contain exactly two triples")
+    transports: list[tuple[int, int, int]] = []
+    for index, raw_transport in enumerate(raw_transports):
+        if not isinstance(raw_transport, list) or len(raw_transport) != 3:
+            raise QualityBarError(f"{description}.allowed_endpoint_shapes[{index}] must be a triple")
+        transports.append(
+            (
+                _integer(raw_transport[0], f"{description}.allowed_endpoint_shapes[{index}][0]"),
+                _integer(raw_transport[1], f"{description}.allowed_endpoint_shapes[{index}][1]"),
+                _integer(raw_transport[2], f"{description}.allowed_endpoint_shapes[{index}][2]"),
+            )
+        )
+    resolved = tuple(transports)
+    if resolved[1] != (0, 1, 0) or resolved[0][0:2] != (1, 0) or resolved[0][2] < 1:
+        raise QualityBarError(f"{description}.allowed_endpoint_shapes do not lock exact and bulk responses")
+    return resolved
+
+
+def _tracker_scenario_contract(value: object, description: str) -> TrackerScenarioContract:
+    table = _table(value, description)
+    expected_fields = {"endpoint_shape", "exit_code", "terminal_phase", "observation_order"}
+    if set(table) != expected_fields:
+        raise QualityBarError(f"{description} keys do not match the tracker_scenario_contracts schema")
+    raw_shape = table["endpoint_shape"]
+    if not isinstance(raw_shape, list) or len(raw_shape) != 3:
+        raise QualityBarError(f"{description}.endpoint_shape must be a triple")
+    endpoint_shape = (
+        _integer(raw_shape[0], f"{description}.endpoint_shape[0]"),
+        _integer(raw_shape[1], f"{description}.endpoint_shape[1]"),
+        _integer(raw_shape[2], f"{description}.endpoint_shape[2]"),
+    )
+    exit_code = _integer(table["exit_code"], f"{description}.exit_code")
+    if exit_code not in {0, 1}:
+        raise QualityBarError(f"{description}.exit_code must be 0 or 1")
+    terminal_phase = _string(table["terminal_phase"], f"{description}.terminal_phase")
+    raw_order = table["observation_order"]
+    if not isinstance(raw_order, list) or any(not isinstance(item, str) for item in raw_order):
+        raise QualityBarError(f"{description}.observation_order must be a string array")
+    observation_order = tuple(raw_order)
+    allowed_terminations = {
+        (0, "execution_complete", ("preview", "execution")),
+        (1, "preview_fail_closed", ("preview",)),
+        (1, "execution_fail_closed", ("preview", "execution")),
+    }
+    if (exit_code, terminal_phase, observation_order) not in allowed_terminations:
+        raise QualityBarError(f"{description} has inconsistent tracker_scenario_contracts termination evidence")
+    return TrackerScenarioContract(
+        endpoint_shape=endpoint_shape,
+        exit_code=cast(Literal[0, 1], exit_code),
+        terminal_phase=cast(TrackerTerminalPhase, terminal_phase),
+        observation_order=observation_order,
+    )
+
+
+def _tracker_scenario_contracts(value: object) -> dict[str, TrackerScenarioRoleContracts]:
+    description = "tracker_scenario_contracts"
+    table = _table(value, description)
+    if set(table) != TRACKER_SCENARIO_NAMES:
+        raise QualityBarError(f"{description} names do not match the tracker evaluator schema")
+    contracts: dict[str, TrackerScenarioRoleContracts] = {}
+    for name, raw_roles in table.items():
+        roles = _table(raw_roles, f"{description}.{name}")
+        if set(roles) != {"control", "candidate"}:
+            raise QualityBarError(f"{description}.{name} roles must be control and candidate")
+        contracts[name] = TrackerScenarioRoleContracts(
+            control=_tracker_scenario_contract(roles["control"], f"{description}.{name}.control"),
+            candidate=_tracker_scenario_contract(roles["candidate"], f"{description}.{name}.candidate"),
+        )
+    return contracts
+
+
 def _baseline_measurement(value: object, description: str) -> BaselineMeasurement:
     table = _table(value, description)
     status = _string(table.get("status"), f"{description}.status")
@@ -233,7 +452,7 @@ def _baseline_measurement(value: object, description: str) -> BaselineMeasuremen
     )
 
 
-def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:
+def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noqa: C901
     """Build one fully validated quality bar from a parsed TOML document."""
     schema_version = _integer(document.get("schema_version"), "schema_version", minimum=1)
     evaluator_schema_version = _integer(
@@ -244,6 +463,7 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:
     evaluator_version = _string(document.get("evaluator_version"), "evaluator_version")
     result_schema = _string(document.get("result_schema"), "result_schema")
     scope = _string(document.get("scope"), "scope")
+    tracker_scenario_contracts = _tracker_scenario_contracts(document.get("tracker_scenario_contracts"))
     measurement_policy = _table(document.get("measurement_policy"), "measurement_policy")
     expected_policy_keys = {
         "timed_samples",
@@ -279,8 +499,93 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:
     profiles: dict[str, ProfileQualityBar] = {}
     for profile_name, raw_profile in profile_tables.items():
         profile = _table(raw_profile, f"profiles.{profile_name}")
+        kind = _string(profile.get("kind"), f"profiles.{profile_name}.kind")
+        if kind not in {"orphan", "tracker"}:
+            raise QualityBarError(f"profiles.{profile_name}.kind must be 'orphan' or 'tracker'")
+        kind_specific_keys = (
+            {"candidate_count", "api_budgets"}
+            if kind == "orphan"
+            else {
+                "candidate_counts",
+                "execution_action_digest",
+                "api_evidence",
+                "isolation_counters",
+                "scenario_action_digests",
+            }
+        )
+        if set(profile) != COMMON_PROFILE_KEYS | kind_specific_keys:
+            raise QualityBarError(f"profiles.{profile_name} profile keys do not match the {kind} schema")
         targets = _table(profile.get("targets"), f"profiles.{profile_name}.targets")
+        if kind == "orphan":
+            candidate_counts = {
+                "orphan_files": _integer(
+                    profile.get("candidate_count"),
+                    f"profiles.{profile_name}.candidate_count",
+                    minimum=1,
+                )
+            }
+            reconciliation = _reconciliation(
+                profile.get("reconciliation"),
+                f"profiles.{profile_name}.reconciliation",
+            )
+            api_budgets = _endpoint_budgets(
+                profile.get("api_budgets"),
+                f"profiles.{profile_name}.api_budgets",
+            )
+            allowed_tracker_endpoint_shapes: tuple[tuple[int, int, int], ...] = ()
+            scenario_action_digests: dict[str, str] = {}
+            execution_action_digest: str | None = None
+            isolation_counters: dict[str, int] = {}
+        else:
+            candidate_counts = _integer_table(
+                profile.get("candidate_counts"),
+                f"profiles.{profile_name}.candidate_counts",
+            )
+            if set(candidate_counts) != {
+                "default_tag_targets",
+                "cross_seed_tag_targets",
+                "torrent_only_deletes",
+            } or any(value < 1 for value in candidate_counts.values()):
+                raise QualityBarError(f"profiles.{profile_name}.candidate_counts keys do not match the tracker schema")
+            reconciliation = _tracker_reconciliation(
+                profile.get("reconciliation"),
+                f"profiles.{profile_name}.reconciliation",
+            )
+            api_budgets = {}
+            allowed_tracker_endpoint_shapes = _tracker_api_evidence(
+                profile.get("api_evidence"),
+                f"profiles.{profile_name}.api_evidence",
+            )
+            scenario_table = _table(
+                profile.get("scenario_action_digests"),
+                f"profiles.{profile_name}.scenario_action_digests",
+            )
+            if set(scenario_table) != TRACKER_SCENARIO_NAMES:
+                raise QualityBarError(f"profiles.{profile_name}.scenario_action_digests keys do not match the tracker schema")
+            scenario_action_digests = {
+                name: _sha256(value, f"profiles.{profile_name}.scenario_action_digests.{name}")
+                for name, value in scenario_table.items()
+            }
+            execution_action_digest = _sha256(
+                profile.get("execution_action_digest"),
+                f"profiles.{profile_name}.execution_action_digest",
+            )
+            isolation_counters = _integer_table(
+                profile.get("isolation_counters"),
+                f"profiles.{profile_name}.isolation_counters",
+            )
+            if set(isolation_counters) != ISOLATION_COUNTER_KEYS or any(isolation_counters.values()):
+                raise QualityBarError(f"profiles.{profile_name}.isolation_counters must lock every attempt class to zero")
+        workload = _integer_table(
+            profile.get("workload"),
+            f"profiles.{profile_name}.workload",
+        )
+        expected_workload_keys = ORPHAN_WORKLOAD_KEYS if kind == "orphan" else TRACKER_WORKLOAD_KEYS
+        if set(workload) != expected_workload_keys:
+            raise QualityBarError(f"profiles.{profile_name}.workload keys do not match the {kind} schema")
         profiles[profile_name] = ProfileQualityBar(
+            kind=cast(Literal["orphan", "tracker"], kind),
+            tier=_string(profile.get("tier"), f"profiles.{profile_name}.tier"),
             seed=_integer(profile.get("seed"), f"profiles.{profile_name}.seed"),
             fixture_manifest_digest=_sha256(
                 profile.get("fixture_manifest_digest"),
@@ -290,23 +595,14 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:
                 profile.get("intended_action_digest"),
                 f"profiles.{profile_name}.intended_action_digest",
             ),
-            candidate_count=_integer(
-                profile.get("candidate_count"),
-                f"profiles.{profile_name}.candidate_count",
-                minimum=1,
-            ),
-            workload=_integer_table(
-                profile.get("workload"),
-                f"profiles.{profile_name}.workload",
-            ),
-            reconciliation=_reconciliation(
-                profile.get("reconciliation"),
-                f"profiles.{profile_name}.reconciliation",
-            ),
-            api_budgets=_endpoint_budgets(
-                profile.get("api_budgets"),
-                f"profiles.{profile_name}.api_budgets",
-            ),
+            execution_action_digest=execution_action_digest,
+            candidate_counts=candidate_counts,
+            workload=workload,
+            reconciliation=reconciliation,
+            api_budgets=api_budgets,
+            allowed_tracker_endpoint_shapes=allowed_tracker_endpoint_shapes,
+            scenario_action_digests=scenario_action_digests,
+            isolation_counters=isolation_counters,
             baseline=_baseline_measurement(
                 profile.get("baseline"),
                 f"profiles.{profile_name}.baseline",
@@ -335,6 +631,7 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:
         result_schema=result_schema,
         scope=scope,
         measurement_policy=dict(measurement_policy),
+        tracker_scenario_contracts=tracker_scenario_contracts,
         profiles=profiles,
     )
 
@@ -385,31 +682,176 @@ def _mapping_of_ints(value: object, *, nonnegative: bool = True) -> dict[str, in
     return resolved
 
 
-def _runtime_reconciliation(value: object) -> dict[str, int | str] | None:
+def _observed_tracker_scenario_contract(value: object) -> TrackerScenarioContract | None:
+    if not isinstance(value, Mapping):
+        return None
+    endpoints = _mapping_of_ints(value.get("endpoint_counters"))
+    exit_code = value.get("exit_code")
+    terminal_phase = value.get("terminal_phase")
+    observation_order = value.get("observation_order")
+    endpoint_keys = (
+        "torrents.info",
+        "torrents.info.include_trackers",
+        "torrents_trackers",
+    )
+    if (
+        endpoints is None
+        or set(endpoints) != set(endpoint_keys)
+        or isinstance(exit_code, bool)
+        or exit_code not in {0, 1}
+        or terminal_phase not in {"execution_complete", "preview_fail_closed", "execution_fail_closed"}
+        or not isinstance(observation_order, list)
+        or any(not isinstance(item, str) for item in observation_order)
+    ):
+        return None
+    return TrackerScenarioContract(
+        endpoint_shape=cast(tuple[int, int, int], tuple(endpoints[key] for key in endpoint_keys)),
+        exit_code=cast(Literal[0, 1], exit_code),
+        terminal_phase=cast(TrackerTerminalPhase, terminal_phase),
+        observation_order=tuple(observation_order),
+    )
+
+
+def derive_tracker_artifact_role(
+    endpoint_counters: object,
+    torrent_count: int,
+) -> TrackerScenarioRole | None:
+    """Derive one tracker artifact role from an exact primary endpoint triple."""
+    counters = _mapping_of_ints(endpoint_counters)
+    endpoint_keys = {
+        "torrents.info",
+        "torrents.info.include_trackers",
+        "torrents_trackers",
+    }
+    if isinstance(torrent_count, bool) or torrent_count < 1 or counters is None or set(counters) != endpoint_keys:
+        return None
+    shape = (
+        counters["torrents.info"],
+        counters["torrents.info.include_trackers"],
+        counters["torrents_trackers"],
+    )
+    if shape == (1, 0, torrent_count):
+        return "control"
+    if shape == (0, 1, 0):
+        return "candidate"
+    return None
+
+
+def tracker_scenarios_match_role_contracts(
+    value: object,
+    contracts: Mapping[str, TrackerScenarioRoleContracts],
+    role: TrackerScenarioRole,
+) -> bool:
+    """Return whether every named scenario matches one artifact role."""
+    if not isinstance(value, Mapping) or set(value) != set(contracts):
+        return False
+    for name, role_contracts in contracts.items():
+        expected = role_contracts.control if role == "control" else role_contracts.candidate
+        if _observed_tracker_scenario_contract(value.get(name)) != expected:
+            return False
+    return True
+
+
+def _runtime_reconciliation(
+    value: object,
+    kind: Literal["orphan", "tracker"],
+) -> dict[str, int | str] | None:
     if not isinstance(value, dict):
         return None
-    expected_keys = {
-        "file_action_count",
-        "empty_directory_count",
-        "file_action_digest",
-        "empty_directory_digest",
-        "digest",
-    }
+    count_keys = (
+        {"file_action_count", "empty_directory_count"}
+        if kind == "orphan"
+        else {
+            "save_path_group_count",
+            "torrent_path_count",
+            "unregistered_tracker_count",
+            "default_tag_action_count",
+            "cross_seed_tag_action_count",
+            "torrent_only_delete_action_count",
+        }
+    )
+    digest_keys = {"file_action_digest", "empty_directory_digest", "digest"} if kind == "orphan" else {"digest"}
+    expected_keys = count_keys | digest_keys
     if set(value) != expected_keys:
         return None
     counts: dict[str, int] = {}
-    for key in ("file_action_count", "empty_directory_count"):
+    for key in count_keys:
         item = value[key]
         if isinstance(item, bool) or not isinstance(item, int) or item < 1:
             return None
         counts[key] = item
     digests: dict[str, str] = {}
-    for key in ("file_action_digest", "empty_directory_digest", "digest"):
+    for key in digest_keys:
         item = value[key]
         if not isinstance(item, str) or len(item) != 64 or any(character not in "0123456789abcdef" for character in item):
             return None
         digests[key] = item
     return {**counts, **digests}
+
+
+def _runtime_tracker_scenarios(
+    value: object,
+    profile: ProfileQualityBar,
+    contracts: Mapping[str, TrackerScenarioRoleContracts],
+    role: TrackerScenarioRole | None,
+) -> dict[str, object] | None:
+    if profile.kind != "tracker":
+        return {} if value is None else None
+    if role is None or not isinstance(value, dict) or set(value) != TRACKER_SCENARIO_NAMES:
+        return None
+    sanitized: dict[str, object] = {}
+    endpoint_keys = {
+        "torrents.info",
+        "torrents.info.include_trackers",
+        "torrents_trackers",
+    }
+    for name, raw_evidence in value.items():
+        if not isinstance(raw_evidence, dict) or set(raw_evidence) != {
+            "outcome",
+            "action_digest",
+            "endpoint_counters",
+            "exit_code",
+            "terminal_phase",
+            "observation_order",
+            "mutation_counters",
+            "isolation_counters",
+        }:
+            return None
+        action_digest = raw_evidence["action_digest"]
+        endpoints = _mapping_of_ints(raw_evidence["endpoint_counters"])
+        mutation_counters = _mapping_of_ints(raw_evidence["mutation_counters"])
+        isolation_counters = _mapping_of_ints(raw_evidence["isolation_counters"])
+        exit_code = raw_evidence["exit_code"]
+        terminal_phase = raw_evidence["terminal_phase"]
+        observation_order = raw_evidence["observation_order"]
+        if (
+            raw_evidence["outcome"] != "pass"
+            or action_digest != profile.scenario_action_digests.get(name)
+            or endpoints is None
+            or set(endpoints) != endpoint_keys
+            or mutation_counters is None
+            or set(mutation_counters) != MUTATION_COUNTER_KEYS
+            or any(mutation_counters.values())
+            or isolation_counters != dict(profile.isolation_counters)
+            or isinstance(exit_code, bool)
+            or exit_code not in {0, 1}
+            or terminal_phase not in {"execution_complete", "preview_fail_closed", "execution_fail_closed"}
+            or observation_order not in [["preview"], ["preview", "execution"]]
+        ):
+            return None
+        sanitized[name] = {
+            "outcome": "pass",
+            "action_digest": action_digest,
+            "endpoint_counters": endpoints,
+            "exit_code": exit_code,
+            "terminal_phase": terminal_phase,
+            "observation_order": list(observation_order),
+            "mutation_counters": mutation_counters,
+            "isolation_counters": isolation_counters,
+        }
+    if not tracker_scenarios_match_role_contracts(sanitized, contracts, role):
+        return None
+    return sanitized
 
 
 def _measurement_policy_matches(
@@ -457,9 +899,30 @@ def _safety_gate(result: Mapping[str, object]) -> GateResult:
     if mutations is None or set(mutations) != MUTATION_COUNTER_KEYS:
         return _gate("fail", "mutation counters are missing or malformed")
     total = sum(mutations.values())
+    if result.get("profile_kind") == "tracker":
+        isolation_counters = _mapping_of_ints(result.get("isolation_counters"))
+        if isolation_counters is None or set(isolation_counters) != ISOLATION_COUNTER_KEYS:
+            return _gate("fail", "isolation counters are missing or malformed")
+        total += sum(isolation_counters.values())
+        scenarios = result.get("scenarios")
+        if not isinstance(scenarios, dict) or set(scenarios) != TRACKER_SCENARIO_NAMES:
+            return _gate("fail", "scenario isolation counters are missing or malformed")
+        for evidence in scenarios.values():
+            if not isinstance(evidence, dict):
+                return _gate("fail", "scenario isolation counters are missing or malformed")
+            scenario_isolation = _mapping_of_ints(evidence.get("isolation_counters"))
+            scenario_mutations = _mapping_of_ints(evidence.get("mutation_counters"))
+            if (
+                scenario_isolation is None
+                or set(scenario_isolation) != ISOLATION_COUNTER_KEYS
+                or scenario_mutations is None
+                or set(scenario_mutations) != MUTATION_COUNTER_KEYS
+            ):
+                return _gate("fail", "scenario isolation counters are missing or malformed")
+            total += sum(scenario_isolation.values()) + sum(scenario_mutations.values())
     if total:
         return _gate("fail", "dry-run mutation evidence is nonzero", actual=total)
-    return _gate("pass", "all mutation counters are zero", actual=0)
+    return _gate("pass", "all mutation and isolation counters are zero", actual=0)
 
 
 def _result_gate(
@@ -468,20 +931,41 @@ def _result_gate(
     profile: ProfileQualityBar,
     profile_name: str,
 ) -> GateResult:
+    expected_keys = COMMON_RESULT_KEYS | (TRACKER_RESULT_KEYS if profile.kind == "tracker" else set())
+    if set(result) != expected_keys:
+        return _gate("fail", f"top-level result keys do not match the {profile.kind} schema")
     workload = _mapping_of_ints(result.get("workload"))
     candidates = _mapping_of_ints(result.get("candidate_counts"))
-    reconciliation = _runtime_reconciliation(result.get("reconciliation"))
+    reconciliation = _runtime_reconciliation(result.get("reconciliation"), profile.kind)
+    artifact_role = (
+        derive_tracker_artifact_role(result.get("endpoint_counters"), profile.workload["torrents"])
+        if profile.kind == "tracker"
+        else None
+    )
+    scenarios = _runtime_tracker_scenarios(
+        result.get("scenarios"),
+        profile,
+        quality_bar.tracker_scenario_contracts,
+        artifact_role,
+    )
     matches = (
         result.get("schema") == quality_bar.result_schema
         and result.get("schema_version") == quality_bar.evaluator_schema_version
         and result.get("evaluator_version") == quality_bar.evaluator_version
         and result.get("scope") == quality_bar.scope
+        and result.get("profile_kind") == profile.kind
         and result.get("profile") == profile_name
+        and result.get("tier") == profile.tier
         and result.get("seed") == profile.seed
         and result.get("fixture_manifest_digest") == profile.fixture_manifest_digest
         and result.get("intended_action_digest") == profile.intended_action_digest
+        and (profile.kind != "tracker" or result.get("execution_action_digest") == profile.execution_action_digest)
+        and (
+            profile.kind != "tracker" or _mapping_of_ints(result.get("isolation_counters")) == dict(profile.isolation_counters)
+        )
         and reconciliation == dict(profile.reconciliation)
-        and candidates == {"orphan_files": profile.candidate_count}
+        and scenarios is not None
+        and candidates == dict(profile.candidate_counts)
         and workload == dict(profile.workload)
     )
     if not matches:
@@ -508,6 +992,19 @@ def _api_gate(
 
     def within_budget(value: object) -> bool:
         counters = _mapping_of_ints(value)
+        if profile.kind == "tracker":
+            if counters is None or set(counters) != {
+                "torrents.info",
+                "torrents.info.include_trackers",
+                "torrents_trackers",
+            }:
+                return False
+            endpoint_shape = (
+                counters["torrents.info"],
+                counters["torrents.info.include_trackers"],
+                counters["torrents_trackers"],
+            )
+            return endpoint_shape in profile.allowed_tracker_endpoint_shapes
         if counters is None or set(counters) != set(profile.api_budgets):
             return False
         return all(
@@ -517,6 +1014,18 @@ def _api_gate(
     all_passes = [normalized, *timed_samples, pass_counters["warmup"], pass_counters["memory"]]
     if not all(within_budget(item) for item in all_passes):
         return _gate("fail", "one or more per-pass API counts violate the locked budget")
+    if profile.kind == "tracker":
+        artifact_role = derive_tracker_artifact_role(normalized, profile.workload["torrents"])
+        if artifact_role is None or any(
+            derive_tracker_artifact_role(item, profile.workload["torrents"]) != artifact_role for item in all_passes[1:]
+        ):
+            return _gate("fail", "tracker primary passes do not share one transport role")
+        return _gate(
+            "pass",
+            "all passes use one locked complete tracker transport",
+            actual=normalized["torrents_trackers"] if normalized is not None else None,
+            target=profile.allowed_tracker_endpoint_shapes[0][2],
+        )
     maximum = profile.api_budgets["torrents_files"].maximum
     return _gate(
         "pass",

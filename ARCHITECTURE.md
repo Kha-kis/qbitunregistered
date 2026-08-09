@@ -689,6 +689,72 @@ protected trees before and after the crossover; each isolated child closes the
 preflight-to-import gap by checking immediately before imports and after
 evaluation.
 
+The gauntlet exposes separate quick/full profile pairs for orphan ownership and
+tracker metadata. Every primary tracker pass invokes the real `cli.main()`
+orchestrator with a sanitized temporary configuration and an in-memory client.
+The CLI owns whether its one initial snapshot is ordinary or includes tracker
+metadata. Transparent evaluator observers retain the structured return from
+the real `analyze_impact()` boundary and the result of the real
+`unregistered_checks()` dry-run, require the preview plan to be reused by
+identity, and fail closed if either call is missing, duplicated, reordered, or
+given a different snapshot. An independent fixture
+blueprint supplies expected tag and torrent-only deletion actions; evaluator
+code does not reproduce production tracker classification or cache internals.
+The primary path remains a genuine dry-run. A separate untimed shadow executes
+the real mutating boundary against a fresh in-memory fake, records normalized
+per-hash endpoint arguments, and requires its exact digest to equal the
+fixture-independent preview oracle. The shadow sets `delete_files=False` and
+is excluded from runtime and peak-memory samples. Before every production
+entry, a process audit activates and rejects any pre-existing non-stdio Python
+regular-file descriptor unless it matches redirected stdout/stderr by `fstat`
+identity. It then denies audited write acquisition or named mutations plus
+network connection, DNS, `sendto`, and `sendmsg` events; artifacts and semantic
+scenarios require every sanitized isolation and mutation counter to remain
+zero. Each semantic scenario also invokes `cli.main()`; transparent hooks apply
+compatibility or churn after initial acquisition or after preview, and the
+artifact retains the CLI exit code, terminal phase, and observed phase order.
+This single-threaded Python-runtime boundary is not an OS syscall sandbox:
+native extensions, `ctypes`, direct syscalls, raw Win32 handles, writes through
+redirected stdio, and `send`/`sendall` on a pre-connected socket are outside
+its observation. Linux and Windows inventory Python descriptors completely;
+other platforms fail closed before production.
+
+Each warm-up, timed, and memory pass owns a fresh fixture. Timing or allocation
+tracing begins immediately before the fake materializes the CLI-selected
+initial response and ends immediately after `unregistered_checks()` returns,
+so response allocation and lifetime are measured without fixture construction.
+The control endpoint triple is `(1, 0, N)` and the candidate triple is
+`(0, 1, 0)` in ordinary/bulk/exact order. The candidate bulk response replaces
+the ordinary response; evaluator code never materializes both. Paired
+comparison assigns the exact triple to every pass by role; generic allowed or
+aggregate-only transports cannot substitute for the required collapse.
+Synthetic runtime has a `1.0` regression
+ceiling and peak memory retains `1.25`; live wall-clock improvement requires a
+separately approved protected dry-run. Legacy responses that omit or reject
+embedded tracker metadata can
+fall back to the exact endpoint. Metadata that is present but malformed, an
+uncertain refresh, same-hash re-addition, or pre-mutation disappearance/tag
+churn must fail closed with zero mutation attempts. The
+[tracker gauntlet design](docs/superpowers/specs/2026-08-08-tracker-gauntlet-design.md)
+defines these semantics; the
+[evaluator guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation)
+documents operator commands and evidence fields.
+
+The tracker manifest validates one stored payload per current snapshot hash,
+applies every snapshot-controlled identity, path, state, time, ratio, and
+transfer overlay through the same helper used by response materialization, and
+then hashes that exact effective mapping after fixture-root paths are
+normalized. Fake torrent and tracker responses form a source-faithful,
+conservative model of the visible `qbittorrent-api` 2026.8.0 containers,
+mapping normalization, freshness, and endpoint delegation; they do not claim
+complete internal or byte-for-byte allocator equivalence. A canonical
+quality-bar table locks every named scenario's control and candidate endpoint,
+exit, terminal-phase, and observation-order evidence. The aggregate primary
+triple derives exactly one artifact role; every other primary pass and all
+twelve scenarios must match it. Earlier tracker artifacts lack this
+artifact-wide enforcement and pre-existing descriptor rejection; they are
+non-comparable before schema 9 / evaluator 1.11.0.
+
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,
 and no-bytecode interpreter flags; additional flags are permitted. It discovers
@@ -767,6 +833,14 @@ concurrent replacement and uniquely
 named recovery links remain preserved after rollback; restored prior-output
 backups are not unlinked based on a stale public-name identity check. Any
 uncertainty makes publication fail closed.
+
+Evaluator development and production optimization are deliberately separate.
+The public evaluator branch contains only reviewable evaluator inputs, tests,
+and documentation; private builder/critic orchestration remains outside the
+repository. The evaluator must be merged before an optimization branch is
+created, and that branch cannot alter locked evaluator inputs or thresholds.
+A live installed-wheel dry-run is not part of synthetic evaluation and remains
+a separate, explicitly approved soak gate.
 
 ## Extension Points
 

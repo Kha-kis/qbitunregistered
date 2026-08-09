@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Iterator, NotRequired, Protocol, TypedDict, cast
 
 from benchmarks.gauntlet.fixture_factory import (
-    PROFILES,
+    PROFILES as ORPHAN_PROFILES,
     EndpointBudget,
     GauntletFixture,
     GauntletProfile,
@@ -34,6 +34,11 @@ from benchmarks.gauntlet.identity import (
     capture_repository_identity,
     require_same_identity,
 )
+from benchmarks.gauntlet.tracker_fixture import (
+    TRACKER_PROFILES,
+    TrackerGauntletProfile,
+    build_tracker_fixture,
+)
 from qbitunregistered.cache import clear_cache
 from qbitunregistered.operations.orphaned import (
     OrphanFilePlan,
@@ -43,11 +48,15 @@ from qbitunregistered.operations.orphaned import (
 )
 
 SCHEMA_NAME = "qbitunregistered.gauntlet.result"
-SCHEMA_VERSION = 3
-EVALUATOR_VERSION = "1.3.0"
+SCHEMA_VERSION = 9
+EVALUATOR_VERSION = "1.11.0"
 DEFAULT_SEED = 20_260_729
 DEFAULT_SAMPLES = 5
 _RESULT_STAGING_PREFIX = ".qbit-gauntlet-"
+PROFILES: Mapping[str, GauntletProfile | TrackerGauntletProfile] = {
+    **ORPHAN_PROFILES,
+    **TRACKER_PROFILES,
+}
 
 
 class GauntletSafetyError(RuntimeError):
@@ -117,6 +126,7 @@ class PassEndpointCounters(TypedDict):
 class EvaluationResult(TypedDict):
     """Measurements and safety evidence from one materialized fixture."""
 
+    profile_kind: str
     profile: str
     tier: str
     seed: int
@@ -145,9 +155,32 @@ class CandidateState(TypedDict):
     diff_sha256: str
 
 
-class GauntletResult(EvaluationResult):
-    """Complete versioned JSON evaluator result."""
+class GauntletResult(TypedDict):
+    """Common versioned envelope for either closed evaluator profile variant."""
 
+    profile_kind: str
+    profile: str
+    tier: str
+    seed: int
+    workload: Mapping[str, int]
+    fixture_manifest_digest: str
+    intended_action_digest: str
+    reconciliation: Mapping[str, int | str]
+    candidate_counts: dict[str, int]
+    endpoint_counters: dict[str, int]
+    timed_sample_endpoint_counters: list[dict[str, int]]
+    pass_endpoint_counters: PassEndpointCounters
+    mutation_counters: dict[str, int]
+    measurement_policy: MeasurementPolicy
+    sample_runtime_seconds: list[float]
+    median_runtime_seconds: float
+    minimum_runtime_seconds: float
+    maximum_runtime_seconds: float
+    median_absolute_deviation_seconds: float
+    peak_memory_bytes: int
+    execution_action_digest: NotRequired[str]
+    isolation_counters: NotRequired[dict[str, int]]
+    scenarios: NotRequired[dict[str, object]]
     schema: str
     schema_version: int
     evaluator_version: str
@@ -425,7 +458,9 @@ def _measurement_policy() -> MeasurementPolicy:
         "timed_samples_traced": False,
         "memory_pass_timed": False,
         "application_cache": "cleared before every pass",
-        "fixture_metadata": "materialized once and reused after the explicit warmup",
+        "fixture_metadata": (
+            "orphan metadata is reused; each tracker pass owns a fresh fixture and measures initial snapshot acquisition"
+        ),
         "os_page_cache": "not flushed; timed and memory passes are warm",
         "sample_rejection": "none; all five timed samples are retained",
     }
@@ -457,6 +492,7 @@ def evaluate_fixture(fixture: GauntletFixture, *, samples: int) -> EvaluationRes
     median_runtime = statistics.median(runtimes)
     median_absolute_deviation = statistics.median(abs(runtime - median_runtime) for runtime in runtimes)
     return {
+        "profile_kind": "orphan",
         "profile": fixture.profile.name,
         "tier": fixture.profile.tier,
         "seed": fixture.seed,
@@ -585,7 +621,7 @@ def _environment(fixture_root: Path) -> dict[str, str]:
 
 
 def run_gauntlet(
-    profile: str | GauntletProfile = "quick",
+    profile: str | GauntletProfile | TrackerGauntletProfile = "quick",
     *,
     seed: int = DEFAULT_SEED,
     samples: int = DEFAULT_SAMPLES,
@@ -609,24 +645,38 @@ def run_gauntlet(
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("seed must be an integer")
 
+    measurements: Mapping[str, object]
     with tempfile.TemporaryDirectory(prefix="qbitunregistered-gauntlet-fixture-") as temporary_root:
-        fixture = build_fixture(Path(temporary_root), resolved_profile, seed)
-        measurements = evaluate_fixture(fixture, samples=samples)
-        environment = _environment(fixture.root)
-    result: GauntletResult = {
-        "schema": SCHEMA_NAME,
-        "schema_version": SCHEMA_VERSION,
-        "evaluator_version": EVALUATOR_VERSION,
-        "commit": identity_before.commit,
-        "candidate_state": {
-            "clean": identity_before.clean,
-            "diff_sha256": identity_before.diff_sha256,
+        if isinstance(resolved_profile, TrackerGauntletProfile):
+            from benchmarks.gauntlet.tracker_runner import evaluate_tracker_fixture
+
+            tracker_fixture = build_tracker_fixture(Path(temporary_root), resolved_profile, seed)
+            measurements = cast(
+                Mapping[str, object],
+                evaluate_tracker_fixture(tracker_fixture, samples=samples),
+            )
+            environment = _environment(tracker_fixture.root)
+        else:
+            fixture = build_fixture(Path(temporary_root), resolved_profile, seed)
+            measurements = cast(Mapping[str, object], evaluate_fixture(fixture, samples=samples))
+            environment = _environment(fixture.root)
+    result = cast(
+        GauntletResult,
+        {
+            "schema": SCHEMA_NAME,
+            "schema_version": SCHEMA_VERSION,
+            "evaluator_version": EVALUATOR_VERSION,
+            "commit": identity_before.commit,
+            "candidate_state": {
+                "clean": identity_before.clean,
+                "diff_sha256": identity_before.diff_sha256,
+            },
+            "identity_verified": True,
+            "environment": environment,
+            "scope": "orphan_and_tracker_dry_run_evaluation",
+            **measurements,
         },
-        "identity_verified": True,
-        "environment": environment,
-        "scope": "orphan_discovery_plan_and_dry_run_reconciliation",
-        **measurements,
-    }
+    )
     require_same_identity(
         identity_before,
         capture_repository_identity(resolved_repository_root),

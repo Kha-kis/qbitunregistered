@@ -25,8 +25,11 @@ from benchmarks.gauntlet.baseline import (
     ProfileQualityBar,
     QualityBar,
     QualityBarError,
+    TrackerScenarioRole,
     compare_result,
+    derive_tracker_artifact_role,
     load_quality_bar_bytes,
+    tracker_scenarios_match_role_contracts,
 )
 from benchmarks.gauntlet.identity import (
     RepositoryIdentity,
@@ -49,8 +52,8 @@ from benchmarks.gauntlet.paired_evidence import (
 from benchmarks.gauntlet.runner import DEFAULT_SAMPLES
 
 PAIRED_SCHEMA_NAME = "qbitunregistered.gauntlet.paired-result"
-PAIRED_SCHEMA_VERSION = 2
-PAIRING_VERSION = "2.1.0"
+PAIRED_SCHEMA_VERSION = 6
+PAIRING_VERSION = "2.7.0"
 PAIRED_ORDER: tuple[Literal["control", "candidate"], ...] = (
     "control",
     "candidate",
@@ -357,10 +360,14 @@ def compare_paired_results(  # noqa: C901
         gates["environment"] = _gate("pass", "all child environments are complete and identical")
 
     oracle_fields = (
+        "profile_kind",
         "profile",
+        "tier",
         "seed",
         "fixture_manifest_digest",
         "intended_action_digest",
+        "execution_action_digest",
+        "isolation_counters",
         "reconciliation",
         "candidate_counts",
         "workload",
@@ -380,6 +387,44 @@ def compare_paired_results(  # noqa: C901
         gates["child_gates"] = _gate("pass", "every child correctness, API, safety, and variance gate passes")
     else:
         gates["child_gates"] = _gate("fail", "at least one child correctness, API, safety, or variance gate failed")
+
+    if profile.kind == "tracker":
+        torrent_count = profile.workload["torrents"]
+
+        def role_transport_matches(result: Mapping[str, object], role: TrackerScenarioRole) -> bool:
+            raw_timed = result.get("timed_sample_endpoint_counters")
+            raw_passes = result.get("pass_endpoint_counters")
+            if not isinstance(raw_timed, list) or not isinstance(raw_passes, dict):
+                return False
+            counter_sets = [
+                result.get("endpoint_counters"),
+                *raw_timed,
+                raw_passes.get("warmup"),
+                raw_passes.get("memory"),
+            ]
+            for counters in counter_sets:
+                if derive_tracker_artifact_role(counters, torrent_count) != role:
+                    return False
+            raw_scenarios = result.get("scenarios")
+            return tracker_scenarios_match_role_contracts(
+                raw_scenarios,
+                quality_bar.tracker_scenario_contracts,
+                role,
+            )
+
+        transport_passes = all(
+            role_transport_matches(result, role) for role, result in zip(PAIRED_ORDER, results, strict=True)
+        )
+        gates["transport"] = _gate(
+            "pass" if transport_passes else "fail",
+            (
+                "controls and candidates prove their locked primary and scenario transports"
+                if transport_passes
+                else "paired tracker roles do not prove locked primary and scenario transport semantics"
+            ),
+        )
+    else:
+        gates["transport"] = _gate("pass", "orphan profiles have no tracker transport role gate")
 
     measurements = [_validated_child_measurements(result, expected_samples=expected_samples_value) for result in results]
     if any(measurement is None for measurement in measurements):

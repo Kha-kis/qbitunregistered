@@ -1,8 +1,8 @@
-schema_version = 2
-evaluator_schema_version = 3
-evaluator_version = "1.3.0"
+schema_version = 7
+evaluator_schema_version = 9
+evaluator_version = "1.11.0"
 result_schema = "qbitunregistered.gauntlet.result"
-scope = "orphan_discovery_plan_and_dry_run_reconciliation"
+scope = "orphan_and_tracker_dry_run_evaluation"
 
 [measurement_policy]
 timed_samples = 5
@@ -12,11 +12,61 @@ sequence = "one warmup, five untraced timed samples, one traced untimed memory p
 timed_samples_traced = false
 memory_pass_timed = false
 application_cache = "cleared before every pass"
-fixture_metadata = "materialized once and reused after the explicit warmup"
+fixture_metadata = "orphan metadata is reused; each tracker pass owns a fresh fixture and measures initial snapshot acquisition"
 os_page_cache = "not flushed; timed and memory passes are warm"
 sample_rejection = "none; all five timed samples are retained"
 
+[tracker_scenario_contracts.complete_embedded]
+control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [0, 1, 0], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.omitted_embedded_fallback]
+control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [0, 1, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.rejected_embedded_fallback]
+control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.malformed_embedded_transport_aware]
+control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [0, 1, 0], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+
+[tracker_scenario_contracts.malformed_exact_fail_closed]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+
+[tracker_scenario_contracts.proven_disappearance]
+control = { endpoint_shape = [2, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.same_hash_readd_fail_closed]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+
+[tracker_scenario_contracts.malformed_refresh_fail_closed]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+
+[tracker_scenario_contracts.duplicate_refresh_fail_closed]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+
+[tracker_scenario_contracts.delete_disappearance_preflight]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "execution_fail_closed", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [1, 1, 0], exit_code = 1, terminal_phase = "execution_fail_closed", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.delete_tag_change_preflight]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "execution_fail_closed", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [1, 1, 0], exit_code = 1, terminal_phase = "execution_fail_closed", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.tracker_change_snapshot_bound]
+control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [0, 1, 0], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+
 [profiles.quick]
+kind = "orphan"
+tier = "round"
 seed = 20260729
 fixture_manifest_digest = "6686b7d19ce528f2c770d9800fc3aa7236b1702782a77b390858bf55e2426364"
 intended_action_digest = "3996ef55b845e6d45c2fa30ff9032b8317d06d90514c51402f6ec8ecf6d0f239"
@@ -68,6 +118,8 @@ relative_mad_max = 0.15
 relative_range_max = 0.50
 
 [profiles.full]
+kind = "orphan"
+tier = "candidate"
 seed = 20260729
 fixture_manifest_digest = "65914526552afb61cb6c2aca9186cd1d068a55257f195e0800208788d6afcac7"
 intended_action_digest = "7f0b9f0932623b7f66ac770e9ef2195f243b788fe8cdb085995dd4d68b16c4c7"
@@ -114,6 +166,140 @@ status = "pending_clean_evaluator_commit"
 
 [profiles.full.targets]
 runtime_baseline_fraction_max = 0.5
+peak_memory_baseline_fraction_max = 1.25
+relative_mad_max = 0.15
+relative_range_max = 0.50
+
+[profiles.tracker-quick]
+kind = "tracker"
+tier = "round"
+seed = 20260729
+fixture_manifest_digest = "348948093b6f400156f97e29c4314a1b0836f31e4d7b3b59d16781008e1a0988"
+intended_action_digest = "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
+execution_action_digest = "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
+
+[profiles.tracker-quick.candidate_counts]
+default_tag_targets = 200
+cross_seed_tag_targets = 100
+torrent_only_deletes = 13
+
+[profiles.tracker-quick.workload]
+torrents = 1300
+tracker_records = 3900
+save_path_groups = 1200
+exact_message_targets = 150
+prefix_message_targets = 150
+default_tag_targets = 200
+cross_seed_tag_targets = 100
+torrent_only_delete_targets = 13
+timed_samples = 5
+warmup_passes = 1
+memory_passes = 1
+
+[profiles.tracker-quick.reconciliation]
+save_path_group_count = 1200
+torrent_path_count = 1300
+unregistered_tracker_count = 300
+default_tag_action_count = 200
+cross_seed_tag_action_count = 100
+torrent_only_delete_action_count = 13
+digest = "904285725ce961958fc807fa6f8713020c9769d3d1c341d75f1d57e8afa028f4"
+
+[profiles.tracker-quick.api_evidence]
+allowed_endpoint_shapes = [[1, 0, 1300], [0, 1, 0]]
+
+[profiles.tracker-quick.isolation_counters]
+filesystem_write_attempts = 0
+network_connect_attempts = 0
+network_dns_attempts = 0
+network_outbound_attempts = 0
+
+[profiles.tracker-quick.scenario_action_digests]
+complete_embedded = "085848fdcec8d2aa317a2ce60a7e6bdda5d8213e4bd1f3ea2039f96d93710579"
+omitted_embedded_fallback = "54097cb85f5d77a899aa51a8fe3ac3123d6003a91b24002b98587c919a804817"
+rejected_embedded_fallback = "187126c184990bdc138ecd1b368540b9018b4ae58a89af3bb39c602bbc6f8e31"
+malformed_embedded_transport_aware = "9915630d6e4c3f77b50cb0a16c7c71be9ab2ed66ad89d73e4c7bad801319bd8b"
+malformed_exact_fail_closed = "992e237a25603f8430f45d77b4ed740ab845183c0016a3199e0aa661c188e340"
+proven_disappearance = "d8becbe2ee7406fdcbf3d2545755b31899d007ce50f178491b1724329bf4fd90"
+same_hash_readd_fail_closed = "5784ab464c16fbb56c80e82424b4c750935bedc9374bb8192d1b9c5d2c2f0d55"
+malformed_refresh_fail_closed = "bc5c44d47f611ab4404f06ac2b9cdc097dff07af929799e4aa137d749c0f82c4"
+duplicate_refresh_fail_closed = "c114a9595be446756fda7f55bc757ec38ae93fa0f9687b824e7ff6930093ed0d"
+delete_disappearance_preflight = "d066e54135fc9123c2699ade76cf8764d82d47f69d2b1c282518d839ea2b4f11"
+delete_tag_change_preflight = "83659fb9892e6604ce46e526c77e3a564e7e6b38b7ab0ee35faad10cf2e444a1"
+tracker_change_snapshot_bound = "9004115438e269458a60958ac9677a0c436cdde1cc2efd1e01f2256f70553eb6"
+
+[profiles.tracker-quick.baseline]
+status = "pending_clean_evaluator_commit"
+
+[profiles.tracker-quick.targets]
+runtime_baseline_fraction_max = 1.0
+peak_memory_baseline_fraction_max = 1.25
+relative_mad_max = 0.15
+relative_range_max = 0.50
+
+[profiles.tracker-full]
+kind = "tracker"
+tier = "candidate"
+seed = 20260729
+fixture_manifest_digest = "1a371b15a44d78cc1a83a1634e4687a554df3ed59515b7f952945698c0dd491c"
+intended_action_digest = "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87"
+execution_action_digest = "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87"
+
+[profiles.tracker-full.candidate_counts]
+default_tag_targets = 2000
+cross_seed_tag_targets = 1000
+torrent_only_deletes = 130
+
+[profiles.tracker-full.workload]
+torrents = 13000
+tracker_records = 39000
+save_path_groups = 12000
+exact_message_targets = 1500
+prefix_message_targets = 1500
+default_tag_targets = 2000
+cross_seed_tag_targets = 1000
+torrent_only_delete_targets = 130
+timed_samples = 5
+warmup_passes = 1
+memory_passes = 1
+
+[profiles.tracker-full.reconciliation]
+save_path_group_count = 12000
+torrent_path_count = 13000
+unregistered_tracker_count = 3000
+default_tag_action_count = 2000
+cross_seed_tag_action_count = 1000
+torrent_only_delete_action_count = 130
+digest = "18eabfb8a3fc6ea3c455fc893339dc7fd8a6c3ed5ee50aea738e749cd9ddfe8d"
+
+[profiles.tracker-full.api_evidence]
+allowed_endpoint_shapes = [[1, 0, 13000], [0, 1, 0]]
+
+[profiles.tracker-full.isolation_counters]
+filesystem_write_attempts = 0
+network_connect_attempts = 0
+network_dns_attempts = 0
+network_outbound_attempts = 0
+
+[profiles.tracker-full.scenario_action_digests]
+complete_embedded = "085848fdcec8d2aa317a2ce60a7e6bdda5d8213e4bd1f3ea2039f96d93710579"
+omitted_embedded_fallback = "54097cb85f5d77a899aa51a8fe3ac3123d6003a91b24002b98587c919a804817"
+rejected_embedded_fallback = "187126c184990bdc138ecd1b368540b9018b4ae58a89af3bb39c602bbc6f8e31"
+malformed_embedded_transport_aware = "9915630d6e4c3f77b50cb0a16c7c71be9ab2ed66ad89d73e4c7bad801319bd8b"
+malformed_exact_fail_closed = "992e237a25603f8430f45d77b4ed740ab845183c0016a3199e0aa661c188e340"
+proven_disappearance = "d8becbe2ee7406fdcbf3d2545755b31899d007ce50f178491b1724329bf4fd90"
+same_hash_readd_fail_closed = "5784ab464c16fbb56c80e82424b4c750935bedc9374bb8192d1b9c5d2c2f0d55"
+malformed_refresh_fail_closed = "bc5c44d47f611ab4404f06ac2b9cdc097dff07af929799e4aa137d749c0f82c4"
+duplicate_refresh_fail_closed = "c114a9595be446756fda7f55bc757ec38ae93fa0f9687b824e7ff6930093ed0d"
+delete_disappearance_preflight = "d066e54135fc9123c2699ade76cf8764d82d47f69d2b1c282518d839ea2b4f11"
+delete_tag_change_preflight = "83659fb9892e6604ce46e526c77e3a564e7e6b38b7ab0ee35faad10cf2e444a1"
+tracker_change_snapshot_bound = "9004115438e269458a60958ac9677a0c436cdde1cc2efd1e01f2256f70553eb6"
+
+[profiles.tracker-full.baseline]
+status = "pending_clean_evaluator_commit"
+
+[profiles.tracker-full.targets]
+runtime_baseline_fraction_max = 1.0
 peak_memory_baseline_fraction_max = 1.25
 relative_mad_max = 0.15
 relative_range_max = 0.50

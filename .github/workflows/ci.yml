@@ -78,7 +78,7 @@ jobs:
       - run: python -m pip install --upgrade pip "setuptools>=83" build
       - run: python -m pip install -e ".[dev]"
       - name: Run tests
-        run: pytest
+        run: python -m pytest -p tests.windows_pytest_plugin --capture=sys
       - name: Build wheel
         run: python -m build
       - name: Install wheel
