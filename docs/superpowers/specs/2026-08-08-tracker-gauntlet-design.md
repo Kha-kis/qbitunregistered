@@ -158,6 +158,24 @@ optimization branch is created. The production branch then runs paired
 Accessing the live qBittorrent instance for the protected dry-run remains a
 separate human approval gate.
 
+## Client wire measurement correction
+
+The evaluator must not count construction or JSON serialization of its fake
+server-side Python response graph as client memory or runtime. Before the
+measurement boundary, each fresh pass constructs the selected bulk response
+model and canonical wire bytes and prepares the canonical exact-response bytes
+for the same fixture. Inside the measurement boundary, every bulk and exact
+read allocates a distinct received bytes buffer, JSON-decodes it, and builds
+the source-faithful response wrappers. Exact-response setters refresh their
+canonical wire representation outside measured primary passes; attempting to
+prepare server wire data during measurement fails closed without invalidating
+already prepared data.
+
+This changes evaluator identity to 1.13.0 without changing result schema 9,
+paired-result schema 6, pairing identity 2.9.0, or the 1.25 memory cap. Control
+and candidate artifacts from evaluator 1.12.0 remain non-comparable with the
+corrected measurement.
+
 ## Critic hardening round 2
 
 The primary dry-run remains the measured production path, but aggregate log

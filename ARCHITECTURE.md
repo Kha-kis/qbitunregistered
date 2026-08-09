@@ -719,10 +719,13 @@ redirected stdio, and `send`/`sendall` on a pre-connected socket are outside
 its observation. Linux and Windows inventory Python descriptors completely;
 other platforms fail closed before production.
 
-Each warm-up, timed, and memory pass owns a fresh fixture. Timing or allocation
-tracing begins immediately before the fake materializes the CLI-selected
-initial response and ends immediately after `unregistered_checks()` returns,
-so response allocation and lifetime are measured without fixture construction.
+Each warm-up, timed, and memory pass owns a fresh fixture. The fake builds its
+server-side response models and canonical bulk and exact wire bytes before
+timing or allocation tracing starts. The measured boundary then allocates a
+fresh received bytes buffer, JSON-decodes it, and constructs the response
+wrappers before ending immediately after `unregistered_checks()` returns.
+This measures client response allocation and lifetime without fixture or fake
+server serialization work.
 The control endpoint triple is `(1, 0, N)` and the candidate triple is
 `(0, 1, 0)` in ordinary/bulk/exact order. The candidate bulk response replaces
 the ordinary response; evaluator code never materializes both. Paired
@@ -751,9 +754,11 @@ complete internal or byte-for-byte allocator equivalence. A canonical
 quality-bar table locks every named scenario's control and candidate endpoint,
 exit, terminal-phase, and observation-order evidence. The aggregate primary
 triple derives exactly one artifact role; every other primary pass and all
-twelve scenarios must match it. Earlier tracker artifacts lack this
-artifact-wide enforcement and pre-existing descriptor rejection; they are
-non-comparable before schema 9 / evaluator 1.12.0.
+twelve scenarios must match it. Tracker artifacts before evaluator 1.12.0 lack
+this artifact-wide role enforcement and pre-existing descriptor rejection.
+Evaluator 1.12.0 artifacts include those protections but counted fake server
+response construction inside the client measurement. Comparable tracker
+evidence therefore requires schema 9 / evaluator 1.13.0.
 
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,

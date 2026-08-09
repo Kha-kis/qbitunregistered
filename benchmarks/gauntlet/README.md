@@ -340,9 +340,11 @@ identical production code. It is a stability check: ratios should be near
 `1.0`; it cannot satisfy the tracker transport gate because candidate passes
 must use one bulk request while control passes must use exact requests.
 
-Earlier tracker artifacts predate artifact-wide role enforcement. They are
-non-comparable and must not be used as control evidence; regenerate quick and
-full artifacts with schema version 9 and evaluator version 1.12.0. One role is
+Tracker artifacts before evaluator 1.12.0 predate artifact-wide role
+enforcement. Evaluator 1.12.0 adds that protection but counts fake server
+response construction inside the client measurement. Neither is comparable or
+valid control evidence; regenerate quick and full artifacts with schema version
+9 and evaluator version 1.13.0. One role is
 derived from the aggregate primary endpoint triple, every primary pass must
 retain it, and all twelve scenarios must match that same role's canonical
 contracts.
@@ -365,8 +367,12 @@ rebases onto this evaluator and reports zero `torrents_files` calls.
 
 The source-faithful fake is a conservative model of visible containers,
 normalization, freshness, and endpoint delegation in `qbittorrent-api`
-2026.8.0. It does not claim complete internal or byte-for-byte allocator
-equivalence. The synthetic measurement covers Python JSON decoding and
-retained objects, not qBittorrent server serialization, socket latency,
-native-library RSS, or live filesystem contention. The protected live soak
-remains the final real-host acceptance gate.
+2026.8.0. Before timing or tracing begins, it constructs the fake server
+response models and canonical wire bytes for both bulk and exact transports.
+The measured client boundary then allocates a fresh received bytes buffer,
+JSON-decodes it, and constructs the response wrappers. This keeps control and
+candidate measurement symmetric without charging either one for fake server
+serialization. It does not claim complete internal or byte-for-byte allocator
+equivalence. The synthetic measurement excludes socket latency, native-library
+RSS, and live filesystem contention. The protected live soak remains the final
+real-host acceptance gate.
