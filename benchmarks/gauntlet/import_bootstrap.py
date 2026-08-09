@@ -484,7 +484,7 @@ def _parsed_immutable_tqdm_manifest(
         raise DependencyEnvironmentError("immutable tqdm source manifest exceeds its byte limit")
     try:
         payload = json.loads(raw_manifest)
-    except (json.JSONDecodeError, RecursionError, TypeError) as error:
+    except (ValueError, RecursionError, TypeError) as error:
         raise DependencyEnvironmentError("immutable tqdm source manifest is malformed") from error
     if not isinstance(payload, dict) or set(payload) != {"schema_version", "namespace", "sources"}:
         raise DependencyEnvironmentError("immutable tqdm source manifest is malformed")

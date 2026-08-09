@@ -3790,6 +3790,7 @@ def test_capture_immutable_tqdm_sources_returns_verified_immutable_bytes(
     "mutation",
     [
         "malformed_json",
+        "overlong_schema_integer",
         "unknown_top_level_key",
         "wrong_schema_type",
         "wrong_schema_version",
@@ -3818,6 +3819,8 @@ def test_capture_immutable_tqdm_sources_rejects_malformed_or_drifted_manifest(
 
     if mutation == "malformed_json":
         raw_manifest = "{"
+    elif mutation == "overlong_schema_integer":
+        raw_manifest = canonical_manifest.replace('"schema_version":1', f'"schema_version":{"1" * 5000}')
     else:
         if mutation == "unknown_top_level_key":
             manifest_data["unexpected"] = True
