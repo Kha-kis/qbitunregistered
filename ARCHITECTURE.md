@@ -704,17 +704,20 @@ The primary path remains a genuine dry-run. A separate untimed shadow executes
 the real mutating boundary against a fresh in-memory fake, records normalized
 per-hash endpoint arguments, and requires its exact digest to equal the
 fixture-independent preview oracle. The shadow sets `delete_files=False` and
-is excluded from runtime and peak-memory samples. A process audit denies all
-filesystem writes or mutations plus network connection, DNS, `sendto`, and
-`sendmsg` events while production boundaries execute; artifacts and semantic
+is excluded from runtime and peak-memory samples. Before every production
+entry, a process audit activates and rejects any pre-existing non-stdio Python
+regular-file descriptor unless it matches redirected stdout/stderr by `fstat`
+identity. It then denies audited write acquisition or named mutations plus
+network connection, DNS, `sendto`, and `sendmsg` events; artifacts and semantic
 scenarios require every sanitized isolation and mutation counter to remain
 zero. Each semantic scenario also invokes `cli.main()`; transparent hooks apply
 compatibility or churn after initial acquisition or after preview, and the
 artifact retains the CLI exit code, terminal phase, and observed phase order.
-This is an
-audit-event boundary, not a syscall-level network sandbox: CPython does not
-emit separate events for `send` or `sendall` on a socket connected before the
-guarded boundary.
+This single-threaded Python-runtime boundary is not an OS syscall sandbox:
+native extensions, `ctypes`, direct syscalls, raw Win32 handles, writes through
+redirected stdio, and `send`/`sendall` on a pre-connected socket are outside
+its observation. Linux and Windows inventory Python descriptors completely;
+other platforms fail closed before production.
 
 Each warm-up, timed, and memory pass owns a fresh fixture. Timing or allocation
 tracing begins immediately before the fake materializes the CLI-selected
@@ -749,8 +752,8 @@ quality-bar table locks every named scenario's control and candidate endpoint,
 exit, terminal-phase, and observation-order evidence. The aggregate primary
 triple derives exactly one artifact role; every other primary pass and all
 twelve scenarios must match it. Earlier tracker artifacts lack this
-artifact-wide enforcement and are non-comparable before schema 9 / evaluator
-1.10.0.
+artifact-wide enforcement and pre-existing descriptor rejection; they are
+non-comparable before schema 9 / evaluator 1.11.0.
 
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,

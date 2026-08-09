@@ -310,7 +310,7 @@ production optimization. Do not merge, tag, publish, or access the live instance
 
 **Interfaces:**
 - Produces exact untimed shadow-execution action records and `execution_action_digest` from a fresh fake fixture.
-- Produces sanitized `isolation_counters` for global filesystem-write,
+- Produces sanitized `isolation_counters` for observed Python filesystem-write,
   network-connect, network-DNS, and destination-bearing network-outbound
   attempt classes.
 - Extends scenario evidence with the same exact isolation-counter schema.
@@ -890,6 +890,74 @@ BasedPyright CLI and actual LSP, mypy, pip-audit, Bandit, build, installed-wheel
 smoke outside the checkout, and `git diff --check`. Commit one evaluator-only
 change, generate clean round-6 tracker quick/full JSON under `/tmp`, validate
 all scenario/primary contracts and zero counters, hash both artifacts, and
+append the ignored task report and progress ledger.
+
+### Task 9: Establish correction round 8
+
+**Files:**
+- Modify: `benchmarks/gauntlet/tracker_runner.py`
+- Modify: `benchmarks/gauntlet/runner.py`
+- Modify: `benchmarks/gauntlet/quality-bar.toml`
+- Test: `tests/test_gauntlet_safety.py`
+- Test: `tests/test_gauntlet_runner.py`
+- Modify: operator, evaluator, contribution, architecture, changelog, design,
+  and plan documentation
+- Append ignored evidence: `.superpowers/sdd/2026-08-08-tracker-gauntlet/`
+
+**Interfaces:**
+- `_open_descriptor_numbers() -> Iterator[int]` enumerates every
+  Python-visible descriptor on a supported platform or raises a sanitized
+  `GauntletSafetyError` before production.
+- `_assert_safe_preexisting_descriptors() -> None` rejects every regular fd
+  above 2 unless its `fstat` identity matches fd 1 or 2.
+- `_ProductionBoundaryAudit.__enter__()` activates before calling the
+  precondition and transactionally unwinds failed or nested activation.
+
+- [x] **Step 1: Add literal descriptor RED tests**
+
+Use real temporary files to prove pre-opened `os.write`, buffered file-object
+write, and read-only descriptors fail before the guarded body. Exercise an
+outside-fixture marker through `evaluate_tracker_fixture` and prove production
+is not called. Add a subprocess case for a regular stdout duplicate, real pipe
+and socket cases, and an inside-boundary read-open control.
+
+- [x] **Step 2: Add platform and lifecycle RED tests**
+
+Mock Linux `/proc/self/fd` enumeration with one disappearing `EBADF` entry,
+mock the Windows CRT scan through descriptor 8191, and require unsupported
+platforms to fail closed. Inject an audited write event during inventory to
+prove activation precedes scanning and both the active stack and accounting
+frames unwind. Exercise same-instance nesting and LIFO cleanup.
+
+- [x] **Step 3: Run focused tests and verify RED**
+
+Run only the new descriptor nodes. Existing code must execute the pre-opened
+writes, accept read-only files, lack the platform inventory helpers, and fail
+the activation-order assertions. Passing pipe/socket and audited-open controls
+characterize behavior that must remain.
+
+- [x] **Step 4: Implement the minimal fail-closed inventory**
+
+Add Linux proc enumeration, the fixed documented Windows CRT range, regular
+file classification with stdio identity exceptions, and sanitized unsupported/
+inventory errors. Activate and push accounting before inventory; on any
+`BaseException`, pop exactly that LIFO activation before re-raising. Preserve
+the existing audit event denial and counters.
+
+- [x] **Step 5: Advance identity and narrow claims**
+
+Keep schemas and pairing at 7/9/6 and 2.7.0. Advance evaluator identity to
+1.11.0. Describe the Python-runtime descriptor precondition, supported
+platform enumeration, stdio exception, single-thread assumption, and native/
+direct-syscall limitations everywhere filesystem isolation is claimed.
+
+- [x] **Step 6: Verify, commit, and generate round-8 controls**
+
+Run focused GREEN, runner/safety tests, full coverage, explicit gauntlet_full,
+Black, fatal/scoped Flake8, BasedPyright CLI and actual LSP, mypy, pip-audit,
+Bandit, build, offline wheel smoke, and invariant/diff review. Commit one
+evaluator-only change; generate clean round-8 tracker quick/full artifacts;
+validate roles, scenarios, digests, zero counters, hashes, and clean status;
 append the ignored task report and progress ledger.
 
 ### Task 8: Establish correction round 7

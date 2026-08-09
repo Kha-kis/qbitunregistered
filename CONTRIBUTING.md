@@ -345,11 +345,18 @@ deviation, and separately traced peak memory. Tracker scenario results also
 retain exact endpoint counters, CLI exit code, terminal phase, observation
 order, and zero mutation/isolation counters. Candidate identity covers the
 commit plus staged, unstaged, and untracked content without including raw paths
-or diffs in the result. Tracker artifacts before schema 9 / evaluator 1.10.0
+or diffs in the result. Tracker artifacts before schema 9 / evaluator 1.11.0
 are non-comparable. The evaluator derives one role from primary endpoint
 evidence and requires every primary pass plus all twelve scenarios to match
 that same canonical control or candidate role before paired comparison checks
 the assigned revision role.
+
+The tracker production audit is a single-threaded Python-runtime check. Each
+entry rejects non-stdio regular descriptors unless they match redirected
+stdout/stderr by `fstat` identity, then denies audited write acquisition and
+named mutations. Native extensions, `ctypes`, direct syscalls, raw Win32
+handles, and writes through standard descriptors are not an OS-level sandbox;
+platforms without complete Python-descriptor inventory fail before production.
 
 Compare an optimization candidate with the checked-in quality bar:
 

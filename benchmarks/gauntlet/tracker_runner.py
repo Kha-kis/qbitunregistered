@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
 import os
 import re
+import stat
 import statistics
 import sys
 import tempfile
@@ -253,6 +255,52 @@ _ISOLATION_COUNTER_KEYS = (
     "network_dns_attempts",
     "network_outbound_attempts",
 )
+_WINDOWS_CRT_DESCRIPTOR_LIMIT = 8192
+
+
+def _open_descriptor_numbers() -> Iterator[int]:
+    """Yield every Python-visible descriptor on a supported platform."""
+    if sys.platform.startswith("linux"):
+        try:
+            entries = os.listdir("/proc/self/fd")
+        except OSError:
+            raise GauntletSafetyError("tracker descriptor inventory unavailable") from None
+        for entry in entries:
+            try:
+                yield int(entry)
+            except ValueError:
+                continue
+        return
+    if sys.platform == "win32":
+        yield from range(3, _WINDOWS_CRT_DESCRIPTOR_LIMIT)
+        return
+    raise GauntletSafetyError("tracker descriptor inventory unsupported on this platform")
+
+
+def _descriptor_stat(descriptor: int) -> os.stat_result | None:
+    """Return one descriptor stat, tolerating only a concurrently closed fd."""
+    try:
+        return os.fstat(descriptor)
+    except OSError as error:
+        if error.errno == errno.EBADF:
+            return None
+        raise GauntletSafetyError("tracker descriptor inventory failed") from None
+
+
+def _assert_safe_preexisting_descriptors() -> None:
+    """Reject non-stdio regular files held at production-boundary entry."""
+    stdio_stats = tuple(
+        descriptor_stat for descriptor in (1, 2) if (descriptor_stat := _descriptor_stat(descriptor)) is not None
+    )
+    for descriptor in _open_descriptor_numbers():
+        if descriptor <= 2:
+            continue
+        descriptor_stat = _descriptor_stat(descriptor)
+        if descriptor_stat is None or not stat.S_ISREG(descriptor_stat.st_mode):
+            continue
+        if any(os.path.samestat(descriptor_stat, stdio_stat) for stdio_stat in stdio_stats):
+            continue
+        raise GauntletSafetyError("tracker production boundary found unsafe regular file descriptor")
 
 
 @dataclass(slots=True)
@@ -277,13 +325,26 @@ class _ProductionBoundaryAudit:
         _install_production_audit_hook()
         self._activation_totals.append(self.total_attempt_count)
         _ACTIVE_PRODUCTION_AUDITS.append(self)
+        try:
+            _assert_safe_preexisting_descriptors()
+        except BaseException:
+            self._deactivate()
+            raise
         return self
 
     def __exit__(self, _error_type: object, _error: object, _traceback: object) -> None:
-        _ACTIVE_PRODUCTION_AUDITS.remove(self)
-        starting_total = self._activation_totals.pop()
+        starting_total = self._deactivate()
         if self.total_attempt_count != starting_total:
             raise GauntletSafetyError(f"tracker production boundary denied {self._last_attempt_class}")
+
+    def _deactivate(self) -> int:
+        """Pop one exact LIFO activation and return its starting count."""
+        if not _ACTIVE_PRODUCTION_AUDITS or _ACTIVE_PRODUCTION_AUDITS[-1] is not self:
+            raise GauntletSafetyError("tracker production boundary activation order is invalid")
+        _ACTIVE_PRODUCTION_AUDITS.pop()
+        if not self._activation_totals:
+            raise GauntletSafetyError("tracker production boundary activation state is missing")
+        return self._activation_totals.pop()
 
     def observe(self, event: str, arguments: tuple[object, ...]) -> None:
         """Reject one audited attempt without retaining its arguments."""

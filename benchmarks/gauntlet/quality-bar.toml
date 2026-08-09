@@ -1,6 +1,6 @@
 schema_version = 7
 evaluator_schema_version = 9
-evaluator_version = "1.10.0"
+evaluator_version = "1.11.0"
 result_schema = "qbitunregistered.gauntlet.result"
 scope = "orphan_and_tracker_dry_run_evaluation"
 

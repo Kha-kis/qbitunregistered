@@ -93,8 +93,13 @@ evidence.
   qBittorrent mutations. `isolation_counters` require zero filesystem-write,
   network-connect, network-DNS, and destination-bearing network-outbound
   (`sendto`/`sendmsg`) attempts for measured passes, the shadow, and every
-  semantic scenario. This audit-event boundary cannot separately observe
-  `send` or `sendall` on a socket connected before the boundary.
+  semantic scenario. Every entry also rejects a pre-existing non-stdio regular
+  descriptor unless it has the same `fstat` identity as redirected stdout or
+  stderr. Linux and Windows have complete Python-descriptor enumerators;
+  unsupported platforms fail before production. This single-threaded
+  Python-runtime boundary does not cover native extensions, `ctypes`, direct
+  syscalls, raw Win32 handles, writes through stdio, or `send`/`sendall` on a
+  socket connected before the boundary.
 - Runtime statistics retain all five untraced samples. Peak memory comes from a
   separate traced, untimed pass. Each primary pass uses a fresh fixture. Its
   measured interval starts immediately before the fake materializes the
@@ -309,7 +314,7 @@ must use one bulk request while control passes must use exact requests.
 
 Earlier tracker artifacts predate artifact-wide role enforcement. They are
 non-comparable and must not be used as control evidence; regenerate quick and
-full artifacts with schema version 9 and evaluator version 1.10.0. One role is
+full artifacts with schema version 9 and evaluator version 1.11.0. One role is
 derived from the aggregate primary endpoint triple, every primary pass must
 retain it, and all twelve scenarios must match that same role's canonical
 contracts.

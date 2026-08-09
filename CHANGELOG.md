@@ -13,11 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unregistered-torrent preview and dry-run pipeline, with realistic sanitized
   embedded and exact tracker responses, complete nested endpoint mappings,
   interleaved response roles, independent action oracles, locked preview,
-  shadow-execution, and reconciliation digests, endpoint budgets, global
-  filesystem-write and audited connection, DNS, `sendto`, and `sendmsg`
-  attempt evidence, and twelve compatibility and fail-closed scenarios. The
-  audit boundary does not claim to observe `send` or `sendall` on sockets that
-  were connected before it became active.
+  shadow-execution, and reconciliation digests, endpoint budgets, audited
+  filesystem-write, connection, DNS, `sendto`, and `sendmsg` attempt evidence,
+  pre-existing Python regular-descriptor rejection, and twelve compatibility
+  and fail-closed scenarios. The single-threaded Python-runtime boundary is not
+  an OS/native syscall sandbox and cannot observe redirected-stdio writes or
+  `send`/`sendall` on sockets connected before it became active.
 - Documented standalone tracker evaluation and isolated paired
   `tracker-full` comparison. The current exact-only control allows one tracker
   read per torrent; the optimization target is one combined bulk request with
@@ -26,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Tracker gauntlet schema 9 / evaluator 1.10.0 now measures the
+- Tracker gauntlet schema 9 / evaluator 1.11.0 now measures the
   production-owned initial torrent
   snapshot through the real CLI in every fresh warm-up, timed, and memory pass.
   Control is exactly one ordinary snapshot plus `N` exact tracker reads;

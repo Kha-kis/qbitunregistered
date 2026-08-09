@@ -297,7 +297,7 @@ This measurement boundary and manifest definition invalidate all round-3 raw
 controls. Evaluator, result, quality-bar, and paired schemas advance together;
 fresh round-4 quick and full controls must be produced from the clean committed
 evaluator before another independent critic review. Shadow execution, semantic
-scenarios, the global filesystem/network audit, sanitizer strictness, and the
+scenarios, the Python filesystem/network audit-event checks, sanitizer strictness, and the
 separate protected-live approval gate remain unchanged.
 
 ## Establish correction round 5: effective payloads and CLI scenarios
@@ -477,3 +477,44 @@ fallback/preflight behavior, fixture/action/reconciliation digests, mutation
 and isolation locks, CPU `1.0`, and memory `1.25` remain unchanged. Round-6
 artifacts are non-comparable by evaluator identity; clean round-7 controls are
 required.
+
+## Establish correction round 8: pre-existing descriptor isolation
+
+The Python audit hook observes file acquisition and named filesystem
+mutations, but it does not observe `os.write()` or buffered file-object writes
+through descriptors acquired before a guarded production entry. Fixture-root
+hashing also cannot detect writes through such a descriptor to another path.
+Every guarded entry therefore activates the audit first and then inventories
+the process's Python-visible file descriptors before calling production code.
+Any non-stdio regular-file descriptor fails closed, whether opened read-only
+or writable. File descriptors 0, 1, and 2 remain allowed. A regular descriptor
+above 2 is allowed only when `os.path.samestat()` proves that its `fstat`
+identity matches descriptor 1 or 2, covering runtime duplicates used for
+redirected CLI/log capture without allowing an unrelated regular file.
+
+Linux inventory uses the authoritative `/proc/self/fd` table and tolerates
+only an `EBADF` race for a descriptor that disappeared after enumeration.
+Windows scans the Microsoft CRT low-I/O descriptor range 3 through 8191,
+whose documented hard ceiling covers descriptors used by Python `open()`,
+`os.open()`, and file objects. Pipes, sockets, and directories are not regular
+files and remain admissible; write acquisition and named mutation through a
+directory descriptor remain denied by the active audit hook. macOS and other
+platforms without a complete standard-library descriptor inventory fail before
+production code. Scanning `RLIMIT_NOFILE` is not accepted because inherited
+descriptors can survive above a subsequently lowered limit.
+
+Activation and inventory are transactional. Inventory runs only after the
+audit has joined the active stack, and any inventory error removes that exact
+activation and its accounting frame. Properly nested contexts remain LIFO.
+The evaluator is single-threaded while a boundary is active, so Python-level
+acquisition cannot cross the inventory-to-call transition without an audited
+event. This is a Python-runtime isolation check, not an OS syscall sandbox:
+native extensions, `ctypes`, direct syscalls, raw Win32 handles, and writes
+through redirected standard descriptors can bypass it. Successful evidence
+still means zero observed audited attempts and no unsafe non-stdio regular
+descriptor at entry, not proof against native code.
+
+No emitted result or quality-bar shape changes. Quality-bar/result/paired
+schemas remain 7/9/6 and every threshold, workload, contract, and digest stays
+frozen. Evaluator identity advances to 1.11.0 because prior artifacts did not
+enforce the descriptor precondition; pairing logic remains 2.7.0.

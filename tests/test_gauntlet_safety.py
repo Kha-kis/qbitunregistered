@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib
 import json
 import logging
 import os
 import socket
+import stat
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -72,6 +74,156 @@ def _tracker_config() -> dict[str, object]:
         "delete_tags": ["tracker-delete"],
         "delete_files": {"tracker-delete": False},
     }
+
+
+def test_tracker_boundary_rejects_preopened_os_write_outside_root(tmp_path: Path) -> None:
+    """Reject an outside regular fd before os.write can bypass audit events."""
+    tracker_runner = _tracker_module("tracker_runner")
+    marker = tmp_path / "outside-preopened-os-write"
+    marker.write_bytes(b"original")
+    descriptor = os.open(marker, os.O_RDWR)
+    body_called = False
+    try:
+        with pytest.raises(runner.GauntletSafetyError, match="regular file descriptor"):
+            with tracker_runner._ProductionBoundaryAudit():
+                body_called = True
+                os.write(descriptor, b"changed")
+    finally:
+        os.close(descriptor)
+
+    assert body_called is False
+    assert marker.read_bytes() == b"original"
+
+
+def test_tracker_boundary_rejects_preopened_file_object_write(tmp_path: Path) -> None:
+    """Reject a buffered file object before its unaudited write method runs."""
+    tracker_runner = _tracker_module("tracker_runner")
+    marker = tmp_path / "outside-preopened-file-object"
+    marker.write_bytes(b"original")
+
+    with marker.open("r+b") as stream:
+        with pytest.raises(runner.GauntletSafetyError, match="regular file descriptor"):
+            with tracker_runner._ProductionBoundaryAudit():
+                stream.write(b"changed")
+
+    assert marker.read_bytes() == b"original"
+
+
+def test_tracker_boundary_rejects_preopened_read_only_regular_fd(tmp_path: Path) -> None:
+    """Reject read-only regular fds because access mode is not portable evidence."""
+    tracker_runner = _tracker_module("tracker_runner")
+    marker = tmp_path / "outside-preopened-read"
+    marker.write_bytes(b"safe")
+    descriptor = os.open(marker, os.O_RDONLY)
+    try:
+        with pytest.raises(runner.GauntletSafetyError, match="regular file descriptor"):
+            with tracker_runner._ProductionBoundaryAudit():
+                pass
+    finally:
+        os.close(descriptor)
+
+
+def test_tracker_boundary_allows_inside_read_and_preopened_pipe_socket(tmp_path: Path) -> None:
+    """Keep audited read acquisition and non-regular IPC descriptors available."""
+    tracker_runner = _tracker_module("tracker_runner")
+    marker = tmp_path / "inside-read"
+    marker.write_bytes(b"config")
+    read_fd, write_fd = os.pipe()
+    first, second = socket.socketpair()
+    try:
+        with tracker_runner._ProductionBoundaryAudit():
+            assert marker.read_bytes() == b"config"
+    finally:
+        first.close()
+        second.close()
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_tracker_boundary_allows_only_regular_stdio_identity_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Allow redirected output duplicates only when fstat identity is equal."""
+    tracker_runner = _tracker_module("tracker_runner")
+    regular = os.stat_result((stat.S_IFREG, 41, 7, 1, 0, 0, 0, 0, 0, 0))
+    pipe = os.stat_result((stat.S_IFIFO, 42, 7, 1, 0, 0, 0, 0, 0, 0))
+    stats = {1: regular, 2: pipe, 9: regular}
+    monkeypatch.setattr(tracker_runner, "_open_descriptor_numbers", lambda: iter((9,)), raising=False)
+    monkeypatch.setattr(tracker_runner.os, "fstat", lambda descriptor: stats[descriptor])
+
+    tracker_runner._assert_safe_preexisting_descriptors()
+
+
+def test_tracker_boundary_linux_inventory_tolerates_disappearing_fd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ignore only EBADF when a proc descriptor closes after enumeration."""
+    tracker_runner = _tracker_module("tracker_runner")
+    monkeypatch.setattr(tracker_runner.sys, "platform", "linux")
+    monkeypatch.setattr(tracker_runner.os, "listdir", lambda _path: ["0", "1", "2", "77", "not-an-fd"])
+    real_fstat = os.fstat
+
+    def disappearing_fstat(descriptor: int):
+        if descriptor == 77:
+            raise OSError(errno.EBADF, "closed")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(tracker_runner.os, "fstat", disappearing_fstat)
+
+    tracker_runner._assert_safe_preexisting_descriptors()
+
+
+def test_tracker_boundary_windows_scans_documented_crt_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inspect the last possible Python CRT descriptor on Windows."""
+    tracker_runner = _tracker_module("tracker_runner")
+    monkeypatch.setattr(tracker_runner.sys, "platform", "win32")
+
+    descriptors = tracker_runner._open_descriptor_numbers()
+
+    assert next(descriptors) == 3
+    assert list(descriptors)[-1] == 8191
+
+
+def test_tracker_boundary_unsupported_platform_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never claim descriptor isolation without a complete enumerator."""
+    tracker_runner = _tracker_module("tracker_runner")
+    monkeypatch.setattr(tracker_runner.sys, "platform", "darwin")
+
+    with pytest.raises(runner.GauntletSafetyError, match="descriptor inventory unsupported"):
+        with tracker_runner._ProductionBoundaryAudit():
+            pytest.fail("production body must not run")
+
+
+def test_tracker_boundary_inventory_failure_unwinds_active_nested_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Activate before inventory and pop only the failed nested frame."""
+    tracker_runner = _tracker_module("tracker_runner")
+    audit = tracker_runner._ProductionBoundaryAudit()
+    calls = 0
+
+    def fail_second_inventory() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            sys.audit("open", "redacted", "w", os.O_WRONLY)
+
+    monkeypatch.setattr(tracker_runner, "_assert_safe_preexisting_descriptors", fail_second_inventory, raising=False)
+
+    with pytest.raises(runner.GauntletSafetyError, match="filesystem write"):
+        with audit:
+            with pytest.raises(runner.GauntletSafetyError, match="filesystem write"):
+                with audit:
+                    pytest.fail("nested body must not run")
+            assert tracker_runner._ACTIVE_PRODUCTION_AUDITS == [audit]
+            assert len(audit._activation_totals) == 1
+
+    assert tracker_runner._ACTIVE_PRODUCTION_AUDITS == []
+    assert audit._activation_totals == []
 
 
 def _filesystem_snapshot(root: Path) -> dict[str, tuple[int, int, int, int, int, str]]:
