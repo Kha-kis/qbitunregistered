@@ -184,7 +184,7 @@ class ProfileQualityBar:
     candidate_counts: Mapping[str, int]
     workload: Mapping[str, int]
     api_budgets: Mapping[str, EndpointBudget]
-    allowed_tracker_transports: tuple[tuple[int, int], ...]
+    allowed_tracker_endpoint_shapes: tuple[tuple[int, int, int], ...]
     scenario_action_digests: Mapping[str, str]
     isolation_counters: Mapping[str, int]
     baseline: BaselineMeasurement
@@ -319,28 +319,27 @@ def _tracker_reconciliation(value: object, description: str) -> dict[str, int | 
     }
 
 
-def _tracker_api_evidence(value: object, description: str) -> tuple[tuple[int, int], ...]:
+def _tracker_api_evidence(value: object, description: str) -> tuple[tuple[int, int, int], ...]:
     table = _table(value, description)
-    if set(table) != {"ordinary_info", "allowed_transports"}:
+    if set(table) != {"allowed_endpoint_shapes"}:
         raise QualityBarError(f"{description} keys do not match the tracker evaluator schema")
-    if _integer(table["ordinary_info"], f"{description}.ordinary_info") != 0:
-        raise QualityBarError(f"{description}.ordinary_info must be zero")
-    raw_transports = table["allowed_transports"]
+    raw_transports = table["allowed_endpoint_shapes"]
     if not isinstance(raw_transports, list) or len(raw_transports) != 2:
-        raise QualityBarError(f"{description}.allowed_transports must contain exactly two pairs")
-    transports: list[tuple[int, int]] = []
+        raise QualityBarError(f"{description}.allowed_endpoint_shapes must contain exactly two triples")
+    transports: list[tuple[int, int, int]] = []
     for index, raw_transport in enumerate(raw_transports):
-        if not isinstance(raw_transport, list) or len(raw_transport) != 2:
-            raise QualityBarError(f"{description}.allowed_transports[{index}] must be a pair")
+        if not isinstance(raw_transport, list) or len(raw_transport) != 3:
+            raise QualityBarError(f"{description}.allowed_endpoint_shapes[{index}] must be a triple")
         transports.append(
             (
-                _integer(raw_transport[0], f"{description}.allowed_transports[{index}][0]"),
-                _integer(raw_transport[1], f"{description}.allowed_transports[{index}][1]"),
+                _integer(raw_transport[0], f"{description}.allowed_endpoint_shapes[{index}][0]"),
+                _integer(raw_transport[1], f"{description}.allowed_endpoint_shapes[{index}][1]"),
+                _integer(raw_transport[2], f"{description}.allowed_endpoint_shapes[{index}][2]"),
             )
         )
     resolved = tuple(transports)
-    if resolved[1] != (1, 0) or resolved[0][0] != 0 or resolved[0][1] < 1:
-        raise QualityBarError(f"{description}.allowed_transports do not lock exact and bulk responses")
+    if resolved[1] != (0, 1, 0) or resolved[0][0:2] != (1, 0) or resolved[0][2] < 1:
+        raise QualityBarError(f"{description}.allowed_endpoint_shapes do not lock exact and bulk responses")
     return resolved
 
 
@@ -458,7 +457,7 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noq
                 profile.get("api_budgets"),
                 f"profiles.{profile_name}.api_budgets",
             )
-            allowed_tracker_transports: tuple[tuple[int, int], ...] = ()
+            allowed_tracker_endpoint_shapes: tuple[tuple[int, int, int], ...] = ()
             scenario_action_digests: dict[str, str] = {}
             execution_action_digest: str | None = None
             isolation_counters: dict[str, int] = {}
@@ -478,7 +477,7 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noq
                 f"profiles.{profile_name}.reconciliation",
             )
             api_budgets = {}
-            allowed_tracker_transports = _tracker_api_evidence(
+            allowed_tracker_endpoint_shapes = _tracker_api_evidence(
                 profile.get("api_evidence"),
                 f"profiles.{profile_name}.api_evidence",
             )
@@ -526,7 +525,7 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noq
             workload=workload,
             reconciliation=reconciliation,
             api_budgets=api_budgets,
-            allowed_tracker_transports=allowed_tracker_transports,
+            allowed_tracker_endpoint_shapes=allowed_tracker_endpoint_shapes,
             scenario_action_digests=scenario_action_digests,
             isolation_counters=isolation_counters,
             baseline=_baseline_measurement(
@@ -815,8 +814,12 @@ def _api_gate(
                 "torrents_trackers",
             }:
                 return False
-            transport = (counters["torrents.info.include_trackers"], counters["torrents_trackers"])
-            return counters["torrents.info"] == 0 and transport in profile.allowed_tracker_transports
+            endpoint_shape = (
+                counters["torrents.info"],
+                counters["torrents.info.include_trackers"],
+                counters["torrents_trackers"],
+            )
+            return endpoint_shape in profile.allowed_tracker_endpoint_shapes
         if counters is None or set(counters) != set(profile.api_budgets):
             return False
         return all(
@@ -831,7 +834,7 @@ def _api_gate(
             "pass",
             "all passes use one locked complete tracker transport",
             actual=normalized["torrents_trackers"] if normalized is not None else None,
-            target=profile.allowed_tracker_transports[0][1],
+            target=profile.allowed_tracker_endpoint_shapes[0][2],
         )
     maximum = profile.api_budgets["torrents_files"].maximum
     return _gate(

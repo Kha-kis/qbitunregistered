@@ -49,8 +49,8 @@ from benchmarks.gauntlet.paired_evidence import (
 from benchmarks.gauntlet.runner import DEFAULT_SAMPLES
 
 PAIRED_SCHEMA_NAME = "qbitunregistered.gauntlet.paired-result"
-PAIRED_SCHEMA_VERSION = 4
-PAIRING_VERSION = "2.3.0"
+PAIRED_SCHEMA_VERSION = 5
+PAIRING_VERSION = "2.4.0"
 PAIRED_ORDER: tuple[Literal["control", "candidate"], ...] = (
     "control",
     "candidate",
@@ -389,7 +389,7 @@ def compare_paired_results(  # noqa: C901
         torrent_count = profile.workload["torrents"]
 
         def role_transport_matches(result: Mapping[str, object], role: str) -> bool:
-            expected_transport = (0, torrent_count) if role == "control" else (1, 0)
+            expected_shape = (1, 0, torrent_count) if role == "control" else (0, 1, 0)
             raw_timed = result.get("timed_sample_endpoint_counters")
             raw_passes = result.get("pass_endpoint_counters")
             if not isinstance(raw_timed, list) or not isinstance(raw_passes, dict):
@@ -403,11 +403,20 @@ def compare_paired_results(  # noqa: C901
             for counters in counter_sets:
                 if not isinstance(counters, dict):
                     return False
-                transport = (
+                endpoint_shape = (
+                    counters.get("torrents.info"),
                     counters.get("torrents.info.include_trackers"),
                     counters.get("torrents_trackers"),
                 )
-                if counters.get("torrents.info") != 0 or transport != expected_transport:
+                if (
+                    set(counters)
+                    != {
+                        "torrents.info",
+                        "torrents.info.include_trackers",
+                        "torrents_trackers",
+                    }
+                    or endpoint_shape != expected_shape
+                ):
                     return False
             return True
 

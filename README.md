@@ -676,8 +676,11 @@ Tracker batching changes are evaluated with deterministic `tracker-quick` and
 `tracker-full` gauntlets before any protected live dry-run. The evaluator locks
 the preview and fresh-fake shadow execution actions, globally denies filesystem
 writes plus audited connection, DNS, `sendto`, and `sendmsg` attempts during
-production calls, and requires paired control and candidate passes to prove the
-exact-to-bulk endpoint collapse. This audit hook is not a syscall-level network
+production calls, and invokes the real CLI so the initial torrent response is
+inside every measured pass. Paired control must use one ordinary snapshot plus
+`N` exact tracker reads; candidate must replace it with one bulk snapshot and
+zero exact reads. Artifacts older than evaluator schema 7 are non-comparable.
+This audit hook is not a syscall-level network
 sandbox and cannot separately observe `send` or `sendall` on a socket connected
 before the guarded boundary. See the
 [gauntlet guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation).

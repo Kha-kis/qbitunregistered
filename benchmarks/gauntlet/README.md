@@ -59,13 +59,14 @@ uv run python -I -S -B benchmarks/gauntlet/launcher.py \
   --output /tmp/qbitunregistered-tracker-paired-full.json
 ```
 
-The current control transport performs no ordinary torrent-list read, no bulk
+The current control transport performs one ordinary torrent-list read, no bulk
 `includeTrackers` read, and exactly one `/torrents/trackers` read for each of
-`N` torrents. A supported optimization performs one `includeTrackers` read and
-no exact tracker reads. The evaluator rejects more than one bulk read, more
-than `N` exact reads, or redundant bulk plus exact reads. The locked target is
-one combined tracker-metadata request in every candidate pass while every
-control pass performs exactly `N` exact reads. Synthetic runtime is a
+`N` torrents. A supported optimization replaces that ordinary response with
+one `includeTrackers` response and performs no exact tracker reads. The only
+accepted triples, in ordinary/bulk/exact order, are therefore `(1, 0, N)` for
+control and `(0, 1, 0)` for candidate. Every warm-up, timed, and memory pass
+must have its role's exact triple; aggregate-only, partial, mixed, redundant,
+or synthesized evidence fails. Synthetic runtime is a
 CPU/regression guard capped at the paired control runtime, and peak memory is
 capped at 125% of control; the existing variance limits also apply. The
 evaluator does not add artificial latency or a local network service. Real
@@ -75,7 +76,8 @@ evidence.
 ### Evidence semantics
 
 - `tier` locks whether a profile is a round or candidate workload.
-- `fixture_manifest_digest` identifies the deterministic fixture, while
+- `fixture_manifest_digest` hashes the validated materialized
+  `torrent_info_by_hash` payload after host-path normalization, while
   `intended_action_digest` locks the exact preview action, tag, and torrent-hash
   tuples.
 - `execution_action_digest` locks the normalized per-hash arguments observed
@@ -94,8 +96,12 @@ evidence.
   semantic scenario. This audit-event boundary cannot separately observe
   `send` or `sendall` on a socket connected before the boundary.
 - Runtime statistics retain all five untraced samples. Peak memory comes from a
-  separate traced, untimed pass. Fixture construction, manifest verification,
-  and semantic safety scenarios are outside the measured interval.
+  separate traced, untimed pass. Each primary pass uses a fresh fixture. Its
+  measured interval starts immediately before the fake materializes the
+  production-selected initial torrent response and ends immediately after the
+  real `unregistered_checks()` call returns. Fixture construction, sanitized
+  CLI-config creation, manifest verification, and semantic safety scenarios
+  remain outside that interval.
 - The twelve normalized scenario results lock compatibility and fail-closed
   behavior. Legacy omission or rejection of embedded trackers may use the
   exact fallback; malformed metadata, uncertain refreshes, hash re-addition,
@@ -297,6 +303,10 @@ A self-comparison should use two isolated clean worktrees at revisions with
 identical production code. It is a stability check: ratios should be near
 `1.0`; it cannot satisfy the tracker transport gate because candidate passes
 must use one bulk request while control passes must use exact requests.
+
+Round-3 tracker artifacts predate the real CLI acquisition boundary and the
+materialized-payload manifest. They are non-comparable and must not be used as
+control evidence; regenerate quick and full artifacts with schema version 7.
 
 ## qBittorrent file metadata fixture
 

@@ -544,3 +544,138 @@ BasedPyright CLI, mypy, actual LSP over every changed Python file, pip-audit,
 Bandit, build, installed-wheel smoke, and `git diff --check`. Commit one coherent
 evaluator-only change, generate `round3` quick/full JSON under `/tmp` from the
 clean commit, and append the ignored task report and progress ledger.
+
+### Task 5: Establish correction round 4
+
+**Files:**
+- Modify: `benchmarks/gauntlet/tracker_fixture.py`
+- Modify: `benchmarks/gauntlet/tracker_runner.py`
+- Modify: `benchmarks/gauntlet/baseline.py`
+- Modify: `benchmarks/gauntlet/paired_evidence.py`
+- Modify: `benchmarks/gauntlet/paired.py`
+- Modify: `benchmarks/gauntlet/runner.py`
+- Modify: `benchmarks/gauntlet/quality-bar.toml`
+- Test: `tests/test_gauntlet_runner.py`
+- Test: `tests/test_gauntlet_safety.py`
+- Modify: `README.md`
+- Modify: `CONTRIBUTING.md`
+- Modify: `ARCHITECTURE.md`
+- Modify: `CHANGELOG.md`
+- Modify: `benchmarks/gauntlet/README.md`
+- Modify: this design and plan
+- Append ignored evidence: `.superpowers/sdd/2026-08-08-tracker-gauntlet/`
+
+**Interfaces:**
+- `tracker_fixture_manifest_digest(fixture)` hashes validated stored
+  `torrent_info_by_hash` mappings after path normalization.
+- `FakeTrackerClient` exposes a fresh response from its current snapshot and
+  arms an evaluator-supplied first-response measurement callback before
+  materialization.
+- The measured pass invokes `qbitunregistered.cli.main` with evaluator-only
+  wrappers around `impact.analyze_impact` and `cli.unregistered_checks`.
+- Endpoint evidence uses complete triples and paired validation assigns the
+  exact control or candidate triple by role.
+
+- [x] **Step 1: Add manifest and snapshot RED tests**
+
+Add literal behavioral tests proving that a stored non-overlay payload mutation
+changes the manifest; missing, extra, mismatched-key, and duplicate snapshot
+hashes fail closed; and replacing the current snapshot changes hash/name,
+category/tags, all four path fields, magnet identity, state, added/completion
+times, seeding time, ratio, uploaded, and downloaded in the next fresh response
+without changing the stored payload.
+
+- [x] **Step 2: Run manifest tests and verify RED**
+
+Run the new node IDs with `uv run pytest -q`. Expected failures are an unchanged
+digest, accepted malformed payload ownership, and stale response values. Import,
+fixture-construction, or assertion-setup errors are not valid RED evidence.
+
+- [x] **Step 3: Implement manifest ownership and complete overlays**
+
+Validate an exact one-to-one snapshot/payload hash mapping, normalize a deep
+copy of each stored mapping for hashing, and overlay every snapshot-controlled
+field before wrapper conversion. Preserve fresh nested response identities and
+leave `torrent_info_by_hash` unchanged.
+
+- [x] **Step 4: Run manifest tests and verify GREEN**
+
+Run the Step 2 nodes plus existing payload-shape, wrapper, freshness, and
+manifest determinism tests. All must pass before changing the runner.
+
+- [x] **Step 5: Add real-CLI boundary RED tests**
+
+Exercise a small real `cli.main` dry-run with a temporary sanitized JSON config
+and the fake client. Require exactly one preview and execution observation in
+that order, identical snapshot hash order, identity reuse of the preview
+deletion plan, a success exit code, exact action/reconciliation evidence, zero
+mutation, and measurement markers bracketing first-response materialization
+through execution return. Add bypass, duplicate, reorder, snapshot-order, plan
+substitution, nonzero-exit, and mutation failures.
+
+- [x] **Step 6: Run CLI-boundary tests and verify RED**
+
+Run only the new CLI-boundary nodes. Expected failures must show that the
+current direct `analyze_impact`/`unregistered_checks` runner never invokes real
+CLI acquisition or cannot prove the observation contract.
+
+- [x] **Step 7: Implement real-CLI measured passes**
+
+Give every warm-up, timed, and memory pass a fresh fixture and observer state.
+Patch only `cli.create_client` plus transparent wrappers for the two approved
+observation points, start the requested clock/tracer immediately before the
+fake's first response is materialized, and stop immediately after real
+execution returns. Keep the global production audit around `cli.main`, require
+the exact observation contract and successful exit, and do not retain or
+materialize concurrent ordinary and bulk responses.
+
+- [x] **Step 8: Run CLI-boundary tests and verify GREEN**
+
+Run the Step 6 nodes plus the primary tracker pipeline, dry-run safety, shadow,
+semantic scenario, and global audit tests. Confirm every selected test passes
+and ordinary control acquisition is counted inside every measured pass.
+
+- [x] **Step 9: Add endpoint/schema/paired RED tests**
+
+Require standalone triples `(1, 0, N)` or `(0, 1, 0)`. Require every paired
+control pass to equal the former and every candidate pass to equal the latter.
+Reject `(1, 1, 0)`, `(1, 0, 0)`, partial exact reads, redundant reads, missing
+per-pass evidence, and forged aggregate-only evidence. Lock unchanged CPU
+`1.0`, memory `1.25`, isolation, scenario, sanitizer, and shadow gates.
+
+- [x] **Step 10: Run endpoint/schema/paired tests and verify RED**
+
+Run the new endpoint and paired node IDs. Expected failures are rejection of
+the newly valid ordinary-control triple or acceptance of at least one invalid
+role/pass shape under the old two-field transport schema.
+
+- [x] **Step 11: Implement complete endpoint evidence and schema bumps**
+
+Validate the complete triple at standalone and paired boundaries, require role
+specific shapes for warm-up, each timed sample, and memory passes, and advance
+evaluator/result/quality-bar/paired versions together. Recompute deterministic
+manifest locks only from the corrected fixture and leave performance thresholds
+unchanged.
+
+- [x] **Step 12: Run endpoint/schema/paired tests and verify GREEN**
+
+Run Step 10 plus all gauntlet runner/safety tests. Confirm invalid triples and
+forged/missing per-pass evidence still fail closed.
+
+- [x] **Step 13: Update documentation and review the complete diff**
+
+Update root and gauntlet READMEs, contribution workflow, architecture,
+changelog, design, and plan with real CLI ownership, snapshot lifetime, exact
+triples, invalid round-3 artifacts, and unchanged thresholds. Review the diff
+for production/dependency/generated/raw-artifact changes, secrets, unsafe
+paths, permissive schema behavior, and missing negative tests.
+
+- [x] **Step 14: Verify, commit, and regenerate clean artifacts**
+
+Run focused RED/GREEN evidence, full pytest with coverage, `gauntlet_full`,
+Black, fatal and scoped Flake8, BasedPyright CLI, mypy, pip-audit, Bandit,
+build, installed-wheel console-command smoke tests outside the checkout, an
+actual BasedPyright LSP session over every changed Python file, and
+`git diff --check`. Commit one coherent evaluator-only round, generate clean
+`round4` quick/full JSON under `/tmp`, and append the ignored report and progress
+ledger with exact sanitized evidence using `apply_patch`.

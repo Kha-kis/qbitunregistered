@@ -896,6 +896,166 @@ def test_tracker_fixture_interleaves_roles_and_keeps_action_targets_at_tail(tmp_
     )
 
 
+def test_tracker_manifest_hashes_materialized_torrent_info_payload(tmp_path: Path) -> None:
+    """Catch manifest regeneration that ignores drift in the payload actually served."""
+    tracker_fixture = _tracker_fixture_module()
+    tracker_runner = _tracker_runner_module()
+    profile = tracker_fixture.TrackerGauntletProfile(
+        name="tracker-manifest-materialized",
+        torrent_count=4,
+        tracker_record_count=12,
+        save_path_group_count=3,
+        default_tag_count=1,
+        cross_seed_tag_count=1,
+        delete_count=1,
+        tier="test",
+    )
+    fixture = tracker_fixture.build_tracker_fixture(tmp_path / "fixture", profile, seed=107)
+    initial_digest = tracker_runner.tracker_fixture_manifest_digest(fixture)
+    torrent_hash = fixture.initial_torrents[0].hash
+
+    fixture.client.torrent_info_by_hash[torrent_hash]["comment"] = "materialized payload drift"
+
+    assert tracker_runner.tracker_fixture_manifest_digest(fixture) != initial_digest
+
+
+@pytest.mark.parametrize("corruption", ["missing", "extra", "mismatched"])
+def test_tracker_manifest_rejects_unowned_torrent_info_payloads(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    """Catch missing, extra, or key-mismatched materialized torrent-info ownership."""
+    tracker_fixture = _tracker_fixture_module()
+    tracker_runner = _tracker_runner_module()
+    profile = tracker_fixture.TrackerGauntletProfile(
+        name=f"tracker-manifest-{corruption}",
+        torrent_count=4,
+        tracker_record_count=12,
+        save_path_group_count=3,
+        default_tag_count=1,
+        cross_seed_tag_count=1,
+        delete_count=1,
+        tier="test",
+    )
+    fixture = tracker_fixture.build_tracker_fixture(tmp_path / corruption, profile, seed=109)
+    torrent_hash = fixture.initial_torrents[0].hash
+    if corruption == "missing":
+        del fixture.client.torrent_info_by_hash[torrent_hash]
+    elif corruption == "extra":
+        fixture.client.torrent_info_by_hash["f" * 64] = copy.deepcopy(fixture.client.torrent_info_by_hash[torrent_hash])
+        fixture.client.torrent_info_by_hash["f" * 64]["hash"] = "f" * 64
+    else:
+        fixture.client.torrent_info_by_hash[torrent_hash]["hash"] = "e" * 64
+
+    with pytest.raises(GauntletSafetyError, match="torrent-info|payload"):
+        tracker_runner.tracker_fixture_manifest_digest(fixture)
+
+
+def test_tracker_manifest_rejects_duplicate_snapshot_hashes(tmp_path: Path) -> None:
+    """Catch ambiguous snapshot ownership even when the materialized map is unique."""
+    tracker_fixture = _tracker_fixture_module()
+    tracker_runner = _tracker_runner_module()
+    profile = tracker_fixture.TrackerGauntletProfile(
+        name="tracker-manifest-duplicate",
+        torrent_count=4,
+        tracker_record_count=12,
+        save_path_group_count=3,
+        default_tag_count=1,
+        cross_seed_tag_count=1,
+        delete_count=1,
+        tier="test",
+    )
+    fixture = tracker_fixture.build_tracker_fixture(tmp_path / "fixture", profile, seed=113)
+    duplicate = replace(fixture.initial_torrents[1], hash=fixture.initial_torrents[0].hash)
+    fixture.client.set_torrent_snapshot((fixture.initial_torrents[0], duplicate, *fixture.initial_torrents[2:]))
+
+    with pytest.raises(GauntletSafetyError, match="duplicate torrent hash"):
+        tracker_runner.tracker_fixture_manifest_digest(fixture)
+
+
+def test_tracker_snapshot_replacement_overlays_every_torrent_info_value(tmp_path: Path) -> None:
+    """Catch stale materialized values surviving replacement of the current snapshot."""
+    tracker_fixture = _tracker_fixture_module()
+    profile = tracker_fixture.TrackerGauntletProfile(
+        name="tracker-snapshot-overlay",
+        torrent_count=4,
+        tracker_record_count=12,
+        save_path_group_count=3,
+        default_tag_count=1,
+        cross_seed_tag_count=1,
+        delete_count=1,
+        tier="test",
+    )
+    fixture = tracker_fixture.build_tracker_fixture(tmp_path / "fixture", profile, seed=127)
+    original = fixture.initial_torrents[0]
+    replacement_hash = "d" * 64
+    replacement_save_path = str(tmp_path / "replacement-save")
+    replacement_content_path = str(tmp_path / "replacement-content")
+    replacement = replace(
+        original,
+        hash=replacement_hash,
+        name="replacement name",
+        save_path=replacement_save_path,
+        content_path=replacement_content_path,
+        category="replacement-category",
+        tags="replacement-a, replacement-b",
+        state_enum=replace(original.state_enum, is_complete=False, is_paused=False),
+        added_on=101,
+        completion_on=202,
+        seeding_time=303,
+        ratio=4.5,
+        uploaded=505,
+        downloaded=606,
+    )
+    stored_payload = fixture.client.torrent_info_by_hash.pop(original.hash)
+    stored_payload["hash"] = replacement_hash
+    fixture.client.torrent_info_by_hash[replacement_hash] = stored_payload
+    stored_before_response = copy.deepcopy(stored_payload)
+    fixture.client.set_torrent_snapshot((replacement, *fixture.initial_torrents[1:]))
+
+    response = fixture.client.torrents.info()
+    current = response[0]
+
+    assert {
+        "hash": current["hash"],
+        "name": current["name"],
+        "category": current["category"],
+        "tags": current["tags"],
+        "save_path": current["save_path"],
+        "content_path": current["content_path"],
+        "download_path": current["download_path"],
+        "root_path": current["root_path"],
+        "magnet_uri": current["magnet_uri"],
+        "state": current["state"],
+        "added_on": current["added_on"],
+        "completion_on": current["completion_on"],
+        "seeding_time": current["seeding_time"],
+        "ratio": current["ratio"],
+        "uploaded": current["uploaded"],
+        "downloaded": current["downloaded"],
+    } == {
+        "hash": replacement_hash,
+        "name": "replacement name",
+        "category": "replacement-category",
+        "tags": "replacement-a, replacement-b",
+        "save_path": replacement_save_path,
+        "content_path": replacement_content_path,
+        "download_path": str(Path(replacement_save_path) / ".unfinished"),
+        "root_path": replacement_content_path,
+        "magnet_uri": (
+            f"magnet:?xt=urn:btih:{replacement_hash}&dn=replacement name" "&tr=https%3A%2F%2Ftracker.invalid%2Fannounce"
+        ),
+        "state": "downloading",
+        "added_on": 101,
+        "completion_on": 202,
+        "seeding_time": 303,
+        "ratio": 4.5,
+        "uploaded": 505,
+        "downloaded": 606,
+    }
+    assert fixture.client.torrent_info_by_hash[replacement_hash] == stored_before_response
+
+
 def test_tracker_bulk_torrent_info_payload_is_complete_and_representative(tmp_path: Path) -> None:
     """Lock the sanitized Web API torrent-info shape and a realistic payload size."""
     tracker_fixture = _tracker_fixture_module()
@@ -1077,6 +1237,202 @@ def _tracker_runner_module() -> ModuleType:
         pytest.fail("tracker pipeline evaluator is not implemented")
 
 
+def _small_tracker_fixture(tmp_path: Path, *, seed: int = 131):
+    tracker_fixture = _tracker_fixture_module()
+    profile = tracker_fixture.TrackerGauntletProfile(
+        name="tracker-cli-boundary",
+        torrent_count=4,
+        tracker_record_count=12,
+        save_path_group_count=3,
+        default_tag_count=1,
+        cross_seed_tag_count=1,
+        delete_count=1,
+        tier="test",
+    )
+    return tracker_fixture.build_tracker_fixture(tmp_path / "fixture", profile, seed=seed)
+
+
+def test_tracker_measured_pipeline_uses_real_cli_and_reuses_preview_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch evaluator-owned acquisition or loss of the CLI preview/execution contract."""
+    tracker_runner = _tracker_runner_module()
+    fixture = _small_tracker_fixture(tmp_path)
+    cli_module = importlib.import_module("qbitunregistered.cli")
+    real_main = cli_module.main
+    main_calls = 0
+    events: list[tuple[str, tuple[str, ...], object | None]] = []
+    real_analyze = tracker_runner.analyze_impact
+    real_execute = tracker_runner.unregistered_checks
+
+    def observed_main(argv):
+        nonlocal main_calls
+        main_calls += 1
+        return real_main(argv)
+
+    def observed_analyze(client, torrents, config, operations):
+        summary = real_analyze(client, torrents, config, operations)
+        events.append(("preview", tuple(torrent.hash for torrent in torrents), summary.unregistered_deletion_plan))
+        return summary
+
+    def observed_execute(client, torrents, config, *args, **kwargs):
+        events.append(("execution", tuple(torrent.hash for torrent in torrents), kwargs.get("deletion_plan")))
+        return real_execute(client, torrents, config, *args, **kwargs)
+
+    monkeypatch.setattr(cli_module, "main", observed_main)
+    monkeypatch.setattr(tracker_runner, "analyze_impact", observed_analyze)
+    monkeypatch.setattr(tracker_runner, "unregistered_checks", observed_execute)
+
+    pipeline = tracker_runner._execute_pipeline(fixture)
+
+    expected_hashes = tuple(torrent.hash for torrent in fixture.initial_torrents)
+    assert main_calls == 1
+    assert [(name, hashes) for name, hashes, _plan in events] == [
+        ("preview", expected_hashes),
+        ("execution", expected_hashes),
+    ]
+    assert events[0][2] is not None
+    assert events[1][2] is events[0][2]
+    assert pipeline.summary.unregistered_deletion_plan is events[0][2]
+    assert fixture.client.read_counts == {
+        "torrents.info": 1,
+        "torrents.info.include_trackers": 0,
+        "torrents_trackers": fixture.profile.torrent_count,
+    }
+    assert fixture.client.mutation_total == 0
+    assert fixture.client.logout_count == 1
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_tracker_cli_observer_fails_closed_when_real_boundaries_are_bypassed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
+) -> None:
+    """Catch success or failure exits accepted without structured production evidence."""
+    tracker_runner = _tracker_runner_module()
+    fixture = _small_tracker_fixture(tmp_path, seed=137 + exit_code)
+    cli_module = importlib.import_module("qbitunregistered.cli")
+    monkeypatch.setattr(cli_module, "main", lambda _argv: exit_code)
+
+    with pytest.raises(GauntletSafetyError, match="CLI|preview|execution|observation"):
+        tracker_runner._execute_pipeline(fixture)
+
+
+@pytest.mark.parametrize("corruption", ["duplicate_preview", "execution_first", "plan_substitution", "snapshot_order"])
+def test_tracker_cli_observer_rejects_call_order_plan_and_snapshot_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    """Catch structurally successful CLI runs that bypass exact paired evidence."""
+    tracker_runner = _tracker_runner_module()
+    fixture = _small_tracker_fixture(tmp_path, seed=149)
+    cli_module = importlib.import_module("qbitunregistered.cli")
+    impact_module = importlib.import_module("qbitunregistered.impact")
+    config = tracker_runner.tracker_config()
+    torrents = list(fixture.initial_torrents)
+    clear_cache()
+    precomputed = tracker_runner.analyze_impact(fixture.client, torrents, config, ["unregistered"])
+    fixture.client.reset_read_counts()
+    clear_cache()
+
+    def corrupt_main(_argv):
+        if corruption == "execution_first":
+            cli_module.unregistered_checks(
+                fixture.client,
+                torrents,
+                config,
+                True,
+                ["tracker-delete"],
+                {"tracker-delete": False},
+                True,
+                deletion_plan=precomputed.unregistered_deletion_plan,
+            )
+        preview_torrents = list(reversed(torrents)) if corruption == "snapshot_order" else torrents
+        summary = impact_module.analyze_impact(fixture.client, preview_torrents, config, ["unregistered"])
+        if corruption == "duplicate_preview":
+            impact_module.analyze_impact(fixture.client, torrents, config, ["unregistered"])
+        if corruption != "execution_first":
+            plan = None if corruption == "plan_substitution" else summary.unregistered_deletion_plan
+            cli_module.unregistered_checks(
+                fixture.client,
+                torrents,
+                config,
+                True,
+                ["tracker-delete"],
+                {"tracker-delete": False},
+                True,
+                deletion_plan=plan,
+            )
+        return 0
+
+    monkeypatch.setattr(cli_module, "main", corrupt_main)
+
+    with pytest.raises(GauntletSafetyError, match="CLI|preview|execution|order|plan|snapshot|observation"):
+        tracker_runner._execute_pipeline(fixture)
+
+
+def test_tracker_memory_measurement_is_armed_and_stopped_at_materialization_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch allocation tracing that includes setup or excludes response materialization."""
+    tracker_fixture = _tracker_fixture_module()
+    tracker_runner = _tracker_runner_module()
+    fixture = _small_tracker_fixture(tmp_path, seed=151)
+    states: list[tuple[str, bool]] = []
+    real_info = tracker_fixture._FakeTrackerTorrents.info
+    real_pipeline = tracker_runner._execute_pipeline
+
+    def observed_info(self, **kwargs):
+        states.append(("before_info", tracemalloc.is_tracing()))
+        return real_info(self, **kwargs)
+
+    def observed_pipeline(current_fixture):
+        result = real_pipeline(current_fixture)
+        states.append(("after_execution", tracemalloc.is_tracing()))
+        return result
+
+    monkeypatch.setattr(tracker_fixture._FakeTrackerTorrents, "info", observed_info)
+    monkeypatch.setattr(tracker_runner, "_execute_pipeline", observed_pipeline)
+
+    tracker_runner._memory_pipeline_pass(
+        fixture,
+        tracker_runner._filesystem_digest(fixture.root),
+        tracker_runner._ProductionBoundaryAudit(),
+    )
+
+    assert states[0] == ("before_info", False)
+    assert states[-1] == ("after_execution", False)
+
+
+def test_tracker_primary_passes_use_fresh_fixture_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch warm-up, timed, and memory passes reusing one response-owning client."""
+    tracker_runner = _tracker_runner_module()
+    fixture = _small_tracker_fixture(tmp_path, seed=157)
+    clients: list[object] = []
+    roots: list[Path] = []
+    real_pipeline = tracker_runner._execute_pipeline
+
+    def observed_pipeline(current_fixture):
+        clients.append(current_fixture.client)
+        roots.append(current_fixture.root)
+        return real_pipeline(current_fixture)
+
+    monkeypatch.setattr(tracker_runner, "_execute_pipeline", observed_pipeline)
+
+    tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+    assert len(clients) == 1 + DEFAULT_SAMPLES + 1
+    assert all(left is not right for index, left in enumerate(clients) for right in clients[index + 1 :])
+    assert len(set(roots)) == len(roots)
+
+
 def test_tracker_pipeline_uses_real_preview_and_dry_run_with_locked_oracles(tmp_path: Path) -> None:
     """Catch evaluator shortcuts around production APIs or drift in exact action evidence."""
     tracker_fixture = _tracker_fixture_module()
@@ -1131,7 +1487,7 @@ def test_tracker_pipeline_uses_real_preview_and_dry_run_with_locked_oracles(tmp_
         "cross_seed_tag_targets": 100,
         "torrent_only_deletes": 13,
     }
-    assert result["fixture_manifest_digest"] == "a521c20c06e08a00db46c7f9c8bab747e5af891f2b95c10a6786c03ecddcd809"
+    assert result["fixture_manifest_digest"] == "5e55f2d970dfaa7e0845b170afebd5ede39f4b6e78f82faf1844b79a02080037"
     assert result["intended_action_digest"] == "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
     assert result["execution_action_digest"] == result["intended_action_digest"]
     assert result["reconciliation"]["digest"] == "904285725ce961958fc807fa6f8713020c9769d3d1c341d75f1d57e8afa028f4"
@@ -1162,13 +1518,16 @@ def test_tracker_api_accepts_only_exact_or_bulk_transport_without_redundancy() -
     profile = tracker_fixture.TRACKER_QUICK_PROFILE
 
     for allowed in (
-        {"torrents.info": 0, "torrents.info.include_trackers": 0, "torrents_trackers": 1_300},
+        {"torrents.info": 1, "torrents.info.include_trackers": 0, "torrents_trackers": 1_300},
         {"torrents.info": 0, "torrents.info.include_trackers": 1, "torrents_trackers": 0},
     ):
         tracker_runner.validate_tracker_endpoint_counts(allowed, profile)
 
     rejected = (
-        {"torrents.info": 1, "torrents.info.include_trackers": 0, "torrents_trackers": 1_300},
+        {"torrents.info": 0, "torrents.info.include_trackers": 0, "torrents_trackers": 1_300},
+        {"torrents.info": 1, "torrents.info.include_trackers": 0, "torrents_trackers": 0},
+        {"torrents.info": 1, "torrents.info.include_trackers": 0, "torrents_trackers": 1_299},
+        {"torrents.info": 1, "torrents.info.include_trackers": 1, "torrents_trackers": 0},
         {"torrents.info": 0, "torrents.info.include_trackers": 2, "torrents_trackers": 0},
         {"torrents.info": 0, "torrents.info.include_trackers": 0, "torrents_trackers": 1_301},
         {"torrents.info": 0, "torrents.info.include_trackers": 1, "torrents_trackers": 1_300},
@@ -1190,8 +1549,8 @@ def test_tracker_oracle_dispatches_through_shared_versioned_result(tmp_path: Pat
     assert result["profile_kind"] == "tracker"
     assert result["profile"] == "tracker-quick"
     assert result["schema"] == "qbitunregistered.gauntlet.result"
-    assert result["schema_version"] == 6
-    assert result["evaluator_version"] == "1.6.0"
+    assert result["schema_version"] == 7
+    assert result["evaluator_version"] == "1.7.0"
     assert result["scope"] == "orphan_and_tracker_dry_run_evaluation"
     assert result["commit"] == "unknown"
     assert result["candidate_state"] == {"clean": None, "diff_sha256": "unknown"}
@@ -1236,13 +1595,15 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
     full = quality_bar.profiles["tracker-full"]
 
     assert quick.kind == full.kind == "tracker"
+    assert paired.PAIRED_SCHEMA_VERSION == 5
+    assert paired.PAIRING_VERSION == "2.4.0"
     assert quick.tier == "round"
     assert full.tier == "candidate"
-    assert quick.fixture_manifest_digest == "a521c20c06e08a00db46c7f9c8bab747e5af891f2b95c10a6786c03ecddcd809"
+    assert quick.fixture_manifest_digest == "5e55f2d970dfaa7e0845b170afebd5ede39f4b6e78f82faf1844b79a02080037"
     assert quick.intended_action_digest == "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
     assert quick.execution_action_digest == quick.intended_action_digest
     assert quick.reconciliation["digest"] == "904285725ce961958fc807fa6f8713020c9769d3d1c341d75f1d57e8afa028f4"
-    assert full.fixture_manifest_digest == "48d95abc70cb540409644aa5c709ce110d79e9a0b5c0e629374d2c51e16b90c6"
+    assert full.fixture_manifest_digest == "a44fb8760f130a2008bff63ff75df880923d4490bf3bc4f9b5a031814a9e4fc3"
     assert full.intended_action_digest == "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87"
     assert full.execution_action_digest == full.intended_action_digest
     assert full.reconciliation["digest"] == "18eabfb8a3fc6ea3c455fc893339dc7fd8a6c3ed5ee50aea738e749cd9ddfe8d"
@@ -1256,8 +1617,8 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
         "cross_seed_tag_targets": 1_000,
         "torrent_only_deletes": 130,
     }
-    assert quick.allowed_tracker_transports == ((0, 1_300), (1, 0))
-    assert full.allowed_tracker_transports == ((0, 13_000), (1, 0))
+    assert quick.allowed_tracker_endpoint_shapes == ((1, 0, 1_300), (0, 1, 0))
+    assert full.allowed_tracker_endpoint_shapes == ((1, 0, 13_000), (0, 1, 0))
     assert len(quick.scenario_action_digests) == len(full.scenario_action_digests) == 12
     assert quick.scenario_action_digests == full.scenario_action_digests
     assert (
@@ -1416,6 +1777,17 @@ def test_tracker_paired_comparison_requires_exact_to_bulk_endpoint_collapse(tmp_
     unchanged = compare_paired_results(runs, quality_bar)
 
     assert unchanged["gates"]["transport"]["status"] == "fail"
+    aggregate_only = copy.deepcopy(runs)
+    for run in aggregate_only:
+        if run["role"] == "candidate":
+            run["result"]["endpoint_counters"].update(
+                {
+                    "torrents.info": 0,
+                    "torrents.info.include_trackers": 1,
+                    "torrents_trackers": 0,
+                }
+            )
+    assert compare_paired_results(aggregate_only, quality_bar)["gates"]["transport"]["status"] == "fail"
     for run in runs:
         if run["role"] != "candidate":
             continue
@@ -1437,7 +1809,28 @@ def test_tracker_paired_comparison_requires_exact_to_bulk_endpoint_collapse(tmp_
 
     assert collapsed["gates"]["transport"]["status"] == "pass"
     assert collapsed["gates"]["runtime"]["target"] == 1.0
+    assert collapsed["gates"]["memory"]["target"] == 1.25
     assert collapsed["overall"] == "pass"
+
+    for role, pass_name, invalid_shape in (
+        ("control", "warmup", (0, 1, 0)),
+        ("candidate", "memory", (1, 1, 0)),
+        ("candidate", "timed", (0, 1, 1)),
+    ):
+        malformed = copy.deepcopy(runs)
+        selected = next(run for run in malformed if run["role"] == role)
+        if pass_name == "timed":
+            counters = selected["result"]["timed_sample_endpoint_counters"][2]
+        else:
+            counters = selected["result"]["pass_endpoint_counters"][pass_name]
+        counters.update(
+            {
+                "torrents.info": invalid_shape[0],
+                "torrents.info.include_trackers": invalid_shape[1],
+                "torrents_trackers": invalid_shape[2],
+            }
+        )
+        assert compare_paired_results(malformed, quality_bar)["gates"]["transport"]["status"] == "fail"
 
 
 def _bulk_fail_closed_malformed_scenarios(
@@ -6014,7 +6407,9 @@ def test_measurement_phases_never_trace_timed_samples(
         "timed_samples_traced": False,
         "memory_pass_timed": False,
         "application_cache": "cleared before every pass",
-        "fixture_metadata": "materialized once and reused after the explicit warmup",
+        "fixture_metadata": (
+            "orphan metadata is reused; each tracker pass owns a fresh fixture and measures initial snapshot acquisition"
+        ),
         "os_page_cache": "not flushed; timed and memory passes are warm",
         "sample_rejection": "none; all five timed samples are retained",
     }

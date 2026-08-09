@@ -690,9 +690,14 @@ preflight-to-import gap by checking immediately before imports and after
 evaluation.
 
 The gauntlet exposes separate quick/full profile pairs for orphan ownership and
-tracker metadata. Tracker passes call the public `analyze_impact()` boundary,
-consume its immutable unregistered deletion plan, and call
-`unregistered_checks()` in genuine dry-run mode. An independent fixture
+tracker metadata. Every primary tracker pass invokes the real `cli.main()`
+orchestrator with a sanitized temporary configuration and an in-memory client.
+The CLI owns whether its one initial snapshot is ordinary or includes tracker
+metadata. Transparent evaluator observers retain the structured return from
+the real `analyze_impact()` boundary and the result of the real
+`unregistered_checks()` dry-run, require the preview plan to be reused by
+identity, and fail closed if either call is missing, duplicated, reordered, or
+given a different snapshot. An independent fixture
 blueprint supplies expected tag and torrent-only deletion actions; evaluator
 code does not reproduce production tracker classification or cache internals.
 The primary path remains a genuine dry-run. A separate untimed shadow executes
@@ -707,11 +712,16 @@ audit-event boundary, not a syscall-level network sandbox: CPython does not
 emit separate events for `send` or `sendall` on a socket connected before the
 guarded boundary.
 
-Tracker endpoint budgets accept the legacy control shape of zero bulk reads and
-one exact read per torrent, or the optimized shape of one bulk read and zero
-exact reads. Paired comparison assigns those shapes to control and candidate
-roles respectively; generic allowed transports cannot substitute for the
-required exact-to-bulk collapse. Synthetic runtime has a `1.0` regression
+Each warm-up, timed, and memory pass owns a fresh fixture. Timing or allocation
+tracing begins immediately before the fake materializes the CLI-selected
+initial response and ends immediately after `unregistered_checks()` returns,
+so response allocation and lifetime are measured without fixture construction.
+The control endpoint triple is `(1, 0, N)` and the candidate triple is
+`(0, 1, 0)` in ordinary/bulk/exact order. The candidate bulk response replaces
+the ordinary response; evaluator code never materializes both. Paired
+comparison assigns the exact triple to every pass by role; generic allowed or
+aggregate-only transports cannot substitute for the required collapse.
+Synthetic runtime has a `1.0` regression
 ceiling and peak memory retains `1.25`; live wall-clock improvement requires a
 separately approved protected dry-run. Legacy responses that omit or reject
 embedded tracker metadata can
@@ -722,6 +732,13 @@ churn must fail closed with zero mutation attempts. The
 defines these semantics; the
 [evaluator guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation)
 documents operator commands and evidence fields.
+
+The tracker manifest hashes the actual stored torrent-info mappings after
+fixture-root paths are normalized, validates one payload per current snapshot
+hash, and overlays every snapshot-controlled identity, path, state, time,
+ratio, and transfer value before fresh wrapper conversion. Round-3 tracker
+artifacts used the former regenerated manifest and pre-acquisition measurement
+boundary, so they are non-comparable with schema version 7.
 
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,

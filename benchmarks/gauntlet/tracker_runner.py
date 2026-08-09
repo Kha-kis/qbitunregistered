@@ -13,10 +13,12 @@ import tempfile
 import time
 import tracemalloc
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Protocol, TypedDict, cast
+from typing import Iterator, Literal, Protocol, TypedDict, cast
+from unittest.mock import patch
 
 from benchmarks.gauntlet.fixture_factory import MUTATION_COUNTER_KEYS
 from benchmarks.gauntlet.runner import (
@@ -33,19 +35,20 @@ from benchmarks.gauntlet.tracker_fixture import (
     TrackerActionRecord,
     TrackerGauntletFixture,
     TrackerGauntletProfile,
+    TrackerTorrent,
     build_tracker_fixture,
     expected_tracker_action_digest,
     expected_tracker_action_records,
-    torrent_info_payload,
 )
 from qbitunregistered.cache import clear_cache
 from qbitunregistered.file_operations import SafetyCheckError
 from qbitunregistered.impact import ImpactAnalysisError, ImpactSummary, analyze_impact
 from qbitunregistered.operations.unregistered_checks import (
     DeletionAction,
+    UnregisteredDeletionPlan,
     unregistered_checks,
 )
-from qbitunregistered.types import TorrentInfo
+from qbitunregistered.types import QBittorrentClient, TorrentInfo
 
 DEFAULT_TAG = "unregistered"
 CROSS_SEED_TAG = "unregistered:crossseeding"
@@ -135,6 +138,67 @@ class _TrackerPassEvidence:
     reconciliation: TrackerReconciliationEvidence
     candidate_counts: dict[str, int]
     endpoint_counters: dict[str, int]
+
+
+@dataclass(slots=True)
+class _PassMeasurement:
+    """Measure only initial response materialization through execution return."""
+
+    kind: Literal["checked", "timed", "memory"]
+    started: bool = False
+    stopped: bool = False
+    started_at: float | None = None
+    elapsed_seconds: float | None = None
+    peak_memory_bytes: int | None = None
+
+    def start(self) -> None:
+        """Arm the selected measurement immediately before response allocation."""
+        if self.started or self.stopped:
+            raise GauntletSafetyError("tracker CLI observation started measurement more than once")
+        self.started = True
+        if self.kind == "timed":
+            self.started_at = time.perf_counter()
+        elif self.kind == "memory":
+            if tracemalloc.is_tracing():
+                raise GauntletSafetyError("tracemalloc was active before tracker response materialization")
+            tracemalloc.start()
+
+    def stop(self) -> None:
+        """Stop the selected measurement immediately after execution returns."""
+        if not self.started or self.stopped:
+            raise GauntletSafetyError("tracker CLI observation stopped measurement outside execution order")
+        if self.kind == "timed":
+            if self.started_at is None:
+                raise GauntletSafetyError("tracker timed measurement did not retain its start")
+            self.elapsed_seconds = time.perf_counter() - self.started_at
+        elif self.kind == "memory":
+            _current_bytes, self.peak_memory_bytes = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+        self.stopped = True
+
+    def validate(self) -> None:
+        """Require both boundaries and the selected measurement output."""
+        if not self.started or not self.stopped:
+            raise GauntletSafetyError("tracker CLI observation did not bracket the measured execution")
+        if self.kind == "timed" and self.elapsed_seconds is None:
+            raise GauntletSafetyError("tracker timed measurement is missing")
+        if self.kind == "memory" and self.peak_memory_bytes is None:
+            raise GauntletSafetyError("tracker memory measurement is missing")
+
+    def cleanup(self) -> None:
+        """Stop tracing after a failed memory pass without claiming evidence."""
+        if self.kind == "memory" and tracemalloc.is_tracing():
+            tracemalloc.stop()
+
+
+class _DiscardCliOutput:
+    """Discard the sanitized human preview while preserving the real formatter."""
+
+    def write(self, value: str) -> int:
+        return len(value)
+
+    def flush(self) -> None:
+        return None
 
 
 _ACTIVE_PRODUCTION_AUDITS: list[_ProductionBoundaryAudit] = []
@@ -296,13 +360,27 @@ def tracker_config() -> dict[str, object]:
     }
 
 
+def _tracker_cli_config_path(fixture: TrackerGauntletFixture) -> Path:
+    """Materialize one sanitized CLI configuration outside production calls."""
+    config_path = fixture.root / "gauntlet-config.json"
+    config = {
+        **tracker_config(),
+        "host": "http://qbitunregistered-gauntlet.invalid",
+        "api_key": "synthetic-gauntlet-placeholder",
+        "dry_run": True,
+        "log_level": "ERROR",
+    }
+    config_path.write_text(json.dumps(config, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    return config_path
+
+
 def _production_torrents(fixture: TrackerGauntletFixture) -> Sequence[TorrentInfo]:
     """Expose frozen evaluator torrents through the production read protocol."""
     return cast(Sequence[TorrentInfo], fixture.initial_torrents)
 
 
-def tracker_fixture_manifest_digest(fixture: TrackerGauntletFixture) -> str:
-    """Hash the complete sanitized tracker fixture without retaining URLs."""
+def tracker_fixture_manifest_digest(fixture: TrackerGauntletFixture) -> str:  # noqa: C901
+    """Hash the validated materialized tracker fixture without host paths."""
     profile = fixture.profile
     digest = hashlib.sha256()
     _digest_record(
@@ -319,25 +397,42 @@ def tracker_fixture_manifest_digest(fixture: TrackerGauntletFixture) -> str:
             "tier": profile.tier,
         },
     )
+    snapshot = fixture.client.torrent_snapshot
+    if not isinstance(snapshot, Sequence) or isinstance(snapshot, (str, bytes, bytearray)):
+        raise GauntletSafetyError("tracker fixture snapshot is not a torrent sequence")
+    torrents = list(snapshot)
+    if any(not isinstance(torrent, TrackerTorrent) for torrent in torrents):
+        raise GauntletSafetyError("tracker fixture snapshot contains malformed torrents")
+    typed_torrents = cast(list[TrackerTorrent], torrents)
+    snapshot_hashes = [torrent.hash for torrent in typed_torrents]
+    if len(set(snapshot_hashes)) != len(snapshot_hashes):
+        raise GauntletSafetyError("tracker fixture contains a duplicate torrent hash")
+    payload_hashes = set(fixture.client.torrent_info_by_hash)
+    if payload_hashes != set(snapshot_hashes):
+        raise GauntletSafetyError("tracker fixture torrent-info payload ownership does not match the snapshot")
+
     tracker_count = 0
-    seen_hashes: set[str] = set()
-    for index, torrent in enumerate(fixture.initial_torrents):
-        if torrent.hash in seen_hashes:
-            raise GauntletSafetyError("tracker fixture contains a duplicate torrent hash")
-        seen_hashes.add(torrent.hash)
+    for torrent in typed_torrents:
         save_path_group = Path(torrent.save_path).name
         if not re.fullmatch(r"group-[0-9]{5}", save_path_group):
             raise GauntletSafetyError("tracker fixture contains an unsafe save-path group")
-        normalized_info = torrent_info_payload(torrent, index)
-        normalized_info["reannounce_in"] = normalized_info.pop("reannounce")
-        normalized_info.update(
-            {
-                "save_path": save_path_group,
-                "download_path": f"{save_path_group}/.unfinished",
-                "content_path": Path(torrent.content_path).name,
-                "root_path": Path(torrent.content_path).name,
-            }
-        )
+        stored_info = fixture.client.torrent_info_by_hash[torrent.hash]
+        if not isinstance(stored_info, Mapping) or stored_info.get("hash") != torrent.hash:
+            raise GauntletSafetyError("tracker fixture contains a mismatched torrent-info payload hash")
+        try:
+            normalized_info = json.loads(json.dumps(stored_info, separators=(",", ":")))
+        except (TypeError, ValueError) as error:
+            raise GauntletSafetyError("tracker fixture contains malformed torrent-info payload") from error
+        if not isinstance(normalized_info, dict):
+            raise GauntletSafetyError("tracker fixture contains malformed torrent-info payload")
+        for path_field in ("save_path", "download_path", "content_path", "root_path"):
+            path_value = normalized_info.get(path_field)
+            if not isinstance(path_value, str):
+                raise GauntletSafetyError("tracker fixture contains a malformed torrent-info path")
+            try:
+                normalized_info[path_field] = Path(path_value).relative_to(fixture.root).as_posix()
+            except ValueError as error:
+                raise GauntletSafetyError("tracker fixture contains an unsafe torrent-info path") from error
         _digest_record(
             digest,
             {
@@ -352,7 +447,7 @@ def tracker_fixture_manifest_digest(fixture: TrackerGauntletFixture) -> str:
                 raise GauntletSafetyError("tracker fixture contains malformed tracker metadata")
             _digest_record(digest, {"torrent_hash": torrent.hash, **tracker})
             tracker_count += 1
-    if len(seen_hashes) != profile.torrent_count or tracker_count != profile.tracker_record_count:
+    if len(snapshot_hashes) != profile.torrent_count or tracker_count != profile.tracker_record_count:
         raise GauntletSafetyError("tracker fixture workload does not match its profile")
     return digest.hexdigest()
 
@@ -462,18 +557,17 @@ def validate_tracker_endpoint_counts(
     endpoint_counts: Mapping[str, int],
     profile: TrackerGauntletProfile,
 ) -> None:
-    """Accept only one complete exact or one complete embedded tracker transport."""
+    """Accept only one complete ordinary/exact or one embedded snapshot."""
     if set(endpoint_counts) != set(TRACKER_READ_ENDPOINTS):
         raise GauntletSafetyError("tracker API evidence does not match the locked endpoint schema")
     if any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in endpoint_counts.values()):
         raise GauntletSafetyError("tracker API evidence contains malformed counts")
-    if endpoint_counts["torrents.info"] != 0:
-        raise GauntletSafetyError("tracker API evidence contains an ordinary torrent snapshot")
     transport = (
+        endpoint_counts["torrents.info"],
         endpoint_counts["torrents.info.include_trackers"],
         endpoint_counts["torrents_trackers"],
     )
-    if transport not in {(0, profile.torrent_count), (1, 0)}:
+    if transport not in {(1, 0, profile.torrent_count), (0, 1, 0)}:
         raise GauntletSafetyError("tracker API evidence is partial, redundant, or outside the locked budget")
 
 
@@ -482,31 +576,146 @@ def _prepare_pass(fixture: TrackerGauntletFixture) -> None:
     fixture.client.reset_read_counts()
 
 
-def _execute_pipeline(fixture: TrackerGauntletFixture) -> _TrackerPipelineResult:
-    config = tracker_config()
-    summary = analyze_impact(fixture.client, _production_torrents(fixture), config, ["unregistered"])
-    plan = summary.unregistered_deletion_plan
-    if plan is None:
-        raise GauntletSafetyError("tracker preview did not produce a deletion plan")
+@contextmanager
+def _fresh_pass_fixture(source: TrackerGauntletFixture) -> Iterator[TrackerGauntletFixture]:
+    """Yield one response-owning fixture that exists for exactly one primary pass."""
+    with tempfile.TemporaryDirectory(prefix="qbitunregistered-tracker-pass-") as temporary_root:
+        fixture = build_tracker_fixture(
+            Path(temporary_root),
+            source.profile,
+            source.seed,
+            embedded_trackers_mode=source.client.embedded_trackers_mode,
+        )
+        _tracker_cli_config_path(fixture)
+        yield fixture
+
+
+def _execute_pipeline(fixture: TrackerGauntletFixture) -> _TrackerPipelineResult:  # noqa: C901
+    """Invoke the real CLI and transparently retain its structured evidence."""
+    from qbitunregistered import cli as cli_module
+    from qbitunregistered import impact as impact_module
+
+    config_path = fixture.root / "gauntlet-config.json"
+    if not config_path.is_file():
+        config_path = _tracker_cli_config_path(fixture)
+    local_measurement: _PassMeasurement | None = None
+    if not fixture.client.measurement_callbacks_configured:
+        local_measurement = _PassMeasurement("checked")
+        fixture.client.set_measurement_callbacks(local_measurement.start, local_measurement.stop)
+
+    expected_hashes = tuple(torrent.hash for torrent in fixture.initial_torrents)
+    observation_order: list[str] = []
+    preview_calls: list[tuple[tuple[str, ...], ImpactSummary]] = []
+    execution_calls: list[tuple[tuple[str, ...], object, bool]] = []
+    execution_results: list[tuple[dict[str, list[str]], dict[str, int]]] = []
+    client_call_count = 0
     capture = _TrackerReconciliationCapture()
     root_logger = logging.getLogger()
     previous_level = root_logger.level
-    root_logger.addHandler(capture)
-    root_logger.setLevel(logging.INFO)
+    previous_handlers = list(root_logger.handlers)
+
+    def observed_create_client(_config: dict[str, object]) -> object:
+        nonlocal client_call_count
+        client_call_count += 1
+        return fixture.client
+
+    selected_analyze_impact = analyze_impact
+
+    def observed_analyze_impact(
+        client: QBittorrentClient,
+        torrents: Sequence[TorrentInfo],
+        config: dict[str, object],
+        operations: Sequence[str],
+    ) -> ImpactSummary:
+        observation_order.append("preview")
+        summary = selected_analyze_impact(client, torrents, config, operations)
+        preview_calls.append((tuple(torrent.hash for torrent in torrents), summary))
+        return summary
+
+    selected_unregistered_checks = unregistered_checks
+
+    def observed_unregistered_checks(
+        client: QBittorrentClient,
+        torrents: Sequence[TorrentInfo],
+        config: dict[str, object],
+        use_delete_tags: bool,
+        delete_tags: list[str],
+        delete_files: dict[str, bool],
+        dry_run: bool,
+        recycle_bin: str | None = None,
+        *,
+        deletion_plan: UnregisteredDeletionPlan | None = None,
+    ) -> tuple[dict[str, list[str]], dict[str, int]]:
+        observation_order.append("execution")
+        execution_calls.append((tuple(torrent.hash for torrent in torrents), deletion_plan, dry_run))
+        execution_handlers = list(root_logger.handlers)
+        for handler in execution_handlers:
+            root_logger.removeHandler(handler)
+        root_logger.addHandler(capture)
+        root_logger.setLevel(logging.INFO)
+        try:
+            result = selected_unregistered_checks(
+                client,
+                torrents,
+                config,
+                use_delete_tags,
+                delete_tags,
+                delete_files,
+                dry_run,
+                recycle_bin,
+                deletion_plan=deletion_plan,
+            )
+            fixture.client.finish_execution_measurement()
+        finally:
+            root_logger.removeHandler(capture)
+            for handler in execution_handlers:
+                root_logger.addHandler(handler)
+            root_logger.setLevel(logging.ERROR)
+        execution_results.append(result)
+        return result
+
     try:
-        torrent_file_paths, unregistered_counts = unregistered_checks(
-            fixture.client,
-            _production_torrents(fixture),
-            config,
-            True,
-            [DELETE_TAG],
-            {DELETE_TAG: False},
-            True,
-            deletion_plan=plan,
-        )
+        with (
+            patch.object(cli_module, "create_client", observed_create_client),
+            patch.object(impact_module, "analyze_impact", observed_analyze_impact),
+            patch.object(cli_module, "unregistered_checks", observed_unregistered_checks),
+            redirect_stdout(_DiscardCliOutput()),
+            redirect_stderr(_DiscardCliOutput()),
+        ):
+            exit_code = cli_module.main(["--config", str(config_path), "--unregistered", "--dry-run"])
     finally:
-        root_logger.removeHandler(capture)
+        for handler in list(root_logger.handlers):
+            if handler not in previous_handlers:
+                root_logger.removeHandler(handler)
+                handler.close()
+        for handler in previous_handlers:
+            if handler not in root_logger.handlers:
+                root_logger.addHandler(handler)
         root_logger.setLevel(previous_level)
+    if exit_code != 0:
+        raise GauntletSafetyError("tracker CLI did not return success")
+    if client_call_count != 1:
+        raise GauntletSafetyError("tracker CLI client observation did not occur exactly once")
+    if observation_order != ["preview", "execution"] or len(preview_calls) != 1 or len(execution_calls) != 1:
+        raise GauntletSafetyError("tracker CLI preview and execution observations were missing, duplicated, or reordered")
+    preview_hashes, summary = preview_calls[0]
+    execution_hashes, execution_plan, execution_dry_run = execution_calls[0]
+    if preview_hashes != expected_hashes or execution_hashes != expected_hashes:
+        raise GauntletSafetyError("tracker CLI snapshot order did not match the initial response")
+    plan = summary.unregistered_deletion_plan
+    if plan is None:
+        raise GauntletSafetyError("tracker preview did not produce a deletion plan")
+    if execution_plan is not plan:
+        raise GauntletSafetyError("tracker CLI execution did not reuse the preview deletion plan")
+    if execution_dry_run is not True or fixture.client.mutation_total:
+        raise GauntletSafetyError("tracker CLI execution was not a mutation-free dry-run")
+    if len(execution_results) != 1:
+        raise GauntletSafetyError("tracker CLI execution result observation is missing")
+    if fixture.client.measurement_callbacks_configured:
+        raise GauntletSafetyError("tracker CLI observation did not consume both measurement boundaries")
+    if local_measurement is not None:
+        local_measurement.validate()
+    torrent_file_paths, unregistered_counts = execution_results[0]
     return _TrackerPipelineResult(
         summary=summary,
         torrent_file_paths=torrent_file_paths,
@@ -587,65 +796,87 @@ def _validate_pass(
 
 def _checked_pipeline_pass(
     fixture: TrackerGauntletFixture,
-    initial_filesystem_digest: str,
+    _initial_filesystem_digest: str,
     production_audit: _ProductionBoundaryAudit,
 ) -> _TrackerPassEvidence:
-    _prepare_pass(fixture)
-    try:
-        with production_audit:
-            pipeline = _execute_pipeline(fixture)
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception:
-        _validate_unchanged_state(fixture, initial_filesystem_digest, production_audit)
-        raise
-    finally:
-        clear_cache()
-    return _validate_pass(fixture, pipeline, initial_filesystem_digest, production_audit)
+    with _fresh_pass_fixture(fixture) as pass_fixture:
+        _prepare_pass(pass_fixture)
+        initial_filesystem_digest = _filesystem_digest(pass_fixture.root)
+        measurement = _PassMeasurement("checked")
+        pass_fixture.client.set_measurement_callbacks(measurement.start, measurement.stop)
+        try:
+            with production_audit:
+                pipeline = _execute_pipeline(pass_fixture)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            _validate_unchanged_state(pass_fixture, initial_filesystem_digest, production_audit)
+            raise
+        finally:
+            measurement.cleanup()
+            clear_cache()
+        measurement.validate()
+        return _validate_pass(pass_fixture, pipeline, initial_filesystem_digest, production_audit)
 
 
 def _timed_pipeline_pass(
     fixture: TrackerGauntletFixture,
-    initial_filesystem_digest: str,
+    _initial_filesystem_digest: str,
     production_audit: _ProductionBoundaryAudit,
 ) -> tuple[_TrackerPassEvidence, float]:
-    _prepare_pass(fixture)
-    started_at = time.perf_counter()
-    try:
-        with production_audit:
-            pipeline = _execute_pipeline(fixture)
-    except (KeyboardInterrupt, SystemExit):
-        clear_cache()
-        raise
-    except Exception:
-        _validate_unchanged_state(fixture, initial_filesystem_digest, production_audit)
-        clear_cache()
-        raise
-    elapsed_seconds = time.perf_counter() - started_at
-    clear_cache()
-    return _validate_pass(fixture, pipeline, initial_filesystem_digest, production_audit), elapsed_seconds
+    with _fresh_pass_fixture(fixture) as pass_fixture:
+        _prepare_pass(pass_fixture)
+        initial_filesystem_digest = _filesystem_digest(pass_fixture.root)
+        measurement = _PassMeasurement("timed")
+        pass_fixture.client.set_measurement_callbacks(measurement.start, measurement.stop)
+        try:
+            with production_audit:
+                pipeline = _execute_pipeline(pass_fixture)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            _validate_unchanged_state(pass_fixture, initial_filesystem_digest, production_audit)
+            raise
+        finally:
+            measurement.cleanup()
+            clear_cache()
+        measurement.validate()
+        if measurement.elapsed_seconds is None:
+            raise GauntletSafetyError("tracker timed measurement is missing")
+        return (
+            _validate_pass(pass_fixture, pipeline, initial_filesystem_digest, production_audit),
+            measurement.elapsed_seconds,
+        )
 
 
 def _memory_pipeline_pass(
     fixture: TrackerGauntletFixture,
-    initial_filesystem_digest: str,
+    _initial_filesystem_digest: str,
     production_audit: _ProductionBoundaryAudit,
 ) -> tuple[_TrackerPassEvidence, int]:
-    _prepare_pass(fixture)
-    tracemalloc.start()
-    try:
-        with production_audit:
-            pipeline = _execute_pipeline(fixture)
-        _current_bytes, peak_bytes = tracemalloc.get_traced_memory()
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception:
-        _validate_unchanged_state(fixture, initial_filesystem_digest, production_audit)
-        raise
-    finally:
-        tracemalloc.stop()
-        clear_cache()
-    return _validate_pass(fixture, pipeline, initial_filesystem_digest, production_audit), peak_bytes
+    with _fresh_pass_fixture(fixture) as pass_fixture:
+        _prepare_pass(pass_fixture)
+        initial_filesystem_digest = _filesystem_digest(pass_fixture.root)
+        measurement = _PassMeasurement("memory")
+        pass_fixture.client.set_measurement_callbacks(measurement.start, measurement.stop)
+        try:
+            with production_audit:
+                pipeline = _execute_pipeline(pass_fixture)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            _validate_unchanged_state(pass_fixture, initial_filesystem_digest, production_audit)
+            raise
+        finally:
+            measurement.cleanup()
+            clear_cache()
+        measurement.validate()
+        if measurement.peak_memory_bytes is None:
+            raise GauntletSafetyError("tracker memory measurement is missing")
+        return (
+            _validate_pass(pass_fixture, pipeline, initial_filesystem_digest, production_audit),
+            measurement.peak_memory_bytes,
+        )
 
 
 def _action_record_digest(records: Sequence[TrackerActionRecord]) -> str:

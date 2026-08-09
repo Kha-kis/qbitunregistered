@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Callable, Literal, TypedDict, cast
 
 from benchmarks.gauntlet.fixture_factory import MUTATING_ENDPOINTS
 
@@ -236,6 +236,13 @@ def torrent_info_payload(torrent: TrackerTorrent, index: int) -> dict[str, objec
     }
 
 
+def _torrent_state(torrent: TrackerTorrent) -> str:
+    """Return the qBittorrent state corresponding to the current fake snapshot."""
+    if torrent.state_enum.is_complete:
+        return "stoppedUP" if torrent.state_enum.is_paused else "uploading"
+    return "stoppedDL" if torrent.state_enum.is_paused else "downloading"
+
+
 class _FakeTrackerTorrents:
     def __init__(self, client: FakeTrackerClient) -> None:
         self._client = client
@@ -253,6 +260,7 @@ class _FakeTrackerTorrents:
         if not isinstance(snapshot, Sequence) or isinstance(snapshot, (str, bytes, bytearray)):
             return snapshot
 
+        self._client.begin_info_materialization()
         response: list[dict[str, object]] = []
         for index, torrent in enumerate(snapshot):
             if not isinstance(torrent, TrackerTorrent):
@@ -261,16 +269,24 @@ class _FakeTrackerTorrents:
             save_path = Path(torrent.save_path)
             payload.update(
                 {
+                    "added_on": torrent.added_on,
                     "category": torrent.category,
+                    "completion_on": torrent.completion_on,
                     "content_path": torrent.content_path,
+                    "downloaded": torrent.downloaded,
                     "download_path": str(save_path / ".unfinished"),
+                    "hash": torrent.hash,
                     "magnet_uri": (
                         f"magnet:?xt=urn:btih:{torrent.hash}&dn={torrent.name}" "&tr=https%3A%2F%2Ftracker.invalid%2Fannounce"
                     ),
                     "name": torrent.name,
+                    "ratio": torrent.ratio,
                     "root_path": torrent.content_path,
                     "save_path": torrent.save_path,
+                    "seeding_time": torrent.seeding_time,
+                    "state": _torrent_state(torrent),
                     "tags": torrent.tags,
+                    "uploaded": torrent.uploaded,
                 }
             )
             if include_trackers and self._client.embedded_trackers_mode != "omitted":
@@ -305,7 +321,7 @@ class FakeTrackerClient:
         self.torrent_info_by_hash = {
             torrent.hash: torrent_info_payload(torrent, index) for index, torrent in enumerate(self.initial_torrents)
         }
-        self.embedded_trackers_mode = embedded_trackers_mode
+        self.embedded_trackers_mode: EmbeddedTrackersMode = embedded_trackers_mode
         self.read_counts: Counter[str] = Counter({endpoint: 0 for endpoint in TRACKER_READ_ENDPOINTS})
         self.mutation_counts: Counter[str] = Counter({endpoint: 0 for endpoint in MUTATING_ENDPOINTS})
         self.execution_action_records: list[TrackerActionRecord] = []
@@ -313,6 +329,40 @@ class FakeTrackerClient:
         self.application: Any = None
         self.torrent_categories: Any = None
         self.logout_count = 0
+        self._before_info_materialization: Callable[[], None] | None = None
+        self._after_execution_return: Callable[[], None] | None = None
+
+    def set_measurement_callbacks(
+        self,
+        before_info_materialization: Callable[[], None],
+        after_execution_return: Callable[[], None],
+    ) -> None:
+        """Set one-shot callbacks around the measured production response lifetime."""
+        if self._before_info_materialization is not None or self._after_execution_return is not None:
+            raise RuntimeError("tracker measurement callbacks are already configured")
+        self._before_info_materialization = before_info_materialization
+        self._after_execution_return = after_execution_return
+
+    def begin_info_materialization(self) -> None:
+        """Arm measurement immediately before the first response is materialized."""
+        callback = self._before_info_materialization
+        if callback is None:
+            return
+        self._before_info_materialization = None
+        callback()
+
+    def finish_execution_measurement(self) -> None:
+        """Stop measurement immediately after the observed execution returns."""
+        callback = self._after_execution_return
+        if callback is None:
+            raise RuntimeError("tracker execution measurement callback is unavailable")
+        self._after_execution_return = None
+        callback()
+
+    @property
+    def measurement_callbacks_configured(self) -> bool:
+        """Return whether either one-shot measurement callback remains pending."""
+        return self._before_info_materialization is not None or self._after_execution_return is not None
 
     def reset_read_counts(self) -> None:
         """Reset every tracker read endpoint to an explicit zero."""

@@ -234,3 +234,67 @@ CPython does not publish separate audit events for `send` or `sendall` on a
 socket connected before the guarded boundary. Documentation therefore claims
 only the connection, DNS, and destination-bearing outbound attempts that the
 audit hook actually observes and denies.
+
+## Establish correction round 4: real CLI acquisition boundary
+
+The measured tracker workload invokes the real `qbitunregistered.cli.main`
+orchestrator because it is the only existing production boundary that owns the
+choice of initial torrent-list request. The evaluator supplies a sanitized
+temporary configuration and substitutes only `cli.create_client` with the
+in-memory fake. It does not call a candidate helper, choose request arguments
+from the control/candidate role, or materialize an ordinary response before
+production runs. The selected production revision therefore determines whether
+the authoritative snapshot is one ordinary response or one
+`include_trackers=True` response.
+
+Timing and allocation tracing arm immediately before the fake materializes the
+first `torrents.info` response and stop immediately after the real
+`cli.unregistered_checks` returns. Each warm-up, timed, and memory pass owns a
+fresh fixture, cache, counters, observer state, configuration directory, and
+authoritative response. The CLI-local snapshot remains alive through preview
+and execution. The evaluator never retains or creates a second full response;
+the control may add only exact tracker responses, while a future candidate may
+reuse embedded trackers from its sole bulk response.
+
+Two transparent evaluator observers retain exact evidence without adding a
+production hook. One wraps the existing dynamically imported
+`qbitunregistered.impact.analyze_impact`; the other wraps the existing
+`qbitunregistered.cli.unregistered_checks` binding. They call the real
+functions, record snapshot hash order and structured returns, and must each run
+exactly once in preview-before-execution order. Execution must receive the
+preview's exact deletion-plan object. Missing, duplicate, reordered, or
+plan-substituting calls fail closed. The CLI must return success, dry-run must
+attempt no mutation, and preview actions, shadow actions, returned
+reconciliation, and operator counts must match their independent fixture
+oracles. If production ceases to traverse either established observation
+point, the evaluator rejects the pass rather than parsing presentation text.
+
+The only accepted standalone endpoint triples are, in
+`(ordinary info, include-trackers info, exact trackers)` order:
+
+- control: `(1, 0, N)`;
+- candidate: `(0, 1, 0)`.
+
+Paired validation applies the first triple to every control warm-up, timed, and
+memory pass and the second to every candidate pass. It rejects partial,
+redundant, mixed, or synthesized evidence, including `(1, 1, 0)`, `(1, 0, 0)`,
+and any exact count other than `N` on the control. The paired CPU ceiling
+remains `1.0` and the peak-memory ceiling remains `1.25`; candidate evidence
+cannot weaken either threshold.
+
+The fixture manifest hashes the actual materialized raw mappings stored in
+`FakeTrackerClient.torrent_info_by_hash`, after deterministic host-path
+normalization. Its key set must exactly equal the authoritative snapshot hashes,
+and every stored mapping's `hash` must equal its key. Every snapshot-controlled
+torrent-info value overlays the stored mapping before fresh wrapper conversion:
+hash, name, category, tags, save/content/download/root paths, magnet identity,
+state, `added_on`, `completion_on`, `seeding_time`, `ratio`, `uploaded`, and
+`downloaded`. Snapshot replacement affects the next response without mutating
+the stored canonical payload.
+
+This measurement boundary and manifest definition invalidate all round-3 raw
+controls. Evaluator, result, quality-bar, and paired schemas advance together;
+fresh round-4 quick and full controls must be produced from the clean committed
+evaluator before another independent critic review. Shadow execution, semantic
+scenarios, the global filesystem/network audit, sanitizer strictness, and the
+separate protected-live approval gate remain unchanged.

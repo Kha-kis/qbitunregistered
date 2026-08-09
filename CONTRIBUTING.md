@@ -367,9 +367,12 @@ Standalone tracker baselines remain provisional. The canonical optimization
 decision is a paired `tracker-full` run with clean control and candidate
 worktrees, using the isolated launcher command in the
 [gauntlet evaluator guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation).
-The exact-only control makes `N` tracker requests; the target uses one bulk
-request and no exact tracker requests in every paired pass while preserving all
-deterministic actions and fail-closed scenarios. Synthetic runtime is a
+The control uses one ordinary torrent snapshot plus `N` exact tracker requests;
+the target replaces that snapshot with one bulk response and makes no exact
+tracker requests in every paired pass while preserving all deterministic
+actions and fail-closed scenarios. The paired gate requires `(1, 0, N)` for
+every control pass and `(0, 1, 0)` for every candidate pass in
+ordinary/bulk/exact order. Synthetic runtime is a
 regression guard at the control ratio, not evidence of live network speedup.
 
 Comparison validates the fixture and action oracles, measurement policy,
@@ -381,6 +384,11 @@ Do not commit raw local benchmark results. Performance-baseline values belong
 only in the reviewed `benchmarks/gauntlet/quality-bar.toml`; a performance
 change must preserve the locked action digest and zero-mutation result before
 its speed is considered.
+
+Tracker artifacts produced before schema version 7, including round-3 quick
+and full controls, are invalid because they exclude the production-owned
+initial snapshot and regenerate the torrent-info manifest. Regenerate evidence
+from the clean evaluator revision.
 
 Establish evaluator changes on an evaluator-only branch and merge them before
 starting a production optimization. Optimization branches must not edit the
