@@ -61,8 +61,12 @@ The manifest builder and child validator must:
 - accept exactly one canonical `tqdm` package root;
 - accept regular `.py` source files only;
 - reject symbolic links, redirects, duplicate module names, case-folded name
-  collisions, namespace ambiguity, bytecode-only modules, native extensions,
-  and unsupported package resources;
+  collisions, namespace ambiguity, bytecode-only modules, and native
+  extensions;
+- leave non-importable package data (for example the installed man page and
+  shell-completion script) covered by the complete environment digest but out
+  of the source manifest, and fail closed if imported code requests a package
+  resource at runtime;
 - use bounded counts and byte sizes before reading source;
 - open sources without following links where the platform supports it, verify
   the opened descriptor is the expected stable regular file, and read bytes
