@@ -206,9 +206,10 @@ therefore compares one transport-neutral safety fact while retaining each
 child's transport counters. Exact success with wrong action hashes and bulk
 success or mutation remain failures.
 
-The fake response wrapper mirrors the installed `qbittorrent-api`
-`TorrentDictionary` boundary without importing that dependency into isolated
-paired children. Embedded trackers remain available only through mapping access
+The fake response wrapper is a source-faithful, conservative model of the
+installed `qbittorrent-api` `TorrentDictionary` visible boundary without
+importing that dependency into isolated paired children. Embedded trackers
+remain available only through mapping access
 (`torrent["trackers"]` or `torrent.get("trackers")`). Attribute access through
 `torrent.trackers` delegates to `torrents_trackers()` and increments the exact
 endpoint counter. Wrapper construction exposes ordinary mapping fields as
@@ -312,8 +313,10 @@ identity. Snapshot-owned changes must change the digest; stored non-overlay
 changes must change it; and a stored value hidden by an authoritative overlay
 must not change it because it cannot affect the response.
 
-The fake mirrors the installed `qbittorrent-api 2026.8.0` allocation graph
-without importing that package in evaluator children. An ordinary or bulk call
+The fake conservatively models the visible `qbittorrent-api 2026.8.0`
+containers and normalization without importing that package in evaluator
+children; it does not claim complete internal or byte-for-byte allocator
+equivalence. An ordinary or bulk call
 returns a `UserList`-shaped torrent-info container whose items are
 `TorrentDictionary`-shaped mapping/attribute wrappers. Mapping-valued fields
 are recursively converted to dependency-free AttrDict equivalents. Installed
@@ -382,3 +385,59 @@ five literal samples and literal peak memory. It does not invoke the evaluator
 or measure the host. This isolates schema/transport behavior from scheduling
 noise and prevents a unit assertion from intermittently crossing the `1.0`
 runtime or `1.25` memory thresholds.
+
+## Establish correction round 6: canonical scenario contracts
+
+The quality bar is the sole canonical source for the four fields that jointly
+identify a tracker scenario's transport and CLI result: endpoint triple, exit
+code, terminal phase, and observation order. A root
+`tracker_scenario_contracts` table contains exactly the twelve scenario names.
+Each scenario contains exactly one `control` and one `candidate` inline table,
+and each role table contains `endpoint_shape`, `exit_code`, `terminal_phase`,
+and `observation_order`. Contracts are global because the six-torrent scenario
+workload is identical for tracker quick and full profiles; action digests
+remain profile fields and unchanged.
+
+The standard-library TOML loader converts each role table into a frozen
+`TrackerScenarioContract` and each pair into frozen
+`TrackerScenarioRoleContracts`. It rejects missing or extra scenarios, roles,
+or fields; malformed, boolean, negative, or non-triple endpoint values;
+nonzero/non-one exit codes; unknown phases or orders; and cross-field
+inconsistency. Successful execution is exactly exit zero plus
+`execution_complete` plus preview/execution order. Preview failure is exactly
+exit one plus `preview_fail_closed` plus preview-only order. Execution failure
+is exactly exit one plus `execution_fail_closed` plus preview/execution order.
+
+Shared matching functions in `baseline.py` compare sanitized evidence either
+against the union of a scenario's two role contracts or against one explicitly
+selected role. Standalone comparison, paired child reconstruction, and local
+scenario evaluation use the union. The paired orchestrator alone selects the
+control or candidate member after child sanitization. `paired.py` and
+`tracker_runner.py` contain no duplicate scenario contract tables.
+
+The exact canonical values are the source-faithful round-5 values. In
+particular, malformed exact metadata triggers the safety refresh: control is
+`(2, 0, 6)` and candidate is `(1, 1, 6)`, both exit one during preview.
+Candidate compatibility fallback remains `(0, 1, 6)` for omitted metadata and
+`(1, 1, 6)` for rejected bulk metadata. Malformed embedded candidate metadata
+remains `(0, 1, 0)`, exit one, preview-only failure. Preflight churn remains
+control `(2, 0, 6)` and candidate `(1, 1, 0)`, exit one during execution.
+
+Standalone validation must reject any evidence that combines individually
+valid generic fields into a tuple absent from that scenario's two contracts.
+Tests mutate every contract field, exercise inconsistent exit/phase/order
+combinations, swap contract fields across scenarios with distinct allowed
+sets, accept all twelve literal control and candidate members, and prove paired
+role selection is stricter than the standalone union.
+
+The quality-bar schema advances to 7, result schema to 9, evaluator version to
+1.9.0, and pairing version to 2.6.0. Paired schema remains 6 because its JSON
+shape does not change. Primary endpoint contracts, fixture/action/
+reconciliation digests, mutation and isolation locks, CPU `1.0`, and memory
+`1.25` remain unchanged. Round-5 artifacts become non-comparable by schema and
+evaluator identity; clean round-6 controls are required.
+
+The fake wrapper is described as a source-faithful, conservative visible
+container model based on `qbittorrent-api` 2026.8.0. The evaluator locks
+observed container types, normalization, freshness, and endpoint delegation;
+it does not claim complete internal or byte-for-byte allocator equivalence.

@@ -27,6 +27,7 @@ from benchmarks.gauntlet.baseline import (
     QualityBarError,
     compare_result,
     load_quality_bar_bytes,
+    tracker_scenario_matches_role_contract,
 )
 from benchmarks.gauntlet.identity import (
     RepositoryIdentity,
@@ -50,7 +51,7 @@ from benchmarks.gauntlet.runner import DEFAULT_SAMPLES
 
 PAIRED_SCHEMA_NAME = "qbitunregistered.gauntlet.paired-result"
 PAIRED_SCHEMA_VERSION = 6
-PAIRING_VERSION = "2.5.0"
+PAIRING_VERSION = "2.6.0"
 PAIRED_ORDER: tuple[Literal["control", "candidate"], ...] = (
     "control",
     "candidate",
@@ -83,36 +84,6 @@ REDIRECTING_PACKAGE_ENTRY_ERROR = "repository contains a redirecting entry in a 
 IGNORED_PYTHON_SOURCE_ERROR = "repository contains an ignored Python source in a protected package tree"
 NONCANONICAL_INDEX_INPUT_ERROR = "repository contains hidden or noncanonical evaluator inputs"
 ISOLATED_PARENT_CACHE_ENV = "QBITUNREGISTERED_GAUNTLET_PARENT_PYCACHE"
-_TRACKER_SCENARIO_CONTRACTS = {
-    "control": {
-        "complete_embedded": ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
-        "omitted_embedded_fallback": ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
-        "rejected_embedded_fallback": ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
-        "malformed_embedded_transport_aware": ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
-        "malformed_exact_fail_closed": ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
-        "proven_disappearance": ((2, 0, 6), 0, "execution_complete", ("preview", "execution")),
-        "same_hash_readd_fail_closed": ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
-        "malformed_refresh_fail_closed": ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
-        "duplicate_refresh_fail_closed": ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
-        "delete_disappearance_preflight": ((2, 0, 6), 1, "execution_fail_closed", ("preview", "execution")),
-        "delete_tag_change_preflight": ((2, 0, 6), 1, "execution_fail_closed", ("preview", "execution")),
-        "tracker_change_snapshot_bound": ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
-    },
-    "candidate": {
-        "complete_embedded": ((0, 1, 0), 0, "execution_complete", ("preview", "execution")),
-        "omitted_embedded_fallback": ((0, 1, 6), 0, "execution_complete", ("preview", "execution")),
-        "rejected_embedded_fallback": ((1, 1, 6), 0, "execution_complete", ("preview", "execution")),
-        "malformed_embedded_transport_aware": ((0, 1, 0), 1, "preview_fail_closed", ("preview",)),
-        "malformed_exact_fail_closed": ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
-        "proven_disappearance": ((1, 1, 6), 0, "execution_complete", ("preview", "execution")),
-        "same_hash_readd_fail_closed": ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
-        "malformed_refresh_fail_closed": ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
-        "duplicate_refresh_fail_closed": ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
-        "delete_disappearance_preflight": ((1, 1, 0), 1, "execution_fail_closed", ("preview", "execution")),
-        "delete_tag_change_preflight": ((1, 1, 0), 1, "execution_fail_closed", ("preview", "execution")),
-        "tracker_change_snapshot_bound": ((0, 1, 0), 0, "execution_complete", ("preview", "execution")),
-    },
-}
 _QUALITY_BAR_RELATIVE_PATH = "benchmarks/gauntlet/quality-bar.toml"
 _REGULAR_BLOB_MODES = frozenset({b"100644", b"100755"})
 _QUALITY_BAR_VERIFICATION_ERROR = "paired canonical quality bar could not be verified"
@@ -449,28 +420,16 @@ def compare_paired_results(  # noqa: C901
                 ):
                     return False
             raw_scenarios = result.get("scenarios")
-            role_contracts = _TRACKER_SCENARIO_CONTRACTS.get(role)
-            if not isinstance(raw_scenarios, dict) or role_contracts is None or set(raw_scenarios) != set(role_contracts):
+            if not isinstance(raw_scenarios, dict) or set(raw_scenarios) != set(quality_bar.tracker_scenario_contracts):
                 return False
-            for name, expected in role_contracts.items():
+            for name in quality_bar.tracker_scenario_contracts:
                 scenario = raw_scenarios.get(name)
-                if not isinstance(scenario, dict):
-                    return False
-                counters = scenario.get("endpoint_counters")
-                order = scenario.get("observation_order")
-                if not isinstance(counters, dict) or not isinstance(order, list):
-                    return False
-                actual = (
-                    (
-                        counters.get("torrents.info"),
-                        counters.get("torrents.info.include_trackers"),
-                        counters.get("torrents_trackers"),
-                    ),
-                    scenario.get("exit_code"),
-                    scenario.get("terminal_phase"),
-                    tuple(order),
-                )
-                if actual != expected:
+                if not tracker_scenario_matches_role_contract(
+                    name,
+                    scenario,
+                    quality_bar.tracker_scenario_contracts,
+                    cast(Literal["control", "candidate"], role),
+                ):
                     return False
             return True
 

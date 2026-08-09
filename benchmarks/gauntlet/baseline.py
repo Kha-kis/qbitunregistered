@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, TypedDict, cast
 
 GateStatus = Literal["pass", "fail", "pending", "non_comparable"]
+TrackerScenarioRole = Literal["control", "candidate"]
+TrackerTerminalPhase = Literal["execution_complete", "preview_fail_closed", "execution_fail_closed"]
 MUTATION_COUNTER_KEYS = {
     "filesystem",
     "qbittorrent",
@@ -171,6 +173,24 @@ class EndpointBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackerScenarioContract:
+    """Exact observable transport and terminal behavior for one scenario role."""
+
+    endpoint_shape: tuple[int, int, int]
+    exit_code: Literal[0, 1]
+    terminal_phase: TrackerTerminalPhase
+    observation_order: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TrackerScenarioRoleContracts:
+    """Control and candidate contracts for one named tracker scenario."""
+
+    control: TrackerScenarioContract
+    candidate: TrackerScenarioContract
+
+
+@dataclass(frozen=True, slots=True)
 class ProfileQualityBar:
     """Correctness oracle, baseline, and independent targets for one profile."""
 
@@ -209,6 +229,7 @@ class QualityBar:
     result_schema: str
     scope: str
     measurement_policy: Mapping[str, object]
+    tracker_scenario_contracts: Mapping[str, TrackerScenarioRoleContracts]
     profiles: Mapping[str, ProfileQualityBar]
 
 
@@ -343,6 +364,59 @@ def _tracker_api_evidence(value: object, description: str) -> tuple[tuple[int, i
     return resolved
 
 
+def _tracker_scenario_contract(value: object, description: str) -> TrackerScenarioContract:
+    table = _table(value, description)
+    expected_fields = {"endpoint_shape", "exit_code", "terminal_phase", "observation_order"}
+    if set(table) != expected_fields:
+        raise QualityBarError(f"{description} keys do not match the tracker_scenario_contracts schema")
+    raw_shape = table["endpoint_shape"]
+    if not isinstance(raw_shape, list) or len(raw_shape) != 3:
+        raise QualityBarError(f"{description}.endpoint_shape must be a triple")
+    endpoint_shape = (
+        _integer(raw_shape[0], f"{description}.endpoint_shape[0]"),
+        _integer(raw_shape[1], f"{description}.endpoint_shape[1]"),
+        _integer(raw_shape[2], f"{description}.endpoint_shape[2]"),
+    )
+    exit_code = _integer(table["exit_code"], f"{description}.exit_code")
+    if exit_code not in {0, 1}:
+        raise QualityBarError(f"{description}.exit_code must be 0 or 1")
+    terminal_phase = _string(table["terminal_phase"], f"{description}.terminal_phase")
+    raw_order = table["observation_order"]
+    if not isinstance(raw_order, list) or any(not isinstance(item, str) for item in raw_order):
+        raise QualityBarError(f"{description}.observation_order must be a string array")
+    observation_order = tuple(raw_order)
+    allowed_terminations = {
+        (0, "execution_complete", ("preview", "execution")),
+        (1, "preview_fail_closed", ("preview",)),
+        (1, "execution_fail_closed", ("preview", "execution")),
+    }
+    if (exit_code, terminal_phase, observation_order) not in allowed_terminations:
+        raise QualityBarError(f"{description} has inconsistent tracker_scenario_contracts termination evidence")
+    return TrackerScenarioContract(
+        endpoint_shape=endpoint_shape,
+        exit_code=cast(Literal[0, 1], exit_code),
+        terminal_phase=cast(TrackerTerminalPhase, terminal_phase),
+        observation_order=observation_order,
+    )
+
+
+def _tracker_scenario_contracts(value: object) -> dict[str, TrackerScenarioRoleContracts]:
+    description = "tracker_scenario_contracts"
+    table = _table(value, description)
+    if set(table) != TRACKER_SCENARIO_NAMES:
+        raise QualityBarError(f"{description} names do not match the tracker evaluator schema")
+    contracts: dict[str, TrackerScenarioRoleContracts] = {}
+    for name, raw_roles in table.items():
+        roles = _table(raw_roles, f"{description}.{name}")
+        if set(roles) != {"control", "candidate"}:
+            raise QualityBarError(f"{description}.{name} roles must be control and candidate")
+        contracts[name] = TrackerScenarioRoleContracts(
+            control=_tracker_scenario_contract(roles["control"], f"{description}.{name}.control"),
+            candidate=_tracker_scenario_contract(roles["candidate"], f"{description}.{name}.candidate"),
+        )
+    return contracts
+
+
 def _baseline_measurement(value: object, description: str) -> BaselineMeasurement:
     table = _table(value, description)
     status = _string(table.get("status"), f"{description}.status")
@@ -389,6 +463,7 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noq
     evaluator_version = _string(document.get("evaluator_version"), "evaluator_version")
     result_schema = _string(document.get("result_schema"), "result_schema")
     scope = _string(document.get("scope"), "scope")
+    tracker_scenario_contracts = _tracker_scenario_contracts(document.get("tracker_scenario_contracts"))
     measurement_policy = _table(document.get("measurement_policy"), "measurement_policy")
     expected_policy_keys = {
         "timed_samples",
@@ -556,6 +631,7 @@ def _validated_quality_bar(document: Mapping[str, object]) -> QualityBar:  # noq
         result_schema=result_schema,
         scope=scope,
         measurement_policy=dict(measurement_policy),
+        tracker_scenario_contracts=tracker_scenario_contracts,
         profiles=profiles,
     )
 
@@ -606,6 +682,66 @@ def _mapping_of_ints(value: object, *, nonnegative: bool = True) -> dict[str, in
     return resolved
 
 
+def _observed_tracker_scenario_contract(value: object) -> TrackerScenarioContract | None:
+    if not isinstance(value, Mapping):
+        return None
+    endpoints = _mapping_of_ints(value.get("endpoint_counters"))
+    exit_code = value.get("exit_code")
+    terminal_phase = value.get("terminal_phase")
+    observation_order = value.get("observation_order")
+    endpoint_keys = (
+        "torrents.info",
+        "torrents.info.include_trackers",
+        "torrents_trackers",
+    )
+    if (
+        endpoints is None
+        or set(endpoints) != set(endpoint_keys)
+        or isinstance(exit_code, bool)
+        or exit_code not in {0, 1}
+        or terminal_phase not in {"execution_complete", "preview_fail_closed", "execution_fail_closed"}
+        or not isinstance(observation_order, list)
+        or any(not isinstance(item, str) for item in observation_order)
+    ):
+        return None
+    return TrackerScenarioContract(
+        endpoint_shape=cast(tuple[int, int, int], tuple(endpoints[key] for key in endpoint_keys)),
+        exit_code=cast(Literal[0, 1], exit_code),
+        terminal_phase=cast(TrackerTerminalPhase, terminal_phase),
+        observation_order=tuple(observation_order),
+    )
+
+
+def tracker_scenario_matches_role_contract(
+    name: str,
+    evidence: object,
+    contracts: Mapping[str, TrackerScenarioRoleContracts],
+    role: TrackerScenarioRole,
+) -> bool:
+    """Return whether evidence exactly matches the named role contract."""
+    role_contracts = contracts.get(name)
+    if role_contracts is None:
+        return False
+    expected = role_contracts.control if role == "control" else role_contracts.candidate
+    return _observed_tracker_scenario_contract(evidence) == expected
+
+
+def tracker_scenario_matches_any_contract(
+    name: str,
+    evidence: object,
+    contracts: Mapping[str, TrackerScenarioRoleContracts],
+) -> bool:
+    """Return whether standalone evidence matches either revision's exact contract."""
+    return tracker_scenario_matches_role_contract(
+        name, evidence, contracts, "control"
+    ) or tracker_scenario_matches_role_contract(
+        name,
+        evidence,
+        contracts,
+        "candidate",
+    )
+
+
 def _runtime_reconciliation(
     value: object,
     kind: Literal["orphan", "tracker"],
@@ -646,6 +782,7 @@ def _runtime_reconciliation(
 def _runtime_tracker_scenarios(
     value: object,
     profile: ProfileQualityBar,
+    contracts: Mapping[str, TrackerScenarioRoleContracts],
 ) -> dict[str, object] | None:
     if profile.kind != "tracker":
         return {} if value is None else None
@@ -689,6 +826,7 @@ def _runtime_tracker_scenarios(
             or exit_code not in {0, 1}
             or terminal_phase not in {"execution_complete", "preview_fail_closed", "execution_fail_closed"}
             or observation_order not in [["preview"], ["preview", "execution"]]
+            or not tracker_scenario_matches_any_contract(name, raw_evidence, contracts)
         ):
             return None
         sanitized[name] = {
@@ -787,7 +925,11 @@ def _result_gate(
     workload = _mapping_of_ints(result.get("workload"))
     candidates = _mapping_of_ints(result.get("candidate_counts"))
     reconciliation = _runtime_reconciliation(result.get("reconciliation"), profile.kind)
-    scenarios = _runtime_tracker_scenarios(result.get("scenarios"), profile)
+    scenarios = _runtime_tracker_scenarios(
+        result.get("scenarios"),
+        profile,
+        quality_bar.tracker_scenario_contracts,
+    )
     matches = (
         result.get("schema") == quality_bar.result_schema
         and result.get("schema_version") == quality_bar.evaluator_schema_version

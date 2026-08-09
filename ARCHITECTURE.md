@@ -741,12 +741,14 @@ The tracker manifest validates one stored payload per current snapshot hash,
 applies every snapshot-controlled identity, path, state, time, ratio, and
 transfer overlay through the same helper used by response materialization, and
 then hashes that exact effective mapping after fixture-root paths are
-normalized. Fake torrent and tracker responses reproduce the dependency-free
-allocation graph of `qbittorrent-api` 2026.8.0, including `UserList` outer
-containers, mapping-recursive attribute wrappers, and plain sequence-nested
-records. Earlier tracker artifacts used an incomplete manifest or lacked
-real-CLI scenario phase evidence, so they are non-comparable with schema
-version 8.
+normalized. Fake torrent and tracker responses form a source-faithful,
+conservative model of the visible `qbittorrent-api` 2026.8.0 containers,
+mapping normalization, freshness, and endpoint delegation; they do not claim
+complete internal or byte-for-byte allocator equivalence. A canonical
+quality-bar table locks every named scenario's control and candidate endpoint,
+exit, terminal-phase, and observation-order evidence. Earlier tracker
+artifacts lack that contract identity and are non-comparable with schema
+version 9.
 
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,

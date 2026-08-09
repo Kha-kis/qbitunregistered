@@ -345,8 +345,10 @@ deviation, and separately traced peak memory. Tracker scenario results also
 retain exact endpoint counters, CLI exit code, terminal phase, observation
 order, and zero mutation/isolation counters. Candidate identity covers the
 commit plus staged, unstaged, and untracked content without including raw paths
-or diffs in the result. Tracker artifacts older than evaluator schema 8 are
-non-comparable.
+or diffs in the result. Tracker artifacts older than evaluator schema 9 are
+non-comparable. Schema 9 validates each named semantic scenario against the
+canonical control/candidate endpoint, exit, terminal-phase, and observation
+order contracts before paired comparison assigns a revision role.
 
 Compare an optimization candidate with the checked-in quality bar:
 

@@ -821,3 +821,73 @@ checkout, actual BasedPyright LSP diagnostics/navigation for every changed
 Python file, and `git diff --check`. Commit one evaluator-only change, generate
 clean `round5` quick/full JSON under `/tmp`, inspect actual scenario/primary
 triples, and append the ignored task report and ledger using `apply_patch`.
+
+### Task 7: Establish correction round 6
+
+**Files:**
+- Modify: `benchmarks/gauntlet/baseline.py`
+- Modify: `benchmarks/gauntlet/paired_evidence.py`
+- Modify: `benchmarks/gauntlet/paired.py`
+- Modify: `benchmarks/gauntlet/tracker_runner.py`
+- Modify: `benchmarks/gauntlet/quality-bar.toml`
+- Modify: `benchmarks/gauntlet/runner.py`
+- Test: `tests/test_gauntlet_runner.py`
+- Test: `tests/test_gauntlet_safety.py`
+- Modify: root/evaluator/contribution/architecture/changelog/design/plan docs
+- Append ignored evidence: `.superpowers/sdd/2026-08-08-tracker-gauntlet/`
+
+**Interfaces:**
+- `TrackerScenarioContract` is the frozen typed endpoint/exit/phase/order
+  member parsed from one quality-bar role table.
+- `TrackerScenarioRoleContracts` holds the control and candidate members.
+- `tracker_scenario_matches_any_contract(...)` validates standalone/local
+  evidence against the exact scenario union.
+- `tracker_scenario_matches_role_contract(...)` validates paired evidence
+  against the orchestrator-selected role.
+
+- [x] **Step 1: Add strict standalone and parser RED tests**
+
+Add a direct regression for fail-closed-to-success rewriting; parameterize
+wrong endpoint, exit, terminal phase, and order mutations; exercise valid-field
+cross inconsistencies and cross-scenario swaps; accept all twelve literal
+control/candidate contracts. Add malformed TOML cases for missing/extra
+scenario, role, and field, malformed triples, invalid exit/phase/order, and
+inconsistent phase tuples.
+
+- [x] **Step 2: Run the new nodes and verify RED**
+
+The current standalone result gate must accept the adversarial success rewrite,
+and the quality bar must lack the proposed frozen contract API. Parser cases
+must fail because the new table is unrecognized or absent, not because of test
+setup errors.
+
+- [x] **Step 3: Implement the frozen quality-bar contract parser and union API**
+
+Add the root TOML table, frozen dataclasses, strict load-time parser, and shared
+union/role matchers. Make standalone result validation and paired child
+sanitization require the exact per-scenario union. Preserve action digests,
+primary transports, mutations, isolation, manifests, and thresholds.
+
+- [x] **Step 4: Remove duplicate consumers and verify GREEN**
+
+Delete the contract tables from `paired.py` and `tracker_runner.py`. Use the
+shared role API only in paired orchestration and the shared union API in local
+scenario evaluation. Run every new parser/standalone/paired test and all
+tracker runner/safety tests.
+
+- [x] **Step 5: Advance identity and narrow allocation wording**
+
+Advance quality/result/evaluator/pairing versions to 7/9/1.9.0/2.6.0 while
+keeping paired schema 6. Update all tracked operator, architecture,
+contribution, changelog, design, and plan wording. Describe wrappers as a
+source-faithful conservative visible model, not a complete allocation graph.
+
+- [ ] **Step 6: Verify, commit, and generate round-6 controls**
+
+Run focused RED/GREEN, all gauntlet runner/safety tests, full pytest with
+coverage, explicit `gauntlet_full` with JUnit, Black, fatal/scoped Flake8,
+BasedPyright CLI and actual LSP, mypy, pip-audit, Bandit, build, installed-wheel
+smoke outside the checkout, and `git diff --check`. Commit one evaluator-only
+change, generate clean round-6 tracker quick/full JSON under `/tmp`, validate
+all scenario/primary contracts and zero counters, hash both artifacts, and
+append the ignored task report and progress ledger.

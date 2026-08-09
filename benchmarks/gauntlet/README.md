@@ -307,9 +307,10 @@ identical production code. It is a stability check: ratios should be near
 `1.0`; it cannot satisfy the tracker transport gate because candidate passes
 must use one bulk request while control passes must use exact requests.
 
-Earlier tracker artifacts predate the effective-payload manifest and real-CLI
-scenario phase evidence. They are non-comparable and must not be used as
-control evidence; regenerate quick and full artifacts with schema version 8.
+Earlier tracker artifacts predate the canonical per-scenario
+endpoint/exit/phase/order contract table. They are non-comparable and must not
+be used as control evidence; regenerate quick and full artifacts with schema
+version 9.
 
 ## qBittorrent file metadata fixture
 
@@ -327,7 +328,10 @@ endpoint behavior. These tests establish evaluator compatibility; actual
 production use of the bulk path is proven only after the optimization branch
 rebases onto this evaluator and reports zero `torrents_files` calls.
 
-The synthetic allocation model measures Python JSON decoding and retained
-objects, not qBittorrent server serialization, socket latency, native-library
-RSS, or live filesystem contention. The protected live soak remains the final
-real-host acceptance gate.
+The source-faithful fake is a conservative model of visible containers,
+normalization, freshness, and endpoint delegation in `qbittorrent-api`
+2026.8.0. It does not claim complete internal or byte-for-byte allocator
+equivalence. The synthetic measurement covers Python JSON decoding and
+retained objects, not qBittorrent server serialization, socket latency,
+native-library RSS, or live filesystem contention. The protected live soak
+remains the final real-host acceptance gate.

@@ -1,6 +1,6 @@
-schema_version = 6
-evaluator_schema_version = 8
-evaluator_version = "1.8.0"
+schema_version = 7
+evaluator_schema_version = 9
+evaluator_version = "1.9.0"
 result_schema = "qbitunregistered.gauntlet.result"
 scope = "orphan_and_tracker_dry_run_evaluation"
 
@@ -15,6 +15,54 @@ application_cache = "cleared before every pass"
 fixture_metadata = "orphan metadata is reused; each tracker pass owns a fresh fixture and measures initial snapshot acquisition"
 os_page_cache = "not flushed; timed and memory passes are warm"
 sample_rejection = "none; all five timed samples are retained"
+
+[tracker_scenario_contracts.complete_embedded]
+control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [0, 1, 0], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.omitted_embedded_fallback]
+control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [0, 1, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.rejected_embedded_fallback]
+control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.malformed_embedded_transport_aware]
+control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [0, 1, 0], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+
+[tracker_scenario_contracts.malformed_exact_fail_closed]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+
+[tracker_scenario_contracts.proven_disappearance]
+control = { endpoint_shape = [2, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.same_hash_readd_fail_closed]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+
+[tracker_scenario_contracts.malformed_refresh_fail_closed]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+
+[tracker_scenario_contracts.duplicate_refresh_fail_closed]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+candidate = { endpoint_shape = [1, 1, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }
+
+[tracker_scenario_contracts.delete_disappearance_preflight]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "execution_fail_closed", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [1, 1, 0], exit_code = 1, terminal_phase = "execution_fail_closed", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.delete_tag_change_preflight]
+control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "execution_fail_closed", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [1, 1, 0], exit_code = 1, terminal_phase = "execution_fail_closed", observation_order = ["preview", "execution"] }
+
+[tracker_scenario_contracts.tracker_change_snapshot_bound]
+control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
+candidate = { endpoint_shape = [0, 1, 0], exit_code = 0, terminal_phase = "execution_complete", observation_order = ["preview", "execution"] }
 
 [profiles.quick]
 kind = "orphan"

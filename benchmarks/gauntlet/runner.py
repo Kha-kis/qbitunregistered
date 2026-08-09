@@ -48,8 +48,8 @@ from qbitunregistered.operations.orphaned import (
 )
 
 SCHEMA_NAME = "qbitunregistered.gauntlet.result"
-SCHEMA_VERSION = 8
-EVALUATOR_VERSION = "1.8.0"
+SCHEMA_VERSION = 9
+EVALUATOR_VERSION = "1.9.0"
 DEFAULT_SEED = 20_260_729
 DEFAULT_SAMPLES = 5
 _RESULT_STAGING_PREFIX = ".qbit-gauntlet-"

@@ -17,7 +17,7 @@ import sys
 import tempfile
 import tracemalloc
 from contextlib import nullcontext
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
@@ -26,6 +26,7 @@ from unittest.mock import Mock
 import pytest
 
 from benchmarks.gauntlet import __main__ as gauntlet_cli
+from benchmarks.gauntlet import baseline as gauntlet_baseline
 from benchmarks.gauntlet import import_bootstrap
 from benchmarks.gauntlet import launcher
 from benchmarks.gauntlet import paired
@@ -463,6 +464,32 @@ def _tracker_scenario_contract(role: str) -> dict[str, tuple[tuple[int, int, int
     }
 
 
+def _tracker_scenario_contract_toml_blocks() -> dict[str, bytes]:
+    """Return the proposed canonical TOML blocks from independent literals."""
+    blocks: dict[str, bytes] = {}
+    for name in _tracker_scenario_contract("control"):
+        lines = [f"[tracker_scenario_contracts.{name}]"]
+        for role in ("control", "candidate"):
+            shape, exit_code, terminal_phase, observation_order = _tracker_scenario_contract(role)[name]
+            shape_text = ", ".join(str(value) for value in shape)
+            order_text = ", ".join(json.dumps(value) for value in observation_order)
+            lines.append(
+                f"{role} = {{ endpoint_shape = [{shape_text}], exit_code = {exit_code}, "
+                f'terminal_phase = "{terminal_phase}", observation_order = [{order_text}] }}'
+            )
+        blocks[name] = ("\n".join(lines) + "\n").encode("utf-8")
+    return blocks
+
+
+def _quality_bar_source_with_tracker_scenario_contracts() -> bytes:
+    """Supply the wished-for table until the production quality bar owns it."""
+    source = QUALITY_BAR_PATH.read_bytes()
+    if b"[tracker_scenario_contracts." in source:
+        return source
+    blocks = _tracker_scenario_contract_toml_blocks()
+    return source + b"\n" + b"\n".join(blocks.values())
+
+
 def _valid_tracker_quick_result(role: str = "control") -> dict[str, Any]:
     """Build fixed valid tracker evidence without timing an evaluator run."""
     quality_bar = load_quality_bar(QUALITY_BAR_PATH)
@@ -579,6 +606,107 @@ def test_quality_bar_rejects_extra_kind_specific_profile_keys() -> None:
         malformed = source.replace(marker, extra_field + marker, 1)
         with pytest.raises(QualityBarError, match="profile keys"):
             load_quality_bar_bytes(malformed)
+
+
+def test_quality_bar_loads_frozen_tracker_scenario_contracts() -> None:
+    """Lock every role contract in one typed, immutable quality-bar table."""
+    quality_bar = load_quality_bar_bytes(_quality_bar_source_with_tracker_scenario_contracts())
+
+    assert set(quality_bar.tracker_scenario_contracts) == set(_tracker_scenario_contract("control"))
+    for role in ("control", "candidate"):
+        for name, expected in _tracker_scenario_contract(role).items():
+            contract = getattr(quality_bar.tracker_scenario_contracts[name], role)
+            shape, exit_code, terminal_phase, observation_order = expected
+            assert contract.endpoint_shape == shape
+            assert contract.exit_code == exit_code
+            assert contract.terminal_phase == terminal_phase
+            assert contract.observation_order == tuple(observation_order)
+
+    with pytest.raises(FrozenInstanceError):
+        quality_bar.tracker_scenario_contracts["complete_embedded"].control.exit_code = 1  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "missing_scenario",
+        "extra_scenario",
+        "missing_role",
+        "extra_role",
+        "missing_field",
+        "extra_field",
+        "short_endpoint_shape",
+        "boolean_endpoint_count",
+        "negative_endpoint_count",
+        "invalid_exit_code",
+        "boolean_exit_code",
+        "invalid_terminal_phase",
+        "invalid_observation_order",
+        "inconsistent_success",
+        "inconsistent_preview_failure",
+        "inconsistent_execution_failure",
+    ),
+)
+def test_quality_bar_rejects_malformed_tracker_scenario_contracts(case: str) -> None:
+    """Reject schema drift and internally inconsistent scenario contracts."""
+    source = _quality_bar_source_with_tracker_scenario_contracts()
+    blocks = _tracker_scenario_contract_toml_blocks()
+    complete_block = blocks["complete_embedded"]
+
+    if case == "missing_scenario":
+        malformed = source.replace(complete_block, b"", 1)
+    elif case == "extra_scenario":
+        malformed = source + complete_block.replace(
+            b"[tracker_scenario_contracts.complete_embedded]",
+            b"[tracker_scenario_contracts.unexpected]",
+            1,
+        )
+    elif case == "missing_role":
+        candidate_line = complete_block.splitlines(keepends=True)[2]
+        malformed = source.replace(candidate_line, b"", 1)
+    elif case == "extra_role":
+        control_line = complete_block.splitlines(keepends=True)[1]
+        observer_line = control_line.replace(b"control =", b"observer =", 1)
+        malformed = source.replace(control_line, control_line + observer_line, 1)
+    else:
+        replacements = {
+            "missing_field": (
+                b', observation_order = ["preview", "execution"]',
+                b"",
+            ),
+            "extra_field": (
+                b'control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete",',
+                b'control = { endpoint_shape = [1, 0, 6], exit_code = 0, terminal_phase = "execution_complete", private_path = "/secret",',
+            ),
+            "short_endpoint_shape": (b"endpoint_shape = [1, 0, 6]", b"endpoint_shape = [1, 0]"),
+            "boolean_endpoint_count": (b"endpoint_shape = [1, 0, 6]", b"endpoint_shape = [true, 0, 6]"),
+            "negative_endpoint_count": (b"endpoint_shape = [1, 0, 6]", b"endpoint_shape = [-1, 0, 6]"),
+            "invalid_exit_code": (b"exit_code = 0", b"exit_code = 2"),
+            "boolean_exit_code": (b"exit_code = 0", b"exit_code = true"),
+            "invalid_terminal_phase": (
+                b'terminal_phase = "execution_complete"',
+                b'terminal_phase = "unknown"',
+            ),
+            "invalid_observation_order": (
+                b'observation_order = ["preview", "execution"]',
+                b'observation_order = ["execution", "preview"]',
+            ),
+            "inconsistent_success": (b"exit_code = 0", b"exit_code = 1"),
+            "inconsistent_preview_failure": (
+                b'control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview"] }',
+                b'control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "preview_fail_closed", observation_order = ["preview", "execution"] }',
+            ),
+            "inconsistent_execution_failure": (
+                b'control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "execution_fail_closed", observation_order = ["preview", "execution"] }',
+                b'control = { endpoint_shape = [2, 0, 6], exit_code = 1, terminal_phase = "execution_fail_closed", observation_order = ["preview"] }',
+            ),
+        }
+        original, replacement = replacements[case]
+        assert original in source
+        malformed = source.replace(original, replacement, 1)
+
+    with pytest.raises(QualityBarError, match="tracker_scenario_contracts"):
+        load_quality_bar_bytes(malformed)
 
 
 @pytest.mark.parametrize(
@@ -1929,8 +2057,8 @@ def test_tracker_oracle_dispatches_through_shared_versioned_result(tmp_path: Pat
     assert result["profile_kind"] == "tracker"
     assert result["profile"] == "tracker-quick"
     assert result["schema"] == "qbitunregistered.gauntlet.result"
-    assert result["schema_version"] == 8
-    assert result["evaluator_version"] == "1.8.0"
+    assert result["schema_version"] == 9
+    assert result["evaluator_version"] == "1.9.0"
     assert result["scope"] == "orphan_and_tracker_dry_run_evaluation"
     assert result["commit"] == "unknown"
     assert result["candidate_state"] == {"clean": None, "diff_sha256": "unknown"}
@@ -1976,7 +2104,7 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
 
     assert quick.kind == full.kind == "tracker"
     assert paired.PAIRED_SCHEMA_VERSION == 6
-    assert paired.PAIRING_VERSION == "2.5.0"
+    assert paired.PAIRING_VERSION == "2.6.0"
     assert quick.tier == "round"
     assert full.tier == "candidate"
     assert quick.fixture_manifest_digest == "348948093b6f400156f97e29c4314a1b0836f31e4d7b3b59d16781008e1a0988"
@@ -2014,6 +2142,127 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
     assert quick.runtime_baseline_fraction_max == full.runtime_baseline_fraction_max == 1.0
     assert quick.peak_memory_baseline_fraction_max == full.peak_memory_baseline_fraction_max == 1.25
     assert set(tracker_fixture.TRACKER_PROFILES) <= set(quality_bar.profiles)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        (
+            "endpoint_counters",
+            {
+                "torrents.info": 1,
+                "torrents.info.include_trackers": 0,
+                "torrents_trackers": 6,
+            },
+        ),
+        ("exit_code", 0),
+        ("terminal_phase", "execution_complete"),
+        ("observation_order", ["preview", "execution"]),
+    ),
+)
+def test_standalone_tracker_scenario_requires_each_exact_contract_field(
+    field: str,
+    value: object,
+) -> None:
+    """Reject each independently plausible rewrite of fail-closed evidence."""
+    result = _valid_tracker_quick_result("control")
+    result["scenarios"]["malformed_exact_fail_closed"][field] = value
+
+    report = compare_result(result, load_quality_bar(QUALITY_BAR_PATH))
+
+    assert report["gates"]["result"]["status"] == "fail"
+
+
+def test_tracker_scenario_rejects_cross_field_success_rewrite() -> None:
+    """Reject a coherent success tuple when the scenario specifically failed closed."""
+    result = _valid_tracker_quick_result("control")
+    result["scenarios"]["malformed_exact_fail_closed"].update(
+        {
+            "exit_code": 0,
+            "terminal_phase": "execution_complete",
+            "observation_order": ["preview", "execution"],
+        }
+    )
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+
+    assert compare_result(result, quality_bar)["gates"]["result"]["status"] == "fail"
+    with pytest.raises(PairedEvidenceError, match="contract|canonical"):
+        sanitize_child_result(result, quality_bar)
+
+
+def test_standalone_tracker_scenarios_reject_cross_scenario_contract_swap() -> None:
+    """Reject valid contracts transplanted onto scenarios with different semantics."""
+    result = _valid_tracker_quick_result("candidate")
+    scenarios = result["scenarios"]
+    contract_fields = (
+        "endpoint_counters",
+        "exit_code",
+        "terminal_phase",
+        "observation_order",
+    )
+    complete = {field: copy.deepcopy(scenarios["complete_embedded"][field]) for field in contract_fields}
+    malformed = {field: copy.deepcopy(scenarios["malformed_embedded_transport_aware"][field]) for field in contract_fields}
+    scenarios["complete_embedded"].update(malformed)
+    scenarios["malformed_embedded_transport_aware"].update(complete)
+
+    report = compare_result(result, load_quality_bar(QUALITY_BAR_PATH))
+
+    assert report["gates"]["result"]["status"] == "fail"
+
+
+@pytest.mark.parametrize("role", ("control", "candidate"))
+def test_all_tracker_scenario_role_contracts_are_valid_standalone(role: str) -> None:
+    """Accept the complete twelve-scenario contract for either standalone revision."""
+    result = _valid_tracker_quick_result(role)
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+
+    assert len(result["scenarios"]) == 12
+    assert compare_result(result, quality_bar)["gates"]["result"]["status"] == "pass"
+    assert sanitize_child_result(result, quality_bar)["scenarios"] == result["scenarios"]
+
+
+def test_standalone_scenario_union_does_not_weaken_paired_role_contract() -> None:
+    """Allow either revision standalone while paired comparison enforces its assigned role."""
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+    candidate = _valid_tracker_quick_result("candidate")
+    shape, exit_code, terminal_phase, observation_order = _tracker_scenario_contract("control")["complete_embedded"]
+    candidate["scenarios"]["complete_embedded"].update(
+        {
+            "endpoint_counters": {
+                "torrents.info": shape[0],
+                "torrents.info.include_trackers": shape[1],
+                "torrents_trackers": shape[2],
+            },
+            "exit_code": exit_code,
+            "terminal_phase": terminal_phase,
+            "observation_order": observation_order,
+        }
+    )
+
+    assert gauntlet_baseline.tracker_scenario_matches_any_contract(
+        "complete_embedded",
+        candidate["scenarios"]["complete_embedded"],
+        quality_bar.tracker_scenario_contracts,
+    )
+    assert gauntlet_baseline.tracker_scenario_matches_role_contract(
+        "complete_embedded",
+        candidate["scenarios"]["complete_embedded"],
+        quality_bar.tracker_scenario_contracts,
+        "control",
+    )
+    assert not gauntlet_baseline.tracker_scenario_matches_role_contract(
+        "complete_embedded",
+        candidate["scenarios"]["complete_embedded"],
+        quality_bar.tracker_scenario_contracts,
+        "candidate",
+    )
+    assert compare_result(candidate, quality_bar)["gates"]["result"]["status"] == "pass"
+    assert sanitize_child_result(candidate, quality_bar)["scenarios"] == candidate["scenarios"]
+
+    runs = _fixed_tracker_paired_runs()
+    selected = next(run for run in runs if run["role"] == "candidate")
+    selected["result"] = candidate
+    assert compare_paired_results(runs, quality_bar)["gates"]["transport"]["status"] == "fail"
 
 
 def test_standalone_and_paired_validation_lock_profile_tier() -> None:
@@ -2306,7 +2555,8 @@ def test_tracker_paired_comparison_requires_candidate_bulk_scenario_semantics() 
 
         rejected = compare_paired_results(malformed, quality_bar)
 
-        assert rejected["gates"]["transport"]["status"] == "fail"
+        transport_or_child_gate = rejected["gates"].get("transport", rejected["gates"]["child_gates"])
+        assert transport_or_child_gate["status"] == "fail"
         assert rejected["overall"] == "fail"
 
 

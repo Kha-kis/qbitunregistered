@@ -11,6 +11,7 @@ from benchmarks.gauntlet.baseline import (
     ISOLATION_COUNTER_KEYS,
     MUTATION_COUNTER_KEYS,
     QualityBar,
+    tracker_scenario_matches_any_contract,
 )
 
 CHILD_RESULT_KEYS = {
@@ -274,7 +275,7 @@ def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: st
         raw_order = raw_evidence["observation_order"]
         if not isinstance(raw_order, list) or raw_order not in [["preview"], ["preview", "execution"]]:
             raise PairedEvidenceError(f"scenarios.{name}.observation_order is not a locked CLI phase order")
-        sanitized[name] = {
+        sanitized_evidence = {
             "outcome": "pass",
             "action_digest": action_digest,
             "endpoint_counters": _endpoint_mapping(
@@ -288,6 +289,13 @@ def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: st
             "mutation_counters": mutation_counters,
             "isolation_counters": isolation_counters,
         }
+        if not tracker_scenario_matches_any_contract(
+            name,
+            sanitized_evidence,
+            quality_bar.tracker_scenario_contracts,
+        ):
+            raise PairedEvidenceError(f"scenarios.{name} does not match a canonical transport contract")
+        sanitized[name] = sanitized_evidence
     return sanitized
 
 

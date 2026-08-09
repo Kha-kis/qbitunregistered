@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from typing import Iterator, Literal, Protocol, TypedDict, cast
 from unittest.mock import patch
 
+from benchmarks.gauntlet.baseline import load_quality_bar, tracker_scenario_matches_any_contract
 from benchmarks.gauntlet.fixture_factory import MUTATION_COUNTER_KEYS
 from benchmarks.gauntlet.runner import (
     DEFAULT_SAMPLES,
@@ -1113,85 +1114,6 @@ def _validate_scenario_unchanged(fixture: TrackerGauntletFixture, before: str) -
         raise GauntletSafetyError("tracker safety scenario changed the fixture filesystem")
 
 
-_SCENARIO_PHASE_CONTRACTS: dict[
-    str,
-    frozenset[tuple[tuple[int, int, int], int, str, tuple[str, ...]]],
-] = {
-    "complete_embedded": frozenset(
-        {
-            ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
-            ((0, 1, 0), 0, "execution_complete", ("preview", "execution")),
-        }
-    ),
-    "omitted_embedded_fallback": frozenset(
-        {
-            ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
-            ((0, 1, 6), 0, "execution_complete", ("preview", "execution")),
-        }
-    ),
-    "rejected_embedded_fallback": frozenset(
-        {
-            ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
-            ((1, 1, 6), 0, "execution_complete", ("preview", "execution")),
-        }
-    ),
-    "malformed_embedded_transport_aware": frozenset(
-        {
-            ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
-            ((0, 1, 0), 1, "preview_fail_closed", ("preview",)),
-        }
-    ),
-    "malformed_exact_fail_closed": frozenset(
-        {
-            ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
-            ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
-        }
-    ),
-    "proven_disappearance": frozenset(
-        {
-            ((2, 0, 6), 0, "execution_complete", ("preview", "execution")),
-            ((1, 1, 6), 0, "execution_complete", ("preview", "execution")),
-        }
-    ),
-    "same_hash_readd_fail_closed": frozenset(
-        {
-            ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
-            ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
-        }
-    ),
-    "malformed_refresh_fail_closed": frozenset(
-        {
-            ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
-            ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
-        }
-    ),
-    "duplicate_refresh_fail_closed": frozenset(
-        {
-            ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
-            ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
-        }
-    ),
-    "delete_disappearance_preflight": frozenset(
-        {
-            ((2, 0, 6), 1, "execution_fail_closed", ("preview", "execution")),
-            ((1, 1, 0), 1, "execution_fail_closed", ("preview", "execution")),
-        }
-    ),
-    "delete_tag_change_preflight": frozenset(
-        {
-            ((2, 0, 6), 1, "execution_fail_closed", ("preview", "execution")),
-            ((1, 1, 0), 1, "execution_fail_closed", ("preview", "execution")),
-        }
-    ),
-    "tracker_change_snapshot_bound": frozenset(
-        {
-            ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
-            ((0, 1, 0), 0, "execution_complete", ("preview", "execution")),
-        }
-    ),
-}
-
-
 def _scenario_terminal_phase(result: _ScenarioCliResult) -> str:
     if result.exit_code == 0 and result.summary is not None and result.execution_result is not None:
         return "execution_complete"
@@ -1225,6 +1147,7 @@ def evaluate_tracker_scenarios(  # noqa: C901
         delete_count=1,
         tier="scenario",
     )
+    scenario_contracts = load_quality_bar(Path(__file__).with_name("quality-bar.toml")).tracker_scenario_contracts
     evidence: dict[str, TrackerScenarioEvidence] = {}
 
     def record(
@@ -1239,12 +1162,9 @@ def evaluate_tracker_scenarios(  # noqa: C901
         counters = _scenario_endpoint_counters(fixture)
         terminal_phase = _scenario_terminal_phase(result)
         shape = tuple(counters[endpoint] for endpoint in TRACKER_READ_ENDPOINTS)
-        actual_contract = (shape, result.exit_code, terminal_phase, tuple(result.observation_order))
         if name == "malformed_embedded_transport_aware" and shape == (0, 1, 0) and result.exit_code == 0:
             raise GauntletSafetyError("malformed embedded metadata did not fail closed")
-        if actual_contract not in _SCENARIO_PHASE_CONTRACTS[name]:
-            raise GauntletSafetyError("tracker scenario CLI evidence did not match a locked transport contract")
-        evidence[name] = {
+        scenario_evidence: TrackerScenarioEvidence = {
             "outcome": "pass",
             "action_digest": action_digest or _scenario_digest(name, "fail_closed"),
             "endpoint_counters": counters,
@@ -1254,6 +1174,9 @@ def evaluate_tracker_scenarios(  # noqa: C901
             "mutation_counters": _scenario_mutation_counters(fixture, production_audit),
             "isolation_counters": dict(production_audit.counters),
         }
+        if not tracker_scenario_matches_any_contract(name, scenario_evidence, scenario_contracts):
+            raise GauntletSafetyError("tracker scenario CLI evidence did not match a locked transport contract")
+        evidence[name] = scenario_evidence
 
     with tempfile.TemporaryDirectory(prefix="qbitunregistered-tracker-scenarios-") as temporary_root:
         scenario_root = Path(temporary_root)
