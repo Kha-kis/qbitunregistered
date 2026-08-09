@@ -2913,6 +2913,17 @@ def test_tracker_paired_comparison_requires_exact_to_bulk_endpoint_collapse(tmp_
         samples=DEFAULT_SAMPLES,
         repository_root=tmp_path,
     )
+    expected_candidate_transport = {
+        "torrents.info": 0,
+        "torrents.info.include_trackers": 1,
+        "torrents_trackers": 0,
+    }
+    for counters in (
+        result["endpoint_counters"],
+        *result["timed_sample_endpoint_counters"],
+        *result["pass_endpoint_counters"].values(),
+    ):
+        assert counters == expected_candidate_transport
     result["commit"] = "a" * 40
     result["candidate_state"] = {"clean": True, "diff_sha256": "b" * 64}
     result["environment"] = _test_environment()
