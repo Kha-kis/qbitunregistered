@@ -398,10 +398,9 @@ only in the reviewed `benchmarks/gauntlet/quality-bar.toml`; a performance
 change must preserve the locked action digest and zero-mutation result before
 its speed is considered.
 
-Tracker artifacts produced before schema version 7, including round-3 quick
-and full controls, are invalid because they exclude the production-owned
-initial snapshot and regenerate the torrent-info manifest. Regenerate evidence
-from the clean evaluator revision.
+Tracker evidence is comparable only when it uses result schema 9 and evaluator
+version 1.11.0. Round-7 and earlier quick/full artifacts are invalid; regenerate
+evidence from the exact clean evaluator revision.
 
 Establish evaluator changes on an evaluator-only branch and merge them before
 starting a production optimization. Optimization branches must not edit the
