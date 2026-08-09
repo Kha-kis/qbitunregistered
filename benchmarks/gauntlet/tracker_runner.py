@@ -60,6 +60,7 @@ from qbitunregistered.types import QBittorrentClient, TorrentInfo
 DEFAULT_TAG = "unregistered"
 CROSS_SEED_TAG = "unregistered:crossseeding"
 DELETE_TAG = "tracker-delete"
+_QBITTORRENTAPI_SHIM_ORIGIN = "<qbitunregistered-gauntlet-qbittorrentapi-shim>"
 
 
 class _Digest(Protocol):
@@ -461,6 +462,22 @@ def _tracker_cli_config_path(fixture: TrackerGauntletFixture, *, dry_run: bool =
     }
     config_path.write_text(json.dumps(config, sort_keys=True, separators=(",", ":")), encoding="utf-8")
     return config_path
+
+
+def _validate_scenario_notification_boundary(config_path: Path) -> None:
+    """Require notifications to stay outside the protected fake-client run."""
+    from qbitunregistered import notifications
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise GauntletSafetyError("tracker scenario notification boundary could not be verified") from error
+    if not isinstance(config, dict) or any(config.get(name) for name in ("apprise_url", "notifiarr_key", "notifiarr_channel")):
+        raise GauntletSafetyError("tracker scenario notification boundary is not disabled")
+    qbittorrentapi = sys.modules.get("qbittorrentapi")
+    module_spec = getattr(qbittorrentapi, "__spec__", None)
+    if getattr(module_spec, "origin", None) == _QBITTORRENTAPI_SHIM_ORIGIN and notifications.APPRISE_AVAILABLE is not False:
+        raise GauntletSafetyError("tracker scenario notification boundary is not disabled")
 
 
 def _production_torrents(fixture: TrackerGauntletFixture) -> Sequence[TorrentInfo]:
@@ -1074,6 +1091,7 @@ def _execute_scenario_cli(  # noqa: C901
     config_path = fixture.root / "gauntlet-config.json"
     if not config_path.is_file():
         config_path = _tracker_cli_config_path(fixture, dry_run=dry_run)
+    _validate_scenario_notification_boundary(config_path)
     observation_order: list[str] = []
     summaries: list[ImpactSummary] = []
     execution_results: list[tuple[dict[str, list[str]], dict[str, int]]] = []

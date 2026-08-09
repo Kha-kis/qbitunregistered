@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from types import CodeType, ModuleType
 from types import MappingProxyType
-from typing import Protocol
+from typing import Never, Protocol
 
 PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
 SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
@@ -40,6 +40,9 @@ _NATIVE_EXTENSION_SUFFIXES = tuple(
     sorted({suffix.casefold() for suffix in importlib.machinery.EXTENSION_SUFFIXES} | {".dll", ".dylib", ".pyd", ".so"})
 )
 _IMMUTABLE_TQDM_ORIGIN = "<qbitunregistered-gauntlet-immutable-tqdm>"
+_QBITTORRENTAPI_ROOT_NAME = "qbittorrentapi"
+_QBITTORRENTAPI_EXCEPTIONS_NAME = "qbittorrentapi.exceptions"
+_QBITTORRENTAPI_SHIM_ORIGIN = "<qbitunregistered-gauntlet-qbittorrentapi-shim>"
 
 
 class DependencyEnvironmentError(RuntimeError):
@@ -48,6 +51,220 @@ class DependencyEnvironmentError(RuntimeError):
 
 class ProtectedPackageTreeError(RuntimeError):
     """Raised when protected source packages cannot be imported safely."""
+
+
+class _QbittorrentApiShimLoader(importlib.abc.Loader):
+    """Identify evaluator-owned modules that must never execute loader code."""
+
+    def create_module(self, spec: importlib.machinery.ModuleSpec) -> Never:
+        del spec
+        raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+    def exec_module(self, module: ModuleType) -> Never:
+        del module
+        raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+
+class _QbittorrentApiShimState:
+    """Retain and validate the exact fail-closed client import surface."""
+
+    __slots__ = (
+        "_api_connection_error",
+        "_client",
+        "_client_constructions",
+        "_exception_instances",
+        "_exceptions_loader",
+        "_exceptions_module",
+        "_exceptions_spec",
+        "_installed",
+        "_root_loader",
+        "_root_module",
+        "_root_spec",
+    )
+
+    def __init__(self) -> None:
+        self._client_constructions = 0
+        self._exception_instances = 0
+        self._installed = False
+        state = self
+
+        class Client:
+            __module__ = _QBITTORRENTAPI_ROOT_NAME
+
+            def __new__(cls, *args: object, **kwargs: object) -> Never:
+                del cls, args, kwargs
+                state._client_constructions += 1
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+            def __init_subclass__(cls, **kwargs: object) -> Never:
+                del cls, kwargs
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+        class APIConnectionError(Exception):
+            __module__ = _QBITTORRENTAPI_EXCEPTIONS_NAME
+
+            def __new__(cls, *args: object, **kwargs: object) -> Never:
+                del cls, args, kwargs
+                state._exception_instances += 1
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+            def __init_subclass__(cls, **kwargs: object) -> Never:
+                del cls, kwargs
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+        Client.__qualname__ = "Client"
+        APIConnectionError.__qualname__ = "APIConnectionError"
+        self._client = Client
+        self._api_connection_error = APIConnectionError
+        self._root_loader = _QbittorrentApiShimLoader()
+        self._exceptions_loader = _QbittorrentApiShimLoader()
+        self._root_spec = importlib.machinery.ModuleSpec(
+            _QBITTORRENTAPI_ROOT_NAME,
+            self._root_loader,
+            origin=_QBITTORRENTAPI_SHIM_ORIGIN,
+            is_package=True,
+        )
+        self._exceptions_spec = importlib.machinery.ModuleSpec(
+            _QBITTORRENTAPI_EXCEPTIONS_NAME,
+            self._exceptions_loader,
+            origin=_QBITTORRENTAPI_SHIM_ORIGIN,
+            is_package=False,
+        )
+        self._root_module = ModuleType(_QBITTORRENTAPI_ROOT_NAME, "Protected evaluator qBittorrent API shim.")
+        self._exceptions_module = ModuleType(
+            _QBITTORRENTAPI_EXCEPTIONS_NAME,
+            "Protected evaluator qBittorrent API exception shim.",
+        )
+        self._root_module.__package__ = _QBITTORRENTAPI_ROOT_NAME
+        self._root_module.__loader__ = self._root_loader
+        self._root_module.__spec__ = self._root_spec
+        self._root_module.__dict__["__path__"] = self._root_spec.submodule_search_locations
+        self._root_module.__dict__["Client"] = self._client
+        self._root_module.__dict__["exceptions"] = self._exceptions_module
+        self._exceptions_module.__package__ = _QBITTORRENTAPI_ROOT_NAME
+        self._exceptions_module.__loader__ = self._exceptions_loader
+        self._exceptions_module.__spec__ = self._exceptions_spec
+        self._exceptions_module.__dict__["APIConnectionError"] = self._api_connection_error
+
+    @property
+    def client_constructions(self) -> int:
+        """Return attempted constructions of the forbidden real-client boundary."""
+        return self._client_constructions
+
+    @property
+    def exception_instances(self) -> int:
+        """Return attempted instantiations of the sentinel connection error."""
+        return self._exception_instances
+
+    def install(self) -> None:
+        """Install both protected modules without replacing any existing import."""
+        if self._installed or any(
+            name == _QBITTORRENTAPI_ROOT_NAME or name.startswith(f"{_QBITTORRENTAPI_ROOT_NAME}.") for name in sys.modules
+        ):
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        sys.modules[_QBITTORRENTAPI_ROOT_NAME] = self._root_module
+        sys.modules[_QBITTORRENTAPI_EXCEPTIONS_NAME] = self._exceptions_module
+        self._installed = True
+        self.validate()
+
+    def _spec_is_valid(
+        self,
+        module: ModuleType,
+        spec: importlib.machinery.ModuleSpec,
+        loader: _QbittorrentApiShimLoader,
+        *,
+        name: str,
+        is_package: bool,
+    ) -> bool:
+        search_locations = spec.submodule_search_locations
+        return (
+            module.__name__ == name
+            and module.__package__ == _QBITTORRENTAPI_ROOT_NAME
+            and module.__loader__ is loader
+            and module.__spec__ is spec
+            and spec.name == name
+            and spec.loader is loader
+            and spec.origin == _QBITTORRENTAPI_SHIM_ORIGIN
+            and spec.has_location is False
+            and spec.cached is None
+            and spec.loader_state is None
+            and (search_locations == [] if is_package else search_locations is None)
+            and (not is_package or module.__path__ is search_locations)
+        )
+
+    def validate(self) -> None:
+        """Fail closed if the protected graph drifted or either sentinel was used."""
+        protected_module_names = {
+            name
+            for name in sys.modules
+            if name == _QBITTORRENTAPI_ROOT_NAME or name.startswith(f"{_QBITTORRENTAPI_ROOT_NAME}.")
+        }
+        if (
+            not self._installed
+            or protected_module_names != {_QBITTORRENTAPI_ROOT_NAME, _QBITTORRENTAPI_EXCEPTIONS_NAME}
+            or sys.modules.get(_QBITTORRENTAPI_ROOT_NAME) is not self._root_module
+            or sys.modules.get(_QBITTORRENTAPI_EXCEPTIONS_NAME) is not self._exceptions_module
+            or set(vars(self._root_module))
+            != {
+                "__name__",
+                "__doc__",
+                "__package__",
+                "__loader__",
+                "__spec__",
+                "__path__",
+                "Client",
+                "exceptions",
+            }
+            or set(vars(self._exceptions_module))
+            != {
+                "__name__",
+                "__doc__",
+                "__package__",
+                "__loader__",
+                "__spec__",
+                "APIConnectionError",
+            }
+            or self._root_module.__doc__ != "Protected evaluator qBittorrent API shim."
+            or self._exceptions_module.__doc__ != "Protected evaluator qBittorrent API exception shim."
+            or self._root_module.Client is not self._client
+            or self._root_module.exceptions is not self._exceptions_module
+            or self._exceptions_module.APIConnectionError is not self._api_connection_error
+            or type(self._client) is not type
+            or self._client.__module__ != _QBITTORRENTAPI_ROOT_NAME
+            or self._client.__qualname__ != "Client"
+            or self._client.__bases__ != (object,)
+            or type(self._api_connection_error) is not type
+            or self._api_connection_error.__module__ != _QBITTORRENTAPI_EXCEPTIONS_NAME
+            or self._api_connection_error.__qualname__ != "APIConnectionError"
+            or self._api_connection_error.__bases__ != (Exception,)
+            or not self._spec_is_valid(
+                self._root_module,
+                self._root_spec,
+                self._root_loader,
+                name=_QBITTORRENTAPI_ROOT_NAME,
+                is_package=True,
+            )
+            or not self._spec_is_valid(
+                self._exceptions_module,
+                self._exceptions_spec,
+                self._exceptions_loader,
+                name=_QBITTORRENTAPI_EXCEPTIONS_NAME,
+                is_package=False,
+            )
+            or self._client_constructions != 0
+            or self._exception_instances != 0
+        ):
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+    def _matches_unapproved_use(self, error: AttributeError | ImportError) -> bool:
+        """Identify only missing names owned by the protected shim."""
+        if isinstance(error, ImportError):
+            missing_name = error.name
+            return isinstance(missing_name, str) and (
+                missing_name == _QBITTORRENTAPI_ROOT_NAME or missing_name.startswith(f"{_QBITTORRENTAPI_ROOT_NAME}.")
+            )
+        owner = getattr(error, "obj", None)
+        return owner is self._root_module or owner is self._exceptions_module
 
 
 @dataclass(frozen=True, slots=True)
@@ -1216,11 +1433,13 @@ class _CoordinatorBootstrapState(ModuleType):
         repository_root: Path,
         protected_finder: _WorktreePackageFinder,
         import_paths: Sequence[str],
+        qbittorrentapi_shim: _QbittorrentApiShimState | None,
     ) -> None:
         super().__init__(COORDINATOR_BOOTSTRAP_MODULE)
         self._expected_main = repository_root / "benchmarks" / "gauntlet" / "__main__.py"
         self._protected_finder = protected_finder
         self._import_paths = tuple(import_paths)
+        self._qbittorrentapi_shim = qbittorrentapi_shim
         self._accepted = False
 
     def accept(self, source_file: str) -> bool:
@@ -1238,6 +1457,8 @@ class _CoordinatorBootstrapState(ModuleType):
             module = sys.modules.get(module_name)
             if module is None or not isinstance(module.__loader__, _ProtectedSourceLoader):
                 return False
+        if self._qbittorrentapi_shim is not None:
+            self._qbittorrentapi_shim.validate()
         self._accepted = True
         return True
 
@@ -1353,6 +1574,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
     immutable_dependency_finder = (
         _ImmutableDependencyFinder(immutable_dependency_sources) if expected_dependency_digest is not None else None
     )
+    qbittorrentapi_shim = _QbittorrentApiShimState() if expected_dependency_digest is not None else None
 
     # The worktree root is deliberately absent. Digest-bound measured children
     # use no installed import roots; ordinary mode keeps them behind stdlib.
@@ -1360,12 +1582,18 @@ def main(arguments: Sequence[str] | None = None) -> None:
     sys.meta_path.insert(0, protected_finder)
     if immutable_dependency_finder is not None:
         sys.meta_path.insert(1, immutable_dependency_finder)
+    if qbittorrentapi_shim is not None:
+        try:
+            qbittorrentapi_shim.install()
+        except DependencyEnvironmentError:
+            raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
     if COORDINATOR_BOOTSTRAP_MODULE in sys.modules:
         raise SystemExit(PROTECTED_IMPORT_ERROR)
     bootstrap_state = _CoordinatorBootstrapState(
         repository_root,
         protected_finder,
         sys.path,
+        qbittorrentapi_shim,
     )
     sys.modules[COORDINATOR_BOOTSTRAP_MODULE] = bootstrap_state
     sys.argv[:] = ["benchmarks.gauntlet", *resolved_arguments]
@@ -1373,12 +1601,23 @@ def main(arguments: Sequence[str] | None = None) -> None:
         try:
             try:
                 runpy.run_module("benchmarks.gauntlet", run_name="__main__", alter_sys=True)
+                if qbittorrentapi_shim is not None:
+                    qbittorrentapi_shim.validate()
+            except (AttributeError, ImportError) as error:
+                if qbittorrentapi_shim is None or not qbittorrentapi_shim._matches_unapproved_use(error):
+                    raise
+                raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
             except DependencyEnvironmentError:
                 raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
         except ProtectedPackageTreeError:
             raise SystemExit(PROTECTED_IMPORT_ERROR) from None
     finally:
         try:
+            if qbittorrentapi_shim is not None:
+                try:
+                    qbittorrentapi_shim.validate()
+                except DependencyEnvironmentError:
+                    raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
             _require_safe_package_trees(repository_root)
             try:
                 protected_finder.validate_sources()

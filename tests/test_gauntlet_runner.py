@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import tracemalloc
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -354,6 +354,22 @@ def _write_test_tqdm_dependency_tree(dependency_root: Path) -> None:
     (tqdm_root / "README.txt").write_bytes(b"ordinary package data\n")
 
 
+@contextmanager
+def _installed_qbittorrentapi_shim():
+    """Install one isolated shim while preserving the test process imports."""
+    protected_names = tuple(name for name in sys.modules if name == "qbittorrentapi" or name.startswith("qbittorrentapi."))
+    previous_modules = {name: sys.modules.pop(name) for name in protected_names}
+    state = import_bootstrap._QbittorrentApiShimState()
+    try:
+        state.install()
+        yield state
+    finally:
+        for name in tuple(sys.modules):
+            if name == "qbittorrentapi" or name.startswith("qbittorrentapi."):
+                del sys.modules[name]
+        sys.modules.update(previous_modules)
+
+
 def _build_unsafe_tqdm_tree(tmp_path: Path, mutation: str) -> tuple[str, ...]:
     """Create exactly one selected invalid tqdm source-tree shape."""
     dependency_paths = _build_tqdm_dependency_tree(tmp_path)
@@ -399,6 +415,162 @@ def _build_unsafe_tqdm_tree(tmp_path: Path, mutation: str) -> tuple[str, ...]:
     else:
         raise AssertionError(f"unknown unsafe tree mutation: {mutation}")
     return dependency_paths
+
+
+def test_qbittorrentapi_shim_exposes_only_the_protected_import_contract() -> None:
+    """Reject accidental qBittorrent API surface or path-bearing metadata."""
+    with _installed_qbittorrentapi_shim() as shim:
+        qbittorrentapi = importlib.import_module("qbittorrentapi")
+        exceptions = importlib.import_module("qbittorrentapi.exceptions")
+
+        assert set(vars(qbittorrentapi)) == {
+            "__name__",
+            "__doc__",
+            "__package__",
+            "__loader__",
+            "__spec__",
+            "__path__",
+            "Client",
+            "exceptions",
+        }
+        assert set(vars(exceptions)) == {
+            "__name__",
+            "__doc__",
+            "__package__",
+            "__loader__",
+            "__spec__",
+            "APIConnectionError",
+        }
+        assert qbittorrentapi.exceptions is exceptions
+        assert qbittorrentapi.Client.__module__ == "qbittorrentapi"
+        assert exceptions.APIConnectionError.__module__ == "qbittorrentapi.exceptions"
+        assert issubclass(exceptions.APIConnectionError, Exception)
+        assert qbittorrentapi.__spec__ is not None
+        assert exceptions.__spec__ is not None
+        assert qbittorrentapi.__spec__.origin == "<qbitunregistered-gauntlet-qbittorrentapi-shim>"
+        assert exceptions.__spec__.origin == "<qbitunregistered-gauntlet-qbittorrentapi-shim>"
+        assert qbittorrentapi.__spec__.has_location is False
+        assert exceptions.__spec__.has_location is False
+        assert not hasattr(qbittorrentapi, "__file__")
+        assert not hasattr(exceptions, "__file__")
+        assert shim.client_constructions == 0
+        assert shim.exception_instances == 0
+        shim.validate()
+
+
+@pytest.mark.parametrize(
+    ("probe", "expected_error", "client_constructions", "exception_instances"),
+    (
+        (lambda root: root.Client(), import_bootstrap.DependencyEnvironmentError, 1, 0),
+        (lambda root: root.Client(host="unused"), import_bootstrap.DependencyEnvironmentError, 1, 0),
+        (
+            lambda root: root.exceptions.APIConnectionError(),
+            import_bootstrap.DependencyEnvironmentError,
+            0,
+            1,
+        ),
+        (lambda root: importlib.import_module("qbittorrentapi.torrents"), ModuleNotFoundError, 0, 0),
+        (lambda root: getattr(root, "Session"), AttributeError, 0, 0),
+    ),
+)
+def test_qbittorrentapi_shim_fails_closed_on_unapproved_use(
+    probe: Any,
+    expected_error: type[BaseException],
+    client_constructions: int,
+    exception_instances: int,
+) -> None:
+    """Make every unapproved import or runtime use terminate explicitly."""
+    with _installed_qbittorrentapi_shim() as shim:
+        qbittorrentapi = importlib.import_module("qbittorrentapi")
+
+        with pytest.raises(expected_error):
+            probe(qbittorrentapi)
+
+        assert shim.client_constructions == client_constructions
+        assert shim.exception_instances == exception_instances
+        if client_constructions or exception_instances:
+            with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+                shim.validate()
+        else:
+            shim.validate()
+
+
+def test_qbittorrentapi_shim_rejects_permissive_sentinel_subclasses() -> None:
+    """Prevent subclasses from bypassing either fail-closed constructor."""
+    with _installed_qbittorrentapi_shim() as shim:
+        qbittorrentapi = importlib.import_module("qbittorrentapi")
+
+        with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+
+            class UnsupportedClient(qbittorrentapi.Client):
+                pass
+
+        with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+
+            class UnsupportedApiError(qbittorrentapi.exceptions.APIConnectionError):
+                pass
+
+        assert shim.client_constructions == 0
+        assert shim.exception_instances == 0
+        shim.validate()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("root_module", "exceptions_module", "client", "api_error", "spec", "loader", "exceptions_link"),
+)
+def test_qbittorrentapi_shim_validation_rejects_retained_graph_mutation(mutation: str) -> None:
+    """Detect persistent replacement of every security-relevant shim object."""
+    with _installed_qbittorrentapi_shim() as shim:
+        qbittorrentapi = importlib.import_module("qbittorrentapi")
+        exceptions = importlib.import_module("qbittorrentapi.exceptions")
+
+        if mutation == "root_module":
+            sys.modules["qbittorrentapi"] = ModuleType("qbittorrentapi")
+        elif mutation == "exceptions_module":
+            sys.modules["qbittorrentapi.exceptions"] = ModuleType("qbittorrentapi.exceptions")
+        elif mutation == "client":
+            vars(qbittorrentapi)["Client"] = object
+        elif mutation == "api_error":
+            vars(exceptions)["APIConnectionError"] = RuntimeError
+        elif mutation == "spec":
+            qbittorrentapi.__spec__ = importlib.machinery.ModuleSpec("qbittorrentapi", None)
+        elif mutation == "loader":
+            vars(qbittorrentapi)["__loader__"] = object()
+        elif mutation == "exceptions_link":
+            vars(qbittorrentapi)["exceptions"] = ModuleType("qbittorrentapi.exceptions")
+        else:
+            raise AssertionError(mutation)
+
+        with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+            shim.validate()
+
+
+def test_coordinator_accept_validates_qbittorrentapi_shim_after_protected_imports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject import-time shim drift before the coordinator can evaluate."""
+    with _installed_qbittorrentapi_shim() as shim:
+        protected_finder = object.__new__(import_bootstrap._WorktreePackageFinder)
+        protected_loader = object.__new__(import_bootstrap._ProtectedSourceLoader)
+        monkeypatch.setattr(sys, "meta_path", [protected_finder, *sys.meta_path])
+        for name in ("benchmarks", "benchmarks.gauntlet", "__main__"):
+            module = ModuleType(name)
+            module.__loader__ = protected_loader
+            monkeypatch.setitem(sys.modules, name, module)
+        bootstrap_state = import_bootstrap._CoordinatorBootstrapState(
+            tmp_path,
+            protected_finder,
+            tuple(sys.path),
+            shim,
+        )
+        monkeypatch.setitem(sys.modules, import_bootstrap.COORDINATOR_BOOTSTRAP_MODULE, bootstrap_state)
+        qbittorrentapi = importlib.import_module("qbittorrentapi")
+        vars(qbittorrentapi)["Client"] = object
+
+        with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+            bootstrap_state.accept(str(tmp_path / "benchmarks" / "gauntlet" / "__main__.py"))
 
 
 def _set_test_index_flag(
@@ -5358,6 +5530,164 @@ def test_immutable_dependency_loader_imports_real_unregistered_checks_in_isolate
         "unregistered_imported": True,
     }
     assert str(dependency_root) not in completed.stdout.decode()
+
+
+def test_digest_bound_tracker_cli_uses_protected_qbittorrentapi_shim_and_absent_apprise(
+    tmp_path: Path,
+) -> None:
+    """Run a real CLI scenario without admitting the installed client closure."""
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    installed_tqdm_spec = importlib.util.find_spec("tqdm")
+    assert installed_tqdm_spec is not None
+    assert installed_tqdm_spec.submodule_search_locations is not None
+    installed_tqdm_root = Path(next(iter(installed_tqdm_spec.submodule_search_locations))).resolve()
+    dependency_root.mkdir(parents=True)
+    shutil.copytree(installed_tqdm_root, dependency_root / "tqdm")
+    shutil.copytree(
+        REPOSITORY_ROOT / "benchmarks",
+        repository_root / "benchmarks",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    shutil.copytree(
+        REPOSITORY_ROOT / "qbitunregistered",
+        repository_root / "qbitunregistered",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    (repository_root / "benchmarks" / "gauntlet" / "__main__.py").write_text(
+        "\n".join(
+            (
+                "import json",
+                "import tempfile",
+                "from pathlib import Path",
+                "import qbittorrentapi",
+                "import tqdm",
+                "from benchmarks.gauntlet import tracker_runner",
+                "from benchmarks.gauntlet.tracker_fixture import TrackerGauntletProfile, build_tracker_fixture",
+                "from qbitunregistered import notifications",
+                "profile = TrackerGauntletProfile(",
+                '    name="digest-bound-cli",',
+                "    torrent_count=6,",
+                "    tracker_record_count=18,",
+                "    save_path_group_count=4,",
+                "    default_tag_count=2,",
+                "    cross_seed_tag_count=2,",
+                "    delete_count=1,",
+                '    tier="test",',
+                ")",
+                'with tempfile.TemporaryDirectory(prefix="qbitunregistered-digest-cli-") as root:',
+                "    fixture = build_tracker_fixture(Path(root), profile, seed=20_260_809)",
+                "    config_path = tracker_runner._tracker_cli_config_path(fixture)",
+                '    config = json.loads(config_path.read_text(encoding="utf-8"))',
+                "    audit = tracker_runner._ProductionBoundaryAudit()",
+                "    result = tracker_runner._execute_scenario_cli(",
+                "        fixture,",
+                "        before_preview=None,",
+                "        before_execution=None,",
+                "        dry_run=True,",
+                "        production_audit=audit,",
+                "    )",
+                "    print(json.dumps({",
+                '        "apprise_available": notifications.APPRISE_AVAILABLE,',
+                '        "apprise_configured": bool(config.get("apprise_url")),',
+                '        "client_module": qbittorrentapi.Client.__module__,',
+                '        "client_origin": qbittorrentapi.__spec__.origin,',
+                '        "exception_module": qbittorrentapi.exceptions.APIConnectionError.__module__,',
+                '        "exit_code": result.exit_code,',
+                '        "filesystem_attempts": audit.filesystem_attempt_count,',
+                '        "notifiarr_configured": bool(config.get("notifiarr_key")),',
+                '        "qbittorrent_mutations": fixture.client.mutation_total,',
+                '        "tqdm_loader": type(tqdm.__loader__).__name__,',
+                "    }, sort_keys=True))",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+    expected_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dependency_paths = (str(dependency_root.resolve()),)
+    dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-s",
+            "-S",
+            "-P",
+            "-",
+            str(repository_root),
+            json.dumps(dependency_paths),
+            import_bootstrap.EXPECTED_REPOSITORY_COMMIT_ARGUMENT,
+            expected_commit,
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            dependency_digest,
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
+        ],
+        cwd=tmp_path,
+        env={
+            **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        input=import_bootstrap.verified_import_bootstrap_source(repository_root, expected_commit),
+        check=False,
+        capture_output=True,
+        timeout=120,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode()
+    assert json.loads(completed.stdout) == {
+        "apprise_available": False,
+        "apprise_configured": False,
+        "client_module": "qbittorrentapi",
+        "client_origin": "<qbitunregistered-gauntlet-qbittorrentapi-shim>",
+        "exception_module": "qbittorrentapi.exceptions",
+        "exit_code": 0,
+        "filesystem_attempts": 0,
+        "notifiarr_configured": False,
+        "qbittorrent_mutations": 0,
+        "tqdm_loader": "_ImmutableDependencySourceLoader",
+    }
+    assert str(dependency_root) not in completed.stdout.decode()
+    assert str(dependency_root) not in completed.stderr.decode()
+
+
+@pytest.mark.parametrize(
+    "main_source",
+    (
+        "import qbittorrentapi\nqbittorrentapi.Session\n",
+        "import qbittorrentapi.torrents\n",
+        "from qbittorrentapi import Session\n",
+        "from qbittorrentapi import torrents\n",
+        "from qbittorrentapi.exceptions import Missing\n",
+    ),
+)
+def test_digest_bound_bootstrap_sanitizes_unknown_qbittorrentapi_use(
+    tmp_path: Path,
+    main_source: str,
+) -> None:
+    """Map unknown shim access to one path-free dependency diagnostic."""
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_root.mkdir(parents=True)
+    _write_import_bootstrap_fixture(repository_root, main_source)
+    _commit_gauntlet_test_repository(repository_root)
+
+    completed = _run_import_bootstrap_fixture(repository_root, dependency_root)
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == import_bootstrap.DEPENDENCY_ISOLATION_ERROR
+    assert "Traceback" not in completed.stderr
+    assert str(tmp_path) not in completed.stderr
 
 
 def test_digest_bound_bootstrap_never_imports_swap_restored_dependency(
