@@ -82,9 +82,10 @@ def test_tracker_boundary_rejects_preopened_os_write_outside_root(tmp_path: Path
     marker = tmp_path / "outside-preopened-os-write"
     marker.write_bytes(b"original")
     descriptor = os.open(marker, os.O_RDWR)
+    inheritable = os.get_inheritable(descriptor)
     body_called = False
     try:
-        with pytest.raises(runner.GauntletSafetyError, match="regular file descriptor"):
+        with pytest.raises(runner.GauntletSafetyError, match="regular file descriptor") as error:
             with tracker_runner._ProductionBoundaryAudit():
                 body_called = True
                 os.write(descriptor, b"changed")
@@ -93,6 +94,11 @@ def test_tracker_boundary_rejects_preopened_os_write_outside_root(tmp_path: Path
 
     assert body_called is False
     assert marker.read_bytes() == b"original"
+    assert str(error.value) == (
+        "tracker production boundary found unsafe regular file descriptor "
+        f"(descriptor={descriptor}; stdio_aliases=none; inheritable={str(inheritable).lower()})"
+    )
+    assert str(marker) not in str(error.value)
 
 
 def test_tracker_boundary_rejects_preopened_file_object_write(tmp_path: Path) -> None:
@@ -152,6 +158,52 @@ def test_tracker_boundary_allows_only_regular_stdio_identity_alias(
     monkeypatch.setattr(tracker_runner.os, "fstat", lambda descriptor: stats[descriptor])
 
     tracker_runner._assert_safe_preexisting_descriptors()
+
+
+def test_tracker_boundary_reports_regular_stdin_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Identify a rejected stdin duplicate without disclosing its path."""
+    tracker_runner = _tracker_module("tracker_runner")
+    stdin = os.stat_result((stat.S_IFREG, 41, 7, 1, 0, 0, 0, 0, 0, 0))
+    pipe = os.stat_result((stat.S_IFIFO, 42, 7, 1, 0, 0, 0, 0, 0, 0))
+    stats = {0: stdin, 1: pipe, 2: pipe, 9: stdin}
+    monkeypatch.setattr(tracker_runner, "_open_descriptor_numbers", lambda: iter((9,)), raising=False)
+    monkeypatch.setattr(tracker_runner.os, "fstat", lambda descriptor: stats[descriptor])
+    monkeypatch.setattr(tracker_runner.os, "get_inheritable", lambda _descriptor: False)
+
+    with pytest.raises(runner.GauntletSafetyError) as error:
+        tracker_runner._assert_safe_preexisting_descriptors()
+
+    assert str(error.value) == (
+        "tracker production boundary found unsafe regular file descriptor "
+        "(descriptor=9; stdio_aliases=0; inheritable=false)"
+    )
+
+
+def test_tracker_boundary_reports_unknown_inheritance_without_weakening_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep rejecting when diagnostic inheritance lookup races with closure."""
+    tracker_runner = _tracker_module("tracker_runner")
+    pipe = os.stat_result((stat.S_IFIFO, 42, 7, 1, 0, 0, 0, 0, 0, 0))
+    regular = os.stat_result((stat.S_IFREG, 43, 7, 1, 0, 0, 0, 0, 0, 0))
+    stats = {0: pipe, 1: pipe, 2: pipe, 9: regular}
+    monkeypatch.setattr(tracker_runner, "_open_descriptor_numbers", lambda: iter((9,)), raising=False)
+    monkeypatch.setattr(tracker_runner.os, "fstat", lambda descriptor: stats[descriptor])
+
+    def fail_inheritance_lookup(_descriptor: int) -> bool:
+        raise OSError(errno.EBADF, "closed")
+
+    monkeypatch.setattr(tracker_runner.os, "get_inheritable", fail_inheritance_lookup)
+
+    with pytest.raises(runner.GauntletSafetyError) as error:
+        tracker_runner._assert_safe_preexisting_descriptors()
+
+    assert str(error.value) == (
+        "tracker production boundary found unsafe regular file descriptor "
+        "(descriptor=9; stdio_aliases=none; inheritable=unknown)"
+    )
 
 
 def test_tracker_boundary_linux_inventory_tolerates_disappearing_fd(

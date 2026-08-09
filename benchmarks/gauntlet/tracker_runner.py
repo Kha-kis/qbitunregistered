@@ -300,7 +300,16 @@ def _assert_safe_preexisting_descriptors() -> None:
             continue
         if any(os.path.samestat(descriptor_stat, stdio_stat) for stdio_stat in stdio_stats):
             continue
-        raise GauntletSafetyError("tracker production boundary found unsafe regular file descriptor")
+        stdin_stat = _descriptor_stat(0)
+        stdio_aliases = "0" if stdin_stat is not None and os.path.samestat(descriptor_stat, stdin_stat) else "none"
+        try:
+            inheritable = str(os.get_inheritable(descriptor)).lower()
+        except OSError:
+            inheritable = "unknown"
+        raise GauntletSafetyError(
+            "tracker production boundary found unsafe regular file descriptor "
+            f"(descriptor={descriptor}; stdio_aliases={stdio_aliases}; inheritable={inheritable})"
+        )
 
 
 @dataclass(slots=True)
