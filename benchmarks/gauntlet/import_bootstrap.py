@@ -1462,6 +1462,11 @@ class _CoordinatorBootstrapState(ModuleType):
         self._accepted = True
         return True
 
+    def validate_after_imports(self) -> None:
+        """Revalidate the protected dependency shim after application imports."""
+        if self._qbittorrentapi_shim is not None:
+            self._qbittorrentapi_shim.validate()
+
 
 def _resolved_dependency_paths(raw_value: str, repository_root: Path) -> list[str]:
     try:

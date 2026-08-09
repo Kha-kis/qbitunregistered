@@ -22,6 +22,9 @@ from types import SimpleNamespace
 from typing import Iterator, Literal, Protocol, TypedDict, cast
 from unittest.mock import patch
 
+_COORDINATOR_BOOTSTRAP_MODULE = "_qbitunregistered_gauntlet_coordinator_bootstrap"
+_COORDINATOR_BOOTSTRAP_STATE = sys.modules.get(_COORDINATOR_BOOTSTRAP_MODULE)
+
 from benchmarks.gauntlet.baseline import (
     derive_tracker_artifact_role,
     load_quality_bar,
@@ -56,6 +59,15 @@ from qbitunregistered.operations.unregistered_checks import (
     unregistered_checks,
 )
 from qbitunregistered.types import QBittorrentClient, TorrentInfo
+
+
+def _validate_imported_application_boundary() -> None:
+    """Revalidate protected dependency state before tracker evaluation."""
+    if _COORDINATOR_BOOTSTRAP_STATE is not None:
+        _COORDINATOR_BOOTSTRAP_STATE.validate_after_imports()
+
+
+_validate_imported_application_boundary()
 
 DEFAULT_TAG = "unregistered"
 CROSS_SEED_TAG = "unregistered:crossseeding"
@@ -693,6 +705,8 @@ def _execute_pipeline(fixture: TrackerGauntletFixture) -> _TrackerPipelineResult
     from qbitunregistered import cli as cli_module
     from qbitunregistered import impact as impact_module
 
+    _validate_imported_application_boundary()
+
     config_path = fixture.root / "gauntlet-config.json"
     if not config_path.is_file():
         config_path = _tracker_cli_config_path(fixture)
@@ -1087,6 +1101,8 @@ def _execute_scenario_cli(  # noqa: C901
     """Run one semantic scenario through the real CLI with transparent phase hooks."""
     from qbitunregistered import cli as cli_module
     from qbitunregistered import impact as impact_module
+
+    _validate_imported_application_boundary()
 
     config_path = fixture.root / "gauntlet-config.json"
     if not config_path.is_file():

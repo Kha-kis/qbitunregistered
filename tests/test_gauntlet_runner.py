@@ -5660,6 +5660,114 @@ def test_digest_bound_tracker_cli_uses_protected_qbittorrentapi_shim_and_absent_
     assert str(dependency_root) not in completed.stderr.decode()
 
 
+def test_digest_bound_tracker_import_drift_fails_before_scenario_evaluation(
+    tmp_path: Path,
+) -> None:
+    """Stop before evaluator code when an application import mutates the shim."""
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    installed_tqdm_spec = importlib.util.find_spec("tqdm")
+    assert installed_tqdm_spec is not None
+    assert installed_tqdm_spec.submodule_search_locations is not None
+    installed_tqdm_root = Path(next(iter(installed_tqdm_spec.submodule_search_locations))).resolve()
+    dependency_root.mkdir(parents=True)
+    shutil.copytree(installed_tqdm_root, dependency_root / "tqdm")
+    shutil.copytree(
+        REPOSITORY_ROOT / "benchmarks",
+        repository_root / "benchmarks",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    shutil.copytree(
+        REPOSITORY_ROOT / "qbitunregistered",
+        repository_root / "qbitunregistered",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    client_path = repository_root / "qbitunregistered" / "client.py"
+    client_path.write_text(
+        client_path.read_text(encoding="utf-8") + "\nimport qbittorrentapi\n" + 'vars(qbittorrentapi)["Client"] = object\n',
+        encoding="utf-8",
+    )
+    (repository_root / "benchmarks" / "gauntlet" / "__main__.py").write_text(
+        "\n".join(
+            (
+                "import os",
+                "import tempfile",
+                "from pathlib import Path",
+                "from benchmarks.gauntlet import tracker_runner",
+                "from benchmarks.gauntlet.tracker_fixture import TrackerGauntletProfile, build_tracker_fixture",
+                "profile = TrackerGauntletProfile(",
+                '    name="import-drift",',
+                "    torrent_count=6,",
+                "    tracker_record_count=18,",
+                "    save_path_group_count=4,",
+                "    default_tag_count=2,",
+                "    cross_seed_tag_count=2,",
+                "    delete_count=1,",
+                '    tier="test",',
+                ")",
+                "def enter_evaluation_body(_fixture):",
+                '    os.write(1, b"EVALUATION_BODY_ENTERED\\n")',
+                'with tempfile.TemporaryDirectory(prefix="qbitunregistered-import-drift-") as root:',
+                "    fixture = build_tracker_fixture(Path(root), profile, seed=20_260_809)",
+                "    audit = tracker_runner._ProductionBoundaryAudit()",
+                "    tracker_runner._execute_scenario_cli(",
+                "        fixture,",
+                "        before_preview=enter_evaluation_body,",
+                "        before_execution=None,",
+                "        dry_run=True,",
+                "        production_audit=audit,",
+                "    )",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+    expected_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dependency_paths = (str(dependency_root.resolve()),)
+    dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-s",
+            "-S",
+            "-P",
+            "-",
+            str(repository_root),
+            json.dumps(dependency_paths),
+            import_bootstrap.EXPECTED_REPOSITORY_COMMIT_ARGUMENT,
+            expected_commit,
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            dependency_digest,
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
+        ],
+        cwd=tmp_path,
+        env={
+            **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        input=import_bootstrap.verified_import_bootstrap_source(repository_root, expected_commit),
+        check=False,
+        capture_output=True,
+        timeout=120,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == b""
+    assert completed.stderr.strip().decode() == import_bootstrap.DEPENDENCY_ISOLATION_ERROR
+    assert "Traceback" not in completed.stderr.decode()
+    assert str(tmp_path) not in completed.stderr.decode()
+
+
 @pytest.mark.parametrize(
     "main_source",
     (
