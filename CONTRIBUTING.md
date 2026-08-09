@@ -345,11 +345,12 @@ deviation, and separately traced peak memory. Tracker scenario results also
 retain exact endpoint counters, CLI exit code, terminal phase, observation
 order, and zero mutation/isolation counters. Candidate identity covers the
 commit plus staged, unstaged, and untracked content without including raw paths
-or diffs in the result. Tracker artifacts before schema 9 / evaluator 1.12.0
-are non-comparable. The evaluator derives one role from primary endpoint
-evidence and requires every primary pass plus all twelve scenarios to match
-that same canonical control or candidate role before paired comparison checks
-the assigned revision role.
+or diffs in the result. Tracker artifacts require schema 9 / evaluator 1.13.0;
+evaluator 1.12.0 counted fake server response construction inside client
+measurement, so its artifacts are also non-comparable. The evaluator derives
+one role from primary endpoint evidence and requires every primary pass plus all
+twelve scenarios to match that same canonical control or candidate role before
+paired comparison checks the assigned revision role.
 
 The tracker production audit is a single-threaded Python-runtime check. Each
 entry rejects non-stdio regular descriptors unless they match redirected
@@ -399,8 +400,8 @@ change must preserve the locked action digest and zero-mutation result before
 its speed is considered.
 
 Tracker evidence is comparable only when it uses result schema 9 and evaluator
-version 1.12.0. Round-7 and earlier quick/full artifacts are invalid; regenerate
-evidence from the exact clean evaluator revision.
+version 1.13.0. Evaluator 1.12.0 and round-7 and earlier quick/full artifacts
+are invalid; regenerate evidence from the exact clean evaluator revision.
 
 The paired child trust boundary keeps all installed dependency roots off child
 `sys.path`; real `tqdm` executes only from captured manifest-matching bytes;

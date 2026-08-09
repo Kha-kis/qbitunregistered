@@ -27,7 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Tracker gauntlet schema 9 / evaluator 1.12.0 now measures the
+- Tracker gauntlet schema 9 / evaluator 1.13.0 now measures client-side wire
+  receipt, JSON decoding, response wrapping, and production use while excluding
+  construction and serialization of the fake server response graph. Canonical
+  exact-response wire data is prepared for both control and candidate before
+  measurement, and every observed response receives a distinct bytes buffer.
+  The 1.25 memory cap, result schemas, and pairing identity remain unchanged;
+  evaluator 1.12.0 tracker artifacts are non-comparable.
+- Tracker gauntlet schema 9 now measures the
   production-owned initial torrent
   snapshot through the real CLI in every fresh warm-up, timed, and memory pass.
   Control is exactly one ordinary snapshot plus `N` exact tracker reads;
@@ -44,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate primary triple derives one artifact role, and every primary pass
   plus all twelve scenarios must match that role without per-scenario mixing.
   Earlier tracker artifacts are invalid.
-- Paired evaluator identity is now 1.12.0 and pairing identity is 2.9.0 without
+- Paired evaluator identity is now 1.13.0 and pairing identity is 2.9.0 without
   changing result schema 9 or paired-result schema 6. Paired children keep all
   installed dependency roots off `sys.path`, execute real `tqdm` only from
   captured manifest-matching bytes, and use the evaluator-owned fail-closed

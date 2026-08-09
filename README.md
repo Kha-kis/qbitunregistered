@@ -677,13 +677,15 @@ Tracker batching changes are evaluated with deterministic `tracker-quick` and
 the preview and fresh-fake shadow execution actions, rejects unsafe pre-existing
 Python regular-file descriptors, denies audited write acquisition/mutations
 plus connection, DNS, `sendto`, and `sendmsg` attempts during production calls,
-and invokes the real CLI so the initial torrent response is
-inside every measured pass. Paired control must use one ordinary snapshot plus
+and invokes the real CLI so client-side wire receipt, decoding, response
+wrapping, and the initial torrent response lifetime are inside every measured
+pass while fake server response construction remains outside. Paired control must use one ordinary snapshot plus
 `N` exact tracker reads; candidate must replace it with one bulk snapshot and
 zero exact reads. Each semantic scenario must match its named control or
 candidate endpoint/exit/phase/order contract selected by that same primary
 transport role; per-scenario role mixing fails in standalone and paired modes.
-Artifacts before schema 9 / evaluator 1.11.0 are non-comparable.
+Artifacts require schema 9 / evaluator 1.13.0. Evaluator 1.12.0 artifacts are
+also non-comparable because they counted fake server response construction.
 This is a single-threaded Python-runtime boundary, not an OS syscall sandbox.
 Native extensions, `ctypes`, direct syscalls, raw Win32 handles, writes through
 redirected standard descriptors, and `send`/`sendall` on a socket connected

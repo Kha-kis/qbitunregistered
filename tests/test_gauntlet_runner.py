@@ -1850,6 +1850,75 @@ def test_tracker_response_wrappers_and_nested_values_are_fresh(tmp_path: Path) -
     }
 
 
+def test_tracker_measurement_excludes_server_models_and_includes_client_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Measure wire receipt, JSON decode, and wrappers, not fake server work."""
+    tracker_fixture = _tracker_fixture_module()
+    fixture = _small_tracker_fixture(tmp_path, seed=152)
+    stages: list[tuple[str, bool, type[object]]] = []
+    decoded_inputs: list[object] = []
+    real_effective_payload = tracker_fixture.effective_torrent_info_payload
+    real_dumps = tracker_fixture.json.dumps
+    real_loads = tracker_fixture.json.loads
+    real_info_list_init = tracker_fixture.FakeTorrentInfoList.__init__
+    real_trackers_list_init = tracker_fixture.FakeTrackersList.__init__
+
+    def observed_effective_payload(*args, **kwargs):
+        stages.append(("server_model", tracemalloc.is_tracing(), object))
+        return real_effective_payload(*args, **kwargs)
+
+    def observed_dumps(value, *args, **kwargs):
+        stages.append(("wire_encode", tracemalloc.is_tracing(), type(value)))
+        return real_dumps(value, *args, **kwargs)
+
+    def observed_loads(value, *args, **kwargs):
+        stages.append(("wire_decode", tracemalloc.is_tracing(), type(value)))
+        decoded_inputs.append(value)
+        return real_loads(value, *args, **kwargs)
+
+    def observed_info_list_init(self, *args, **kwargs):
+        stages.append(("bulk_wrapper", tracemalloc.is_tracing(), type(args[0])))
+        real_info_list_init(self, *args, **kwargs)
+
+    def observed_trackers_list_init(self, *args, **kwargs):
+        stages.append(("exact_wrapper", tracemalloc.is_tracing(), type(args[0])))
+        real_trackers_list_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(tracker_fixture, "effective_torrent_info_payload", observed_effective_payload)
+    monkeypatch.setattr(tracker_fixture.json, "dumps", observed_dumps)
+    monkeypatch.setattr(tracker_fixture.json, "loads", observed_loads)
+    monkeypatch.setattr(tracker_fixture.FakeTorrentInfoList, "__init__", observed_info_list_init)
+    monkeypatch.setattr(tracker_fixture.FakeTrackersList, "__init__", observed_trackers_list_init)
+    fixture.client.set_measurement_callbacks(tracemalloc.start, tracemalloc.stop)
+
+    bulk_response = fixture.client.torrents.info(include_trackers=True)
+    torrent_hash = fixture.initial_torrents[0].hash
+    original_exact_trackers = fixture.client.trackers_by_hash[torrent_hash]
+    with pytest.raises(RuntimeError, match="during measurement"):
+        fixture.client.prepare_exact_tracker_wire_payloads()
+    with pytest.raises(RuntimeError, match="during measurement"):
+        fixture.client.set_exact_trackers(torrent_hash, [])
+    assert fixture.client.trackers_by_hash[torrent_hash] is original_exact_trackers
+    first_exact_response = fixture.client.torrents_trackers(torrent_hash=torrent_hash)
+    second_exact_response = fixture.client.torrents_trackers(torrent_hash=torrent_hash)
+    unknown_exact_response = fixture.client.torrents_trackers(torrent_hash="f" * 64)
+    fixture.client.finish_execution_measurement()
+
+    assert bulk_response
+    assert first_exact_response == second_exact_response
+    assert len(unknown_exact_response) == 3
+    assert all(not tracing for stage, tracing, _value_type in stages if stage in {"server_model", "wire_encode"})
+    decoded_stages = [stage for stage in stages if stage[0] == "wire_decode"]
+    assert decoded_stages
+    assert all(tracing and value_type is bytes for _stage, tracing, value_type in decoded_stages)
+    assert len({id(value) for value in decoded_inputs}) == len(decoded_inputs)
+    assert ("bulk_wrapper", True, list) in stages
+    assert ("exact_wrapper", True, list) in stages
+    assert tracemalloc.is_tracing() is False
+
+
 def test_tracker_attribute_uses_exact_endpoint_and_redundant_transport_is_rejected(tmp_path: Path) -> None:
     """Catch a fake wrapper that misrepresents attribute access as embedded data."""
     tracker_fixture = _tracker_fixture_module()
@@ -2392,7 +2461,7 @@ def test_tracker_oracle_dispatches_through_shared_versioned_result(tmp_path: Pat
     assert result["profile"] == "tracker-quick"
     assert result["schema"] == "qbitunregistered.gauntlet.result"
     assert result["schema_version"] == 9
-    assert result["evaluator_version"] == "1.12.0"
+    assert result["evaluator_version"] == "1.13.0"
     assert result["scope"] == "orphan_and_tracker_dry_run_evaluation"
     assert result["commit"] == "unknown"
     assert result["candidate_state"] == {"clean": None, "diff_sha256": "unknown"}
@@ -2483,7 +2552,7 @@ def test_evaluator_identity_versions_preserve_existing_result_schemas() -> None:
     quality_bar = load_quality_bar(QUALITY_BAR_PATH)
 
     assert quality_bar.evaluator_schema_version == SCHEMA_VERSION == 9
-    assert quality_bar.evaluator_version == EVALUATOR_VERSION == "1.12.0"
+    assert quality_bar.evaluator_version == EVALUATOR_VERSION == "1.13.0"
     assert paired.PAIRED_SCHEMA_VERSION == 6
     assert paired.PAIRING_VERSION == "2.9.0"
 

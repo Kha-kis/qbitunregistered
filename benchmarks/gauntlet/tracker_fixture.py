@@ -188,8 +188,15 @@ class FakeTrackersList(UserList[FakeTracker]):
 EmbeddedTrackersMode = Literal["supported", "omitted", "rejected", "malformed"]
 
 
-def _fresh_decoded_payload(value: object) -> object:
-    return json.loads(json.dumps(value, separators=(",", ":")))
+def _encode_wire_payload(value: object) -> bytes:
+    """Serialize one fake server response before client measurement starts."""
+    return json.dumps(value, separators=(",", ":")).encode("utf-8")
+
+
+def _receive_and_decode_wire_payload(wire_payload: bytes) -> object:
+    """Allocate a fresh received buffer and decode it as the client would."""
+    received_payload = memoryview(wire_payload).tobytes()
+    return json.loads(received_payload)
 
 
 def torrent_info_payload(torrent: TrackerTorrent, index: int) -> dict[str, object]:
@@ -328,7 +335,6 @@ class _FakeTrackerTorrents:
         if not isinstance(snapshot, Sequence) or isinstance(snapshot, (str, bytes, bytearray)):
             return snapshot
 
-        self._client.begin_info_materialization()
         response: list[dict[str, object]] = []
         for index, torrent in enumerate(snapshot):
             if not isinstance(torrent, TrackerTorrent):
@@ -344,7 +350,10 @@ class _FakeTrackerTorrents:
                     else self._client.trackers_by_hash[torrent.hash]
                 )
             response.append(payload)
-        decoded = _fresh_decoded_payload(response)
+        wire_payload = _encode_wire_payload(response)
+        self._client.prepare_exact_tracker_wire_payloads()
+        self._client.begin_info_materialization()
+        decoded = _receive_and_decode_wire_payload(wire_payload)
         if not isinstance(decoded, list):
             raise TypeError("tracker snapshot did not decode to a list")
         return FakeTorrentInfoList(
@@ -369,6 +378,10 @@ class FakeTrackerClient:
             torrent_hash: list(trackers) if isinstance(trackers, Sequence) else trackers
             for torrent_hash, trackers in trackers_by_hash.items()
         }
+        self._exact_tracker_wire_by_hash: dict[str, bytes] = {}
+        self._default_exact_tracker_wire = _encode_wire_payload(_PSEUDO_TRACKERS)
+        self._measurement_in_progress = False
+        self.prepare_exact_tracker_wire_payloads()
         self.torrent_info_by_hash = {
             torrent.hash: torrent_info_payload(torrent, index) for index, torrent in enumerate(self.initial_torrents)
         }
@@ -400,7 +413,12 @@ class FakeTrackerClient:
         if callback is None:
             return
         self._before_info_materialization = None
-        callback()
+        self._measurement_in_progress = True
+        try:
+            callback()
+        except BaseException:
+            self._measurement_in_progress = False
+            raise
 
     def finish_execution_measurement(self) -> None:
         """Stop measurement immediately after the observed execution returns."""
@@ -408,7 +426,10 @@ class FakeTrackerClient:
         if callback is None:
             raise RuntimeError("tracker execution measurement callback is unavailable")
         self._after_execution_return = None
-        callback()
+        try:
+            callback()
+        finally:
+            self._measurement_in_progress = False
 
     @property
     def measurement_callbacks_configured(self) -> bool:
@@ -426,6 +447,7 @@ class FakeTrackerClient:
 
     def set_exact_trackers(self, torrent_hash: str, value: object) -> None:
         """Replace one exact tracker response for failure and churn scenarios."""
+        self._prepare_exact_tracker_wire_payload(torrent_hash, value)
         self.trackers_by_hash[torrent_hash] = value
 
     def set_embedded_trackers_mode(self, mode: EmbeddedTrackersMode) -> None:
@@ -436,18 +458,45 @@ class FakeTrackerClient:
         """Expose the direct API shape required by the project protocol."""
         return cast(list[Any], self.torrents.info(**kwargs))
 
+    def _prepare_exact_tracker_wire_payload(self, torrent_hash: str, trackers: object) -> None:
+        """Cache one canonical fake-server response before measured exact reads."""
+        if self._measurement_in_progress:
+            raise RuntimeError("exact tracker wire payload cannot be prepared during measurement")
+        if isinstance(trackers, BaseException) or trackers is None:
+            self._exact_tracker_wire_by_hash.pop(torrent_hash, None)
+            return
+        if isinstance(trackers, Sequence) and not isinstance(trackers, (str, bytes, bytearray)):
+            response: object = [*_PSEUDO_TRACKERS, *trackers]
+        else:
+            response = trackers
+        self._exact_tracker_wire_by_hash[torrent_hash] = _encode_wire_payload(response)
+
+    def prepare_exact_tracker_wire_payloads(self) -> None:
+        """Refresh canonical exact-response bytes before measurement starts."""
+        if self._measurement_in_progress:
+            raise RuntimeError("exact tracker wire payloads cannot be prepared during measurement")
+        self._exact_tracker_wire_by_hash.clear()
+        for torrent_hash, trackers in self.trackers_by_hash.items():
+            self._prepare_exact_tracker_wire_payload(torrent_hash, trackers)
+
     def torrents_trackers(self, torrent_hash: str | None = None, **_kwargs: Any) -> list[Any]:
         """Return qBittorrent pseudo records followed by fresh real trackers."""
         self.read_counts["torrents_trackers"] += 1
-        trackers = self.trackers_by_hash.get(torrent_hash or "", [])
+        resolved_hash = torrent_hash or ""
+        trackers = self.trackers_by_hash.get(resolved_hash, [])
         if isinstance(trackers, BaseException):
             raise trackers
         if trackers is None:
             return cast(list[Any], trackers)
+        if resolved_hash in self.trackers_by_hash:
+            wire_payload = self._exact_tracker_wire_by_hash.get(resolved_hash)
+            if wire_payload is None:
+                raise RuntimeError("exact tracker wire payload was not prepared")
+        else:
+            wire_payload = self._default_exact_tracker_wire
+        decoded = _receive_and_decode_wire_payload(wire_payload)
         if not isinstance(trackers, Sequence) or isinstance(trackers, (str, bytes, bytearray)):
-            return cast(list[Any], _fresh_decoded_payload(trackers))
-        payload = [*_PSEUDO_TRACKERS, *trackers]
-        decoded = _fresh_decoded_payload(payload)
+            return cast(list[Any], decoded)
         if not isinstance(decoded, list) or any(not isinstance(item, Mapping) for item in decoded):
             raise TypeError("exact tracker response did not decode to mappings")
         return cast(list[Any], FakeTrackersList(cast(list[Mapping[str, object]], decoded)))
