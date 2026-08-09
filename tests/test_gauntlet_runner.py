@@ -6102,7 +6102,6 @@ def test_paired_child_disables_bytecode_before_lazy_stdlib_import(
     assert result == expected_result
 
 
-@requires_descriptor_no_follow
 def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6115,11 +6114,12 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     monkeypatch.setenv("PythonWarnings", "ignore")
     monkeypatch.setenv(paired.ISOLATED_PARENT_CACHE_ENV, "/inherited/parent-cache")
     pycache_roots: list[Path] = []
-    dependency_paths = paired._dependency_import_paths()
-    dependency_environment_identity = import_bootstrap.dependency_environment_digest(dependency_paths)
-    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    dependency_paths = ("/isolated/site-packages",)
+    dependency_environment_identity = "b" * 64
+    immutable_manifest = '{"namespace":"tqdm","schema_version":1,"sources":[]}'
     bootstrap_source = b"# immutable bootstrap\n"
     expected_commit = "a" * 40
+    expected_result = _valid_quick_result()
 
     def fake_run(command, **kwargs):
         assert command[1:5] == ["-B", "-s", "-S", "-P"]
@@ -6151,10 +6151,14 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
         assert not pycache_root.is_relative_to(tmp_path.resolve())
         assert pycache_root != inherited_pycache
         pycache_roots.append(pycache_root)
-        output.write_text(json.dumps(_valid_quick_result()), encoding="utf-8")
         return paired.subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(paired.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        paired,
+        "_read_regular_file",
+        lambda _path, **_kwargs: json.dumps(expected_result).encode("utf-8"),
+    )
 
     results = [
         paired._run_child(
@@ -6899,8 +6903,9 @@ def test_source_launcher_strips_injection_spawns_once_and_cleans_cache(
 
     assert returncode == expected_returncode
     assert len(calls) == 1
-    assert calls[0][:7] == [
+    assert calls[0][:8] == [
         sys.executable,
+        "-B",
         "-s",
         "-S",
         "-P",
@@ -6908,7 +6913,52 @@ def test_source_launcher_strips_injection_spawns_once_and_cleans_cache(
         str(REPOSITORY_ROOT),
         json.dumps(launcher._dependency_import_paths()),
     ]
-    assert calls[0][7:] == ["--profile", "quick"]
+    assert calls[0][8:] == ["--profile", "quick"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_source_launcher_disables_bytecode_before_lazy_stdlib_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a standalone coordinator writing bytecode inside an audited call."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(launcher, "_require_isolated_startup", lambda: None)
+    monkeypatch.setattr(
+        launcher,
+        "_repository_protected_roots",
+        lambda roots: tuple(path.resolve() for path in roots),
+    )
+    bootstrap_source = (
+        "import os\n"
+        "import sys\n"
+        "audit_active = True\n"
+        "def reject_writes(event, arguments):\n"
+        "    if not audit_active:\n"
+        "        return\n"
+        "    write_open = (\n"
+        "        event == 'open'\n"
+        "        and len(arguments) >= 3\n"
+        "        and (\n"
+        "            (isinstance(arguments[1], str) and any(marker in arguments[1] for marker in 'wax+'))\n"
+        "            or (isinstance(arguments[2], int) and arguments[2] & (os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC))\n"
+        "        )\n"
+        "    )\n"
+        "    if write_open or event == 'os.mkdir':\n"
+        "        raise RuntimeError('lazy stdlib import attempted a filesystem write')\n"
+        "sys.addaudithook(reject_writes)\n"
+        "import multiprocessing\n"
+        "audit_active = False\n"
+    ).encode("utf-8")
+    monkeypatch.setattr(
+        launcher,
+        "_trusted_bootstrap_source",
+        lambda _repository_root: bootstrap_source,
+    )
+
+    returncode = launcher.main(["--profile", "quick"])
+
+    assert returncode == 0
     assert list(tmp_path.iterdir()) == []
 
 

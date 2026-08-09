@@ -438,7 +438,7 @@ def _trusted_bootstrap_source(repository_root: Path) -> bytes:
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
-    """Run the gauntlet module with a fresh parent-process bytecode cache."""
+    """Run the coordinator with bytecode writes disabled and a defensive cache."""
     _require_isolated_startup()
     resolved_arguments = list(sys.argv[1:] if arguments is None else arguments)
     repository_root = Path(__file__).resolve().parents[2]
@@ -464,6 +464,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             completed = subprocess.run(
                 [
                     sys.executable,
+                    "-B",
                     "-s",
                     "-S",
                     "-P",

@@ -65,10 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Paired child interpreters now disable bytecode writes explicitly. Lazy
-  standard-library imports inside audited tracker calls can no longer attempt
-  to create a temporary bytecode-cache directory and fail an otherwise safe
-  isolated run.
+- Paired coordinator and child interpreters now disable bytecode writes
+  explicitly. Lazy standard-library imports inside audited tracker calls can no
+  longer attempt to create a temporary bytecode-cache directory and fail an
+  otherwise safe isolated run.
 
 ## [2.3.1] - 2026-08-05
 

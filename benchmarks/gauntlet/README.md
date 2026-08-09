@@ -295,12 +295,13 @@ dependency imports unchanged.
 
 The orchestrator uses two symmetric crossover blocks: `control, candidate,
 candidate, control`, then `candidate, control, control, candidate`
-(ABBA+BAAB). Role position sums are identical. Each child starts with
-`-B -s -S -P`, bytecode writes, user-site, and ordinary site initialization
-disabled, and Python injection environment variables removed. The no-bytecode
-child flag prevents a lazy standard-library import from attempting to populate
-the fresh temporary cache path inside an audited production call. That path
-remains outside the evaluated worktree as a fail-closed defense. Repository-local native
+(ABBA+BAAB). Role position sums are identical. The coordinator subprocess and
+each measured child start with `-B -s -S -P`, bytecode writes, user-site, and
+ordinary site initialization disabled, and Python injection environment
+variables removed. Their no-bytecode flags prevent a lazy standard-library
+import from attempting to populate a fresh temporary cache path inside an
+audited production call. Those paths remain outside the evaluated worktrees as
+a fail-closed defense. Repository-local native
 extensions that could shadow the `benchmarks` or `qbitunregistered` package
 trees are rejected before and after the crossover. Each run retains its
 warmup, five untraced timed samples, and traced memory pass. No sample is
