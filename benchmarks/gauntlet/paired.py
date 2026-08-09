@@ -40,9 +40,11 @@ from benchmarks.gauntlet.identity import (
 from benchmarks.gauntlet.import_bootstrap import (
     DEPENDENCY_DIGEST_ARGUMENT,
     EXPECTED_REPOSITORY_COMMIT_ARGUMENT,
+    IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
     DependencyEnvironmentError,
     ProtectedPackageTreeError,
     dependency_environment_digest,
+    immutable_tqdm_manifest,
     verified_import_bootstrap_source,
 )
 from benchmarks.gauntlet.paired_evidence import (
@@ -991,6 +993,7 @@ def _run_child(
     output: Path,
     dependency_paths: Sequence[str],
     dependency_environment_digest: str,
+    immutable_tqdm_manifest: str,
     bootstrap_source: bytes,
     expected_commit: str,
 ) -> dict[str, object]:
@@ -1013,6 +1016,8 @@ def _run_child(
         expected_commit,
         DEPENDENCY_DIGEST_ARGUMENT,
         dependency_environment_digest,
+        IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+        immutable_tqdm_manifest,
         "--profile",
         profile,
         "--seed",
@@ -1243,6 +1248,10 @@ def run_paired_gauntlet(
         raise PairedGauntletError("orchestrator and paired worktrees do not have identical dependency locks")
     dependency_paths = _dependency_import_paths()
     dependency_environment_identity = _current_dependency_environment_digest(dependency_paths)
+    try:
+        immutable_tqdm_source_manifest = immutable_tqdm_manifest(dependency_paths)
+    except DependencyEnvironmentError as error:
+        raise PairedGauntletError("paired dependency environment could not be bound") from error
     bound_dependency_digest = _bound_dependency_digest(
         orchestrator_dependency_digest,
         dependency_environment_identity,
@@ -1276,6 +1285,7 @@ def run_paired_gauntlet(
                     output=output,
                     dependency_paths=dependency_paths,
                     dependency_environment_digest=dependency_environment_identity,
+                    immutable_tqdm_manifest=immutable_tqdm_source_manifest,
                     bootstrap_source=bootstrap_source,
                     expected_commit=child_identity.commit,
                 )

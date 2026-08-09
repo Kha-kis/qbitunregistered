@@ -16,6 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from types import CodeType, ModuleType
+from types import MappingProxyType
 from typing import Protocol
 
 PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
@@ -38,6 +39,7 @@ _BYTECODE_SUFFIXES = (".pyc", ".pyo")
 _NATIVE_EXTENSION_SUFFIXES = tuple(
     sorted({suffix.casefold() for suffix in importlib.machinery.EXTENSION_SUFFIXES} | {".dll", ".dylib", ".pyd", ".so"})
 )
+_IMMUTABLE_TQDM_ORIGIN = "<qbitunregistered-gauntlet-immutable-tqdm>"
 
 
 class DependencyEnvironmentError(RuntimeError):
@@ -588,6 +590,128 @@ def _capture_immutable_tqdm_sources(
     if _candidate_identities(current_candidates) != _candidate_identities(candidates):
         raise DependencyEnvironmentError("installed tqdm package changed during capture")
     return tuple(captured_sources)
+
+
+def _immutable_source_identity(source: _ImmutableDependencySource) -> tuple[object, ...]:
+    """Return every retained field that must stay immutable during evaluation."""
+    return (
+        source.fullname,
+        source.root_index,
+        source.relative_path,
+        source.is_package,
+        source.size,
+        source.sha256,
+        source.source_bytes,
+    )
+
+
+class _ImmutableDependencySourceLoader(importlib.abc.SourceLoader):
+    """Compile one installed dependency module only from captured source bytes."""
+
+    def __init__(self, source: _ImmutableDependencySource) -> None:
+        self._source = source
+        self._expected_identity = _immutable_source_identity(source)
+
+    def _validate_source(self) -> None:
+        if _immutable_source_identity(self._source) != self._expected_identity:
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+    def get_filename(self, fullname: str) -> str:
+        if fullname != self._source.fullname:
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        self._validate_source()
+        return _IMMUTABLE_TQDM_ORIGIN
+
+    def get_data(self, path: str) -> bytes:
+        del path
+        raise OSError(DEPENDENCY_ISOLATION_ERROR)
+
+    def get_resource_reader(self, fullname: str) -> None:
+        self.get_filename(fullname)
+        return None
+
+    def get_code(self, fullname: str) -> CodeType:
+        filename = self.get_filename(fullname)
+        return self.source_to_code(self._source.source_bytes, filename)
+
+    def is_package(self, fullname: str) -> bool:
+        self.get_filename(fullname)
+        return self._source.is_package
+
+
+class _ImmutableDependencyFinder(importlib.abc.MetaPathFinder):
+    """Resolve only exact captured tqdm modules without installed import roots."""
+
+    def __init__(self, sources: Sequence[_ImmutableDependencySource]) -> None:
+        source_map = {source.fullname: source for source in sources}
+        if len(source_map) != len(sources) or "tqdm" not in source_map:
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        self._sources = MappingProxyType(source_map)
+        self._expected_source_identity = tuple(
+            (fullname, _immutable_source_identity(source)) for fullname, source in self._sources.items()
+        )
+        self._loaders = {fullname: _ImmutableDependencySourceLoader(source) for fullname, source in self._sources.items()}
+        self._specs = {
+            fullname: importlib.machinery.ModuleSpec(
+                fullname,
+                self._loaders[fullname],
+                origin=_IMMUTABLE_TQDM_ORIGIN,
+                is_package=source.is_package,
+            )
+            for fullname, source in self._sources.items()
+        }
+        self._expected_loaders = tuple(self._loaders.items())
+        self._expected_specs = tuple(self._specs.items())
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None,
+        target: ModuleType | None = None,
+    ) -> importlib.machinery.ModuleSpec | None:
+        del path
+        del target
+        if fullname != "tqdm" and not fullname.startswith("tqdm."):
+            return None
+        self.validate_sources()
+        spec = self._specs.get(fullname)
+        if spec is None:
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        return spec
+
+    def validate_sources(self) -> None:
+        """Require retained sources and every loaded tqdm module to stay bound."""
+        current_identity = tuple((fullname, _immutable_source_identity(source)) for fullname, source in self._sources.items())
+        if current_identity != self._expected_source_identity:
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        if (
+            tuple(self._loaders) != tuple(name for name, _loader in self._expected_loaders)
+            or tuple(self._specs) != tuple(name for name, _spec in self._expected_specs)
+            or any(self._loaders[name] is not loader for name, loader in self._expected_loaders)
+            or any(self._specs[name] is not spec for name, spec in self._expected_specs)
+        ):
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        for expected_loader in self._loaders.values():
+            expected_loader._validate_source()
+        for fullname, module in tuple(sys.modules.items()):
+            if fullname != "tqdm" and not fullname.startswith("tqdm."):
+                continue
+            source = self._sources.get(fullname)
+            module_loader = self._loaders.get(fullname)
+            spec = self._specs.get(fullname)
+            if source is None or module_loader is None or spec is None or not isinstance(module, ModuleType):
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+            module_spec = getattr(module, "__spec__", None)
+            loaded_by = getattr(module, "__loader__", None)
+            if (
+                module_spec is None
+                or loaded_by is not module_loader
+                or module_spec is not spec
+                or module_spec.loader is not module_loader
+                or module_spec.origin != _IMMUTABLE_TQDM_ORIGIN
+                or (module_spec.submodule_search_locations is not None) is not source.is_package
+            ):
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
 
 
 def _update_dependency_tree_digest(
@@ -1182,6 +1306,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         repository_root,
     )
     expected_dependency_digest: str | None = None
+    immutable_dependency_sources: tuple[_ImmutableDependencySource, ...] = ()
     expected_revision = "HEAD"
     if resolved_arguments[:1] == [EXPECTED_REPOSITORY_COMMIT_ARGUMENT]:
         resolved_arguments.pop(0)
@@ -1199,6 +1324,18 @@ def main(arguments: Sequence[str] | None = None) -> None:
         if _current_dependency_digest(dependency_paths) != expected_dependency_digest:
             raise SystemExit("gauntlet dependency environment changed before evaluation")
         _reject_preloaded_dependency_modules(dependency_paths)
+        if resolved_arguments[:1] != [IMMUTABLE_TQDM_MANIFEST_ARGUMENT]:
+            raise SystemExit(DEPENDENCY_ISOLATION_ERROR)
+        resolved_arguments.pop(0)
+        if not resolved_arguments:
+            raise SystemExit(DEPENDENCY_ISOLATION_ERROR)
+        try:
+            immutable_dependency_sources = _capture_immutable_tqdm_sources(
+                dependency_paths,
+                resolved_arguments.pop(0),
+            )
+        except DependencyEnvironmentError:
+            raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
     interpreter_paths = _validate_interpreter_paths(repository_root)
     _require_safe_package_trees(repository_root)
     try:
@@ -1213,11 +1350,16 @@ def main(arguments: Sequence[str] | None = None) -> None:
         protected_sources,
         expected_revision,
     )
+    immutable_dependency_finder = (
+        _ImmutableDependencyFinder(immutable_dependency_sources) if expected_dependency_digest is not None else None
+    )
 
     # The worktree root is deliberately absent. Digest-bound measured children
     # use no installed import roots; ordinary mode keeps them behind stdlib.
     sys.path[:] = interpreter_paths if expected_dependency_digest is not None else [*interpreter_paths, *dependency_paths]
     sys.meta_path.insert(0, protected_finder)
+    if immutable_dependency_finder is not None:
+        sys.meta_path.insert(1, immutable_dependency_finder)
     if COORDINATOR_BOOTSTRAP_MODULE in sys.modules:
         raise SystemExit(PROTECTED_IMPORT_ERROR)
     bootstrap_state = _CoordinatorBootstrapState(
@@ -1229,7 +1371,10 @@ def main(arguments: Sequence[str] | None = None) -> None:
     sys.argv[:] = ["benchmarks.gauntlet", *resolved_arguments]
     try:
         try:
-            runpy.run_module("benchmarks.gauntlet", run_name="__main__", alter_sys=True)
+            try:
+                runpy.run_module("benchmarks.gauntlet", run_name="__main__", alter_sys=True)
+            except DependencyEnvironmentError:
+                raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
         except ProtectedPackageTreeError:
             raise SystemExit(PROTECTED_IMPORT_ERROR) from None
     finally:
@@ -1239,6 +1384,11 @@ def main(arguments: Sequence[str] | None = None) -> None:
                 protected_finder.validate_sources()
             except ProtectedPackageTreeError:
                 raise SystemExit(PROTECTED_IMPORT_ERROR) from None
+            if immutable_dependency_finder is not None:
+                try:
+                    immutable_dependency_finder.validate_sources()
+                except DependencyEnvironmentError:
+                    raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
             if (
                 expected_dependency_digest is not None
                 and _current_dependency_digest(dependency_paths) != expected_dependency_digest
