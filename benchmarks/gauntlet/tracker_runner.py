@@ -22,6 +22,9 @@ from types import SimpleNamespace
 from typing import Iterator, Literal, Protocol, TypedDict, cast
 from unittest.mock import patch
 
+_COORDINATOR_BOOTSTRAP_MODULE = "_qbitunregistered_gauntlet_coordinator_bootstrap"
+_COORDINATOR_BOOTSTRAP_STATE = sys.modules.get(_COORDINATOR_BOOTSTRAP_MODULE)
+
 from benchmarks.gauntlet.baseline import (
     derive_tracker_artifact_role,
     load_quality_bar,
@@ -57,9 +60,19 @@ from qbitunregistered.operations.unregistered_checks import (
 )
 from qbitunregistered.types import QBittorrentClient, TorrentInfo
 
+
+def _validate_imported_application_boundary() -> None:
+    """Revalidate protected dependency state before tracker evaluation."""
+    if _COORDINATOR_BOOTSTRAP_STATE is not None:
+        _COORDINATOR_BOOTSTRAP_STATE.validate_after_imports()
+
+
+_validate_imported_application_boundary()
+
 DEFAULT_TAG = "unregistered"
 CROSS_SEED_TAG = "unregistered:crossseeding"
 DELETE_TAG = "tracker-delete"
+_QBITTORRENTAPI_SHIM_ORIGIN = "<qbitunregistered-gauntlet-qbittorrentapi-shim>"
 
 
 class _Digest(Protocol):
@@ -463,6 +476,22 @@ def _tracker_cli_config_path(fixture: TrackerGauntletFixture, *, dry_run: bool =
     return config_path
 
 
+def _validate_scenario_notification_boundary(config_path: Path) -> None:
+    """Require notifications to stay outside the protected fake-client run."""
+    from qbitunregistered import notifications
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise GauntletSafetyError("tracker scenario notification boundary could not be verified") from error
+    if not isinstance(config, dict) or any(config.get(name) for name in ("apprise_url", "notifiarr_key", "notifiarr_channel")):
+        raise GauntletSafetyError("tracker scenario notification boundary is not disabled")
+    qbittorrentapi = sys.modules.get("qbittorrentapi")
+    module_spec = getattr(qbittorrentapi, "__spec__", None)
+    if getattr(module_spec, "origin", None) == _QBITTORRENTAPI_SHIM_ORIGIN and notifications.APPRISE_AVAILABLE is not False:
+        raise GauntletSafetyError("tracker scenario notification boundary is not disabled")
+
+
 def _production_torrents(fixture: TrackerGauntletFixture) -> Sequence[TorrentInfo]:
     """Expose frozen evaluator torrents through the production read protocol."""
     return cast(Sequence[TorrentInfo], fixture.initial_torrents)
@@ -675,6 +704,8 @@ def _execute_pipeline(fixture: TrackerGauntletFixture) -> _TrackerPipelineResult
     """Invoke the real CLI and transparently retain its structured evidence."""
     from qbitunregistered import cli as cli_module
     from qbitunregistered import impact as impact_module
+
+    _validate_imported_application_boundary()
 
     config_path = fixture.root / "gauntlet-config.json"
     if not config_path.is_file():
@@ -1071,9 +1102,12 @@ def _execute_scenario_cli(  # noqa: C901
     from qbitunregistered import cli as cli_module
     from qbitunregistered import impact as impact_module
 
+    _validate_imported_application_boundary()
+
     config_path = fixture.root / "gauntlet-config.json"
     if not config_path.is_file():
         config_path = _tracker_cli_config_path(fixture, dry_run=dry_run)
+    _validate_scenario_notification_boundary(config_path)
     observation_order: list[str] = []
     summaries: list[ImpactSummary] = []
     execution_results: list[tuple[dict[str, list[str]], dict[str, int]]] = []

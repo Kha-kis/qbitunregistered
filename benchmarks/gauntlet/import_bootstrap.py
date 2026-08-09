@@ -16,18 +16,34 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from types import CodeType, ModuleType
-from typing import Protocol
+from types import MappingProxyType
+from typing import Never, Protocol
 
 PROTECTED_PACKAGE_NAMES = ("benchmarks", "qbitunregistered")
 SITE_DIRECTORY_NAMES = frozenset({"site-packages", "dist-packages"})
 DEPENDENCY_DIGEST_ARGUMENT = "--dependency-environment-digest"
 EXPECTED_REPOSITORY_COMMIT_ARGUMENT = "--expected-repository-commit"
+IMMUTABLE_TQDM_MANIFEST_ARGUMENT = "--immutable-tqdm-manifest"
 PROTECTED_IMPORT_ERROR = "gauntlet protected imports could not be verified"
 DEPENDENCY_ISOLATION_ERROR = "gauntlet dependency imports could not be isolated"
 COORDINATOR_BOOTSTRAP_MODULE = "_qbitunregistered_gauntlet_coordinator_bootstrap"
 _DIGEST_CHUNK_BYTES = 1024 * 1024
 _GIT_TIMEOUT_SECONDS = 10
 _REGULAR_BLOB_MODES = frozenset({b"100644", b"100755"})
+_IMMUTABLE_TQDM_MANIFEST_SCHEMA_VERSION = 1
+_MAX_IMMUTABLE_TQDM_MANIFEST_BYTES = 256 * 1024
+_MAX_IMMUTABLE_TQDM_SOURCES = 256
+_MAX_IMMUTABLE_TQDM_SOURCE_BYTES = 1024 * 1024
+_MAX_IMMUTABLE_TQDM_TOTAL_BYTES = 8 * 1024 * 1024
+_BYTECODE_SUFFIXES = (".pyc", ".pyo")
+_NATIVE_EXTENSION_SUFFIXES = tuple(
+    sorted({suffix.casefold() for suffix in importlib.machinery.EXTENSION_SUFFIXES} | {".dll", ".dylib", ".pyd", ".so"})
+)
+_IMMUTABLE_TQDM_ORIGIN = "<qbitunregistered-gauntlet-immutable-tqdm>"
+_QBITTORRENTAPI_ROOT_NAME = "qbittorrentapi"
+_QBITTORRENTAPI_EXCEPTIONS_NAME = "qbittorrentapi.exceptions"
+_QBITTORRENTAPI_SHIM_ORIGIN = "<qbitunregistered-gauntlet-qbittorrentapi-shim>"
+_WINDOWS_PATH_STAT_CTIME_IS_UNSTABLE = os.name == "nt"
 
 
 class DependencyEnvironmentError(RuntimeError):
@@ -36,6 +52,220 @@ class DependencyEnvironmentError(RuntimeError):
 
 class ProtectedPackageTreeError(RuntimeError):
     """Raised when protected source packages cannot be imported safely."""
+
+
+class _QbittorrentApiShimLoader(importlib.abc.Loader):
+    """Identify evaluator-owned modules that must never execute loader code."""
+
+    def create_module(self, spec: importlib.machinery.ModuleSpec) -> Never:
+        del spec
+        raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+    def exec_module(self, module: ModuleType) -> Never:
+        del module
+        raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+
+class _QbittorrentApiShimState:
+    """Retain and validate the exact fail-closed client import surface."""
+
+    __slots__ = (
+        "_api_connection_error",
+        "_client",
+        "_client_constructions",
+        "_exception_instances",
+        "_exceptions_loader",
+        "_exceptions_module",
+        "_exceptions_spec",
+        "_installed",
+        "_root_loader",
+        "_root_module",
+        "_root_spec",
+    )
+
+    def __init__(self) -> None:
+        self._client_constructions = 0
+        self._exception_instances = 0
+        self._installed = False
+        state = self
+
+        class Client:
+            __module__ = _QBITTORRENTAPI_ROOT_NAME
+
+            def __new__(cls, *args: object, **kwargs: object) -> Never:
+                del cls, args, kwargs
+                state._client_constructions += 1
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+            def __init_subclass__(cls, **kwargs: object) -> Never:
+                del cls, kwargs
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+        class APIConnectionError(Exception):
+            __module__ = _QBITTORRENTAPI_EXCEPTIONS_NAME
+
+            def __new__(cls, *args: object, **kwargs: object) -> Never:
+                del cls, args, kwargs
+                state._exception_instances += 1
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+            def __init_subclass__(cls, **kwargs: object) -> Never:
+                del cls, kwargs
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+        Client.__qualname__ = "Client"
+        APIConnectionError.__qualname__ = "APIConnectionError"
+        self._client = Client
+        self._api_connection_error = APIConnectionError
+        self._root_loader = _QbittorrentApiShimLoader()
+        self._exceptions_loader = _QbittorrentApiShimLoader()
+        self._root_spec = importlib.machinery.ModuleSpec(
+            _QBITTORRENTAPI_ROOT_NAME,
+            self._root_loader,
+            origin=_QBITTORRENTAPI_SHIM_ORIGIN,
+            is_package=True,
+        )
+        self._exceptions_spec = importlib.machinery.ModuleSpec(
+            _QBITTORRENTAPI_EXCEPTIONS_NAME,
+            self._exceptions_loader,
+            origin=_QBITTORRENTAPI_SHIM_ORIGIN,
+            is_package=False,
+        )
+        self._root_module = ModuleType(_QBITTORRENTAPI_ROOT_NAME, "Protected evaluator qBittorrent API shim.")
+        self._exceptions_module = ModuleType(
+            _QBITTORRENTAPI_EXCEPTIONS_NAME,
+            "Protected evaluator qBittorrent API exception shim.",
+        )
+        self._root_module.__package__ = _QBITTORRENTAPI_ROOT_NAME
+        self._root_module.__loader__ = self._root_loader
+        self._root_module.__spec__ = self._root_spec
+        self._root_module.__dict__["__path__"] = self._root_spec.submodule_search_locations
+        self._root_module.__dict__["Client"] = self._client
+        self._root_module.__dict__["exceptions"] = self._exceptions_module
+        self._exceptions_module.__package__ = _QBITTORRENTAPI_ROOT_NAME
+        self._exceptions_module.__loader__ = self._exceptions_loader
+        self._exceptions_module.__spec__ = self._exceptions_spec
+        self._exceptions_module.__dict__["APIConnectionError"] = self._api_connection_error
+
+    @property
+    def client_constructions(self) -> int:
+        """Return attempted constructions of the forbidden real-client boundary."""
+        return self._client_constructions
+
+    @property
+    def exception_instances(self) -> int:
+        """Return attempted instantiations of the sentinel connection error."""
+        return self._exception_instances
+
+    def install(self) -> None:
+        """Install both protected modules without replacing any existing import."""
+        if self._installed or any(
+            name == _QBITTORRENTAPI_ROOT_NAME or name.startswith(f"{_QBITTORRENTAPI_ROOT_NAME}.") for name in sys.modules
+        ):
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        sys.modules[_QBITTORRENTAPI_ROOT_NAME] = self._root_module
+        sys.modules[_QBITTORRENTAPI_EXCEPTIONS_NAME] = self._exceptions_module
+        self._installed = True
+        self.validate()
+
+    def _spec_is_valid(
+        self,
+        module: ModuleType,
+        spec: importlib.machinery.ModuleSpec,
+        loader: _QbittorrentApiShimLoader,
+        *,
+        name: str,
+        is_package: bool,
+    ) -> bool:
+        search_locations = spec.submodule_search_locations
+        return (
+            module.__name__ == name
+            and module.__package__ == _QBITTORRENTAPI_ROOT_NAME
+            and module.__loader__ is loader
+            and module.__spec__ is spec
+            and spec.name == name
+            and spec.loader is loader
+            and spec.origin == _QBITTORRENTAPI_SHIM_ORIGIN
+            and spec.has_location is False
+            and spec.cached is None
+            and spec.loader_state is None
+            and (search_locations == [] if is_package else search_locations is None)
+            and (not is_package or module.__path__ is search_locations)
+        )
+
+    def validate(self) -> None:
+        """Fail closed if the protected graph drifted or either sentinel was used."""
+        protected_module_names = {
+            name
+            for name in sys.modules
+            if name == _QBITTORRENTAPI_ROOT_NAME or name.startswith(f"{_QBITTORRENTAPI_ROOT_NAME}.")
+        }
+        if (
+            not self._installed
+            or protected_module_names != {_QBITTORRENTAPI_ROOT_NAME, _QBITTORRENTAPI_EXCEPTIONS_NAME}
+            or sys.modules.get(_QBITTORRENTAPI_ROOT_NAME) is not self._root_module
+            or sys.modules.get(_QBITTORRENTAPI_EXCEPTIONS_NAME) is not self._exceptions_module
+            or set(vars(self._root_module))
+            != {
+                "__name__",
+                "__doc__",
+                "__package__",
+                "__loader__",
+                "__spec__",
+                "__path__",
+                "Client",
+                "exceptions",
+            }
+            or set(vars(self._exceptions_module))
+            != {
+                "__name__",
+                "__doc__",
+                "__package__",
+                "__loader__",
+                "__spec__",
+                "APIConnectionError",
+            }
+            or self._root_module.__doc__ != "Protected evaluator qBittorrent API shim."
+            or self._exceptions_module.__doc__ != "Protected evaluator qBittorrent API exception shim."
+            or self._root_module.Client is not self._client
+            or self._root_module.exceptions is not self._exceptions_module
+            or self._exceptions_module.APIConnectionError is not self._api_connection_error
+            or type(self._client) is not type
+            or self._client.__module__ != _QBITTORRENTAPI_ROOT_NAME
+            or self._client.__qualname__ != "Client"
+            or self._client.__bases__ != (object,)
+            or type(self._api_connection_error) is not type
+            or self._api_connection_error.__module__ != _QBITTORRENTAPI_EXCEPTIONS_NAME
+            or self._api_connection_error.__qualname__ != "APIConnectionError"
+            or self._api_connection_error.__bases__ != (Exception,)
+            or not self._spec_is_valid(
+                self._root_module,
+                self._root_spec,
+                self._root_loader,
+                name=_QBITTORRENTAPI_ROOT_NAME,
+                is_package=True,
+            )
+            or not self._spec_is_valid(
+                self._exceptions_module,
+                self._exceptions_spec,
+                self._exceptions_loader,
+                name=_QBITTORRENTAPI_EXCEPTIONS_NAME,
+                is_package=False,
+            )
+            or self._client_constructions != 0
+            or self._exception_instances != 0
+        ):
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+    def _matches_unapproved_use(self, error: AttributeError | ImportError) -> bool:
+        """Identify only missing names owned by the protected shim."""
+        if isinstance(error, ImportError):
+            missing_name = error.name
+            return isinstance(missing_name, str) and (
+                missing_name == _QBITTORRENTAPI_ROOT_NAME or missing_name.startswith(f"{_QBITTORRENTAPI_ROOT_NAME}.")
+            )
+        owner = getattr(error, "obj", None)
+        return owner is self._root_module or owner is self._exceptions_module
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +278,28 @@ class _ProtectedSource:
     mode: str
     oid: str
     source_bytes: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _ImmutableDependencySource:
+    """One bounded installed source record without a retained root path."""
+
+    fullname: str
+    root_index: int
+    relative_path: PurePosixPath
+    is_package: bool
+    size: int
+    sha256: str
+    source_bytes: bytes = b""
+
+
+@dataclass(frozen=True, slots=True)
+class _ImmutableDependencySourceCandidate:
+    """Transient filesystem identity used while capturing one source."""
+
+    source: _ImmutableDependencySource
+    path: Path
+    expected_stat: os.stat_result
 
 
 class _Digest(Protocol):
@@ -78,11 +330,18 @@ def _stable_entry_identity(file_stat: os.stat_result) -> tuple[int, int, int, in
     )
 
 
-def _update_regular_file_digest(
-    path: Path,
-    expected_stat: os.stat_result,
-    digest: _Digest,
-) -> None:
+def _path_descriptor_entry_identity(file_stat: os.stat_result) -> tuple[int, ...]:
+    """Return metadata comparable across path and descriptor stat APIs."""
+    stable_identity = _stable_entry_identity(file_stat)
+    if _WINDOWS_PATH_STAT_CTIME_IS_UNSTABLE:
+        # Windows path stat preserves creation time in deprecated st_ctime,
+        # while descriptor stat can expose metadata-change time instead.
+        return stable_identity[:-1]
+    return stable_identity
+
+
+def _open_stable_regular_file(path: Path, expected_stat: os.stat_result) -> tuple[int, os.stat_result]:
+    """Open one expected regular file without following its final component."""
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_BINARY", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -91,13 +350,39 @@ def _update_regular_file_digest(
     except OSError as error:
         raise DependencyEnvironmentError("could not open an installed dependency safely") from error
     try:
-        before = os.fstat(descriptor)
+        opened_stat = os.fstat(descriptor)
         if (
-            _entry_is_redirecting(before)
-            or not stat.S_ISREG(before.st_mode)
-            or _entry_identity(before) != _entry_identity(expected_stat)
+            _entry_is_redirecting(opened_stat)
+            or not stat.S_ISREG(opened_stat.st_mode)
+            or _entry_identity(opened_stat) != _entry_identity(expected_stat)
         ):
             raise DependencyEnvironmentError("installed dependency entry changed during validation")
+        if not getattr(os, "O_NOFOLLOW", 0):
+            path_stat = os.lstat(path)
+            if _entry_is_redirecting(path_stat) or _entry_identity(path_stat) != _entry_identity(opened_stat):
+                raise DependencyEnvironmentError("installed dependency entry changed during validation")
+    except DependencyEnvironmentError:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+    except OSError as error:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise DependencyEnvironmentError("could not inspect an installed dependency safely") from error
+    return descriptor, opened_stat
+
+
+def _update_regular_file_digest(
+    path: Path,
+    expected_stat: os.stat_result,
+    digest: _Digest,
+) -> None:
+    descriptor, before = _open_stable_regular_file(path, expected_stat)
+    try:
         digest.update(str(stat.S_IMODE(before.st_mode)).encode("ascii"))
         digest.update(b"\0")
         digest.update(str(before.st_size).encode("ascii"))
@@ -114,6 +399,551 @@ def _update_regular_file_digest(
             raise DependencyEnvironmentError("could not close an installed dependency safely") from error
     if _stable_entry_identity(before) != _stable_entry_identity(after):
         raise DependencyEnvironmentError("installed dependency entry changed during validation")
+
+
+def _read_bounded_regular_file(
+    path: Path,
+    expected_stat: os.stat_result,
+    *,
+    maximum_bytes: int,
+) -> bytes:
+    """Read exactly one stable regular file within an explicit byte limit."""
+    descriptor, before = _open_stable_regular_file(path, expected_stat)
+    try:
+        if before.st_size > maximum_bytes:
+            raise DependencyEnvironmentError("installed dependency source exceeds its byte limit")
+        remaining = before.st_size
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, _DIGEST_CHUNK_BYTES))
+            if not chunk:
+                raise DependencyEnvironmentError("installed dependency source changed during capture")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise DependencyEnvironmentError("installed dependency source changed during capture")
+        after = os.fstat(descriptor)
+    except OSError as error:
+        raise DependencyEnvironmentError("could not read an installed dependency safely") from error
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            raise DependencyEnvironmentError("could not close an installed dependency safely") from error
+    if _stable_entry_identity(before) != _stable_entry_identity(after):
+        raise DependencyEnvironmentError("installed dependency entry changed during validation")
+    if not getattr(os, "O_NOFOLLOW", 0):
+        try:
+            path_stat = os.lstat(path)
+        except OSError as error:
+            raise DependencyEnvironmentError("could not revalidate an installed dependency safely") from error
+        if (
+            _entry_is_redirecting(path_stat)
+            or _stable_entry_identity(path_stat) != _stable_entry_identity(expected_stat)
+            or _path_descriptor_entry_identity(path_stat) != _path_descriptor_entry_identity(after)
+        ):
+            raise DependencyEnvironmentError("installed dependency entry changed during validation")
+    return b"".join(chunks)
+
+
+def _tqdm_module_identity(relative_path: PurePosixPath) -> tuple[str, bool]:
+    relative_value = relative_path.as_posix()
+    if (
+        relative_path.is_absolute()
+        or "\\" in relative_value
+        or len(relative_path.parts) < 2
+        or relative_path.parts[0] != "tqdm"
+        or any(part in {"", ".", ".."} for part in relative_path.parts)
+        or relative_path.suffix != ".py"
+    ):
+        raise DependencyEnvironmentError("installed tqdm source path is unsafe")
+    module_parts = list(relative_path.with_suffix("").parts)
+    is_package = module_parts[-1] == "__init__"
+    if is_package:
+        module_parts.pop()
+    if not module_parts or any(not part.isidentifier() for part in module_parts):
+        raise DependencyEnvironmentError("installed tqdm source path is unsafe")
+    return ".".join(module_parts), is_package
+
+
+def _is_top_level_tqdm_import_artifact(name: str) -> bool:
+    folded_name = name.casefold()
+    if folded_name == "tqdm.py" or folded_name in {f"tqdm{suffix}" for suffix in _BYTECODE_SUFFIXES}:
+        return True
+    return folded_name.startswith("tqdm.") and folded_name.endswith(_NATIVE_EXTENSION_SUFFIXES)
+
+
+def _immutable_tqdm_package_root(dependency_paths: Sequence[str]) -> tuple[int, Path]:
+    if not dependency_paths:
+        raise DependencyEnvironmentError("installed dependency environment is empty")
+    candidates: list[tuple[int, Path]] = []
+    for root_index, value in enumerate(dependency_paths):
+        dependency_root = Path(value)
+        try:
+            resolved_root = dependency_root.resolve(strict=True)
+            root_stat = os.lstat(dependency_root)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise DependencyEnvironmentError("could not inspect the installed dependency environment") from error
+        if (
+            not dependency_root.is_absolute()
+            or dependency_root != resolved_root
+            or _entry_is_redirecting(root_stat)
+            or not stat.S_ISDIR(root_stat.st_mode)
+        ):
+            raise DependencyEnvironmentError("installed dependency path is unsafe")
+        try:
+            with os.scandir(dependency_root) as iterator:
+                entries = sorted(iterator, key=lambda entry: os.fsencode(entry.name))
+        except OSError as error:
+            raise DependencyEnvironmentError("could not inspect the installed tqdm package") from error
+        package_root: Path | None = None
+        for entry in entries:
+            if _is_top_level_tqdm_import_artifact(entry.name):
+                raise DependencyEnvironmentError("installed tqdm package root is ambiguous")
+            if entry.name.casefold() != "tqdm":
+                continue
+            if entry.name != "tqdm" or package_root is not None:
+                raise DependencyEnvironmentError("installed tqdm package root is ambiguous")
+            entry_path = dependency_root / entry.name
+            try:
+                package_stat = os.lstat(entry_path)
+            except OSError as error:
+                raise DependencyEnvironmentError("could not inspect the installed tqdm package") from error
+            if _entry_is_redirecting(package_stat) or not stat.S_ISDIR(package_stat.st_mode):
+                raise DependencyEnvironmentError("installed tqdm package is redirecting")
+            package_root = entry_path
+        try:
+            current_root_stat = os.lstat(dependency_root)
+        except OSError as error:
+            raise DependencyEnvironmentError("could not inspect the installed tqdm package") from error
+        if _entry_is_redirecting(current_root_stat) or _stable_entry_identity(root_stat) != _stable_entry_identity(
+            current_root_stat
+        ):
+            raise DependencyEnvironmentError("installed dependency environment changed during validation")
+        if package_root is not None:
+            candidates.append((root_index, package_root))
+    if len(candidates) != 1:
+        raise DependencyEnvironmentError("installed dependency environment must contain exactly one tqdm package")
+    return candidates[0]
+
+
+def _discover_immutable_tqdm_candidates(
+    dependency_paths: Sequence[str],
+) -> tuple[_ImmutableDependencySourceCandidate, ...]:
+    root_index, package_root = _immutable_tqdm_package_root(dependency_paths)
+    candidates: list[_ImmutableDependencySourceCandidate] = []
+    bytecode_paths: list[PurePosixPath] = []
+    total_size = 0
+
+    def visit(directory: Path, relative_directory: PurePosixPath) -> None:
+        nonlocal total_size
+        try:
+            before = os.lstat(directory)
+        except OSError as error:
+            raise DependencyEnvironmentError("could not inspect the installed tqdm package") from error
+        if _entry_is_redirecting(before) or not stat.S_ISDIR(before.st_mode):
+            raise DependencyEnvironmentError("installed tqdm package contains a redirecting directory")
+        try:
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda entry: os.fsencode(entry.name))
+        except OSError as error:
+            raise DependencyEnvironmentError("could not inspect the installed tqdm package") from error
+        for entry in entries:
+            entry_path = directory / entry.name
+            relative_path = relative_directory / entry.name
+            try:
+                entry_stat = os.lstat(entry_path)
+            except OSError as error:
+                raise DependencyEnvironmentError("could not inspect an installed tqdm entry") from error
+            if _entry_is_redirecting(entry_stat):
+                raise DependencyEnvironmentError("installed tqdm package contains a redirecting entry")
+            if stat.S_ISDIR(entry_stat.st_mode):
+                visit(entry_path, relative_path)
+                continue
+            if not stat.S_ISREG(entry_stat.st_mode):
+                raise DependencyEnvironmentError("installed tqdm package contains a special entry")
+            folded_name = entry.name.casefold()
+            if folded_name.endswith(_BYTECODE_SUFFIXES):
+                bytecode_paths.append(relative_path)
+                continue
+            if folded_name.endswith(_NATIVE_EXTENSION_SUFFIXES):
+                raise DependencyEnvironmentError("installed tqdm package contains an unsupported import artifact")
+            if relative_path.suffix != ".py":
+                continue
+            fullname, is_package = _tqdm_module_identity(relative_path)
+            if entry_stat.st_size > _MAX_IMMUTABLE_TQDM_SOURCE_BYTES:
+                raise DependencyEnvironmentError("installed tqdm source exceeds its byte limit")
+            total_size += entry_stat.st_size
+            if total_size > _MAX_IMMUTABLE_TQDM_TOTAL_BYTES:
+                raise DependencyEnvironmentError("installed tqdm sources exceed their total byte limit")
+            if len(candidates) >= _MAX_IMMUTABLE_TQDM_SOURCES:
+                raise DependencyEnvironmentError("installed tqdm package contains too many sources")
+            candidates.append(
+                _ImmutableDependencySourceCandidate(
+                    source=_ImmutableDependencySource(
+                        fullname=fullname,
+                        root_index=root_index,
+                        relative_path=relative_path,
+                        is_package=is_package,
+                        size=entry_stat.st_size,
+                        sha256="",
+                    ),
+                    path=entry_path,
+                    expected_stat=entry_stat,
+                )
+            )
+        try:
+            after = os.lstat(directory)
+        except OSError as error:
+            raise DependencyEnvironmentError("could not revalidate the installed tqdm package") from error
+        if _entry_is_redirecting(after) or _stable_entry_identity(before) != _stable_entry_identity(after):
+            raise DependencyEnvironmentError("installed tqdm package changed during validation")
+
+    visit(package_root, PurePosixPath("tqdm"))
+    source_paths = {candidate.source.relative_path for candidate in candidates}
+    for bytecode_path in bytecode_paths:
+        if bytecode_path.parent.name == "__pycache__":
+            source_stem = bytecode_path.stem.partition(".")[0]
+            if not source_stem:
+                raise DependencyEnvironmentError("installed tqdm package contains bytecode without source")
+            source_path = bytecode_path.parent.parent / f"{source_stem}.py"
+        else:
+            source_path = bytecode_path.with_suffix(".py")
+        if source_path not in source_paths:
+            raise DependencyEnvironmentError("installed tqdm package contains bytecode without source")
+    candidates.sort(key=lambda candidate: candidate.source.fullname)
+    sources_by_name: dict[str, _ImmutableDependencySource] = {}
+    casefold_names: set[str] = set()
+    for candidate in candidates:
+        source = candidate.source
+        folded_name = source.fullname.casefold()
+        if source.fullname in sources_by_name or folded_name in casefold_names:
+            raise DependencyEnvironmentError("installed tqdm package contains a module-name collision")
+        sources_by_name[source.fullname] = source
+        casefold_names.add(folded_name)
+    root_source = sources_by_name.get("tqdm")
+    if root_source is None or not root_source.is_package:
+        raise DependencyEnvironmentError("installed tqdm package has no canonical package source")
+    for source in sources_by_name.values():
+        parent_name = source.fullname.rpartition(".")[0]
+        while parent_name:
+            parent = sources_by_name.get(parent_name)
+            if parent is None or not parent.is_package:
+                raise DependencyEnvironmentError("installed tqdm source has no canonical parent package")
+            parent_name = parent_name.rpartition(".")[0]
+    return tuple(candidates)
+
+
+def _candidate_identities(
+    candidates: Sequence[_ImmutableDependencySourceCandidate],
+) -> tuple[tuple[_ImmutableDependencySource, Path, tuple[int, int, int, int, int, int, int]], ...]:
+    return tuple(
+        (candidate.source, candidate.path, _stable_entry_identity(candidate.expected_stat)) for candidate in candidates
+    )
+
+
+def _immutable_tqdm_sources(
+    dependency_paths: Sequence[str],
+    *,
+    capture_source_bytes: bool,
+) -> tuple[_ImmutableDependencySource, ...]:
+    candidates = _discover_immutable_tqdm_candidates(dependency_paths)
+    captured: list[_ImmutableDependencySource] = []
+    for candidate in candidates:
+        source_bytes = _read_bounded_regular_file(
+            candidate.path,
+            candidate.expected_stat,
+            maximum_bytes=_MAX_IMMUTABLE_TQDM_SOURCE_BYTES,
+        )
+        captured.append(
+            replace(
+                candidate.source,
+                sha256=hashlib.sha256(source_bytes).hexdigest(),
+                source_bytes=source_bytes if capture_source_bytes else b"",
+            )
+        )
+    current_candidates = _discover_immutable_tqdm_candidates(dependency_paths)
+    if _candidate_identities(current_candidates) != _candidate_identities(candidates):
+        raise DependencyEnvironmentError("installed tqdm package changed during capture")
+    return tuple(captured)
+
+
+def _immutable_tqdm_manifest_payload(
+    sources: Sequence[_ImmutableDependencySource],
+) -> dict[str, object]:
+    return {
+        "schema_version": _IMMUTABLE_TQDM_MANIFEST_SCHEMA_VERSION,
+        "namespace": "tqdm",
+        "sources": [
+            {
+                "fullname": source.fullname,
+                "root_index": source.root_index,
+                "relative_path": source.relative_path.as_posix(),
+                "is_package": source.is_package,
+                "size": source.size,
+                "sha256": source.sha256,
+            }
+            for source in sources
+        ],
+    }
+
+
+def _canonical_manifest_json(payload: object) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def immutable_tqdm_manifest(dependency_paths: Sequence[str]) -> str:
+    """Return canonical hash-only metadata for one installed tqdm source tree."""
+    sources = _immutable_tqdm_sources(dependency_paths, capture_source_bytes=False)
+    manifest = _canonical_manifest_json(_immutable_tqdm_manifest_payload(sources))
+    if len(manifest.encode("utf-8")) > _MAX_IMMUTABLE_TQDM_MANIFEST_BYTES:
+        raise DependencyEnvironmentError("installed tqdm source manifest exceeds its byte limit")
+    return manifest
+
+
+def _parsed_immutable_tqdm_manifest(
+    raw_manifest: str,
+    *,
+    dependency_root_count: int,
+) -> tuple[_ImmutableDependencySource, ...]:
+    if type(raw_manifest) is not str:
+        raise DependencyEnvironmentError("immutable tqdm source manifest is malformed")
+    if len(raw_manifest) > _MAX_IMMUTABLE_TQDM_MANIFEST_BYTES:
+        raise DependencyEnvironmentError("immutable tqdm source manifest exceeds its byte limit")
+    try:
+        encoded_manifest = raw_manifest.encode("utf-8")
+    except UnicodeError as error:
+        raise DependencyEnvironmentError("immutable tqdm source manifest is malformed") from error
+    if len(encoded_manifest) > _MAX_IMMUTABLE_TQDM_MANIFEST_BYTES:
+        raise DependencyEnvironmentError("immutable tqdm source manifest exceeds its byte limit")
+    try:
+        payload = json.loads(raw_manifest)
+    except (ValueError, RecursionError, TypeError) as error:
+        raise DependencyEnvironmentError("immutable tqdm source manifest is malformed") from error
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "namespace", "sources"}:
+        raise DependencyEnvironmentError("immutable tqdm source manifest is malformed")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != _IMMUTABLE_TQDM_MANIFEST_SCHEMA_VERSION:
+        raise DependencyEnvironmentError("immutable tqdm source manifest has an unsupported schema")
+    if type(payload["namespace"]) is not str or payload["namespace"] != "tqdm":
+        raise DependencyEnvironmentError("immutable tqdm source manifest has an unsupported namespace")
+    source_values = payload["sources"]
+    if type(source_values) is not list or not source_values or len(source_values) > _MAX_IMMUTABLE_TQDM_SOURCES:
+        raise DependencyEnvironmentError("immutable tqdm source manifest is malformed")
+
+    parsed_sources: list[_ImmutableDependencySource] = []
+    source_names: set[str] = set()
+    casefold_names: set[str] = set()
+    total_size = 0
+    expected_source_keys = {"fullname", "root_index", "relative_path", "is_package", "size", "sha256"}
+    for source_value in source_values:
+        if type(source_value) is not dict or set(source_value) != expected_source_keys:
+            raise DependencyEnvironmentError("immutable tqdm source manifest is malformed")
+        fullname = source_value["fullname"]
+        root_index = source_value["root_index"]
+        relative_value = source_value["relative_path"]
+        is_package = source_value["is_package"]
+        size = source_value["size"]
+        sha256 = source_value["sha256"]
+        if (
+            type(fullname) is not str
+            or type(root_index) is not int
+            or type(relative_value) is not str
+            or type(is_package) is not bool
+            or type(size) is not int
+            or type(sha256) is not str
+        ):
+            raise DependencyEnvironmentError("immutable tqdm source manifest is malformed")
+        relative_path = PurePosixPath(relative_value)
+        if relative_path.as_posix() != relative_value:
+            raise DependencyEnvironmentError("immutable tqdm source manifest contains an unsafe path")
+        expected_fullname, expected_is_package = _tqdm_module_identity(relative_path)
+        if fullname != expected_fullname or is_package is not expected_is_package:
+            raise DependencyEnvironmentError("immutable tqdm source manifest contains inconsistent metadata")
+        folded_name = fullname.casefold()
+        if fullname in source_names or folded_name in casefold_names:
+            raise DependencyEnvironmentError("immutable tqdm source manifest contains duplicate records")
+        if root_index < 0 or root_index >= dependency_root_count or size < 0 or size > _MAX_IMMUTABLE_TQDM_SOURCE_BYTES:
+            raise DependencyEnvironmentError("immutable tqdm source manifest contains invalid bounds")
+        if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
+            raise DependencyEnvironmentError("immutable tqdm source manifest contains an invalid hash")
+        total_size += size
+        if total_size > _MAX_IMMUTABLE_TQDM_TOTAL_BYTES:
+            raise DependencyEnvironmentError("immutable tqdm source manifest exceeds its total byte limit")
+        parsed_sources.append(
+            _ImmutableDependencySource(
+                fullname=fullname,
+                root_index=root_index,
+                relative_path=relative_path,
+                is_package=is_package,
+                size=size,
+                sha256=sha256,
+            )
+        )
+        source_names.add(fullname)
+        casefold_names.add(folded_name)
+    if tuple(source.fullname for source in parsed_sources) != tuple(sorted(source.fullname for source in parsed_sources)):
+        raise DependencyEnvironmentError("immutable tqdm source manifest is not canonically ordered")
+    if _canonical_manifest_json(payload) != raw_manifest:
+        raise DependencyEnvironmentError("immutable tqdm source manifest is not canonical JSON")
+    return tuple(parsed_sources)
+
+
+def _capture_immutable_tqdm_sources(
+    dependency_paths: Sequence[str],
+    raw_manifest: str,
+) -> tuple[_ImmutableDependencySource, ...]:
+    """Capture installed tqdm bytes only when they exactly match a manifest."""
+    manifest_sources = _parsed_immutable_tqdm_manifest(
+        raw_manifest,
+        dependency_root_count=len(dependency_paths),
+    )
+    candidates = _discover_immutable_tqdm_candidates(dependency_paths)
+    manifest_metadata = tuple(replace(source, sha256="") for source in manifest_sources)
+    if tuple(candidate.source for candidate in candidates) != manifest_metadata:
+        raise DependencyEnvironmentError("installed tqdm sources do not match the immutable manifest")
+    captured_sources: list[_ImmutableDependencySource] = []
+    for candidate, manifest_source in zip(candidates, manifest_sources, strict=True):
+        source_bytes = _read_bounded_regular_file(
+            candidate.path,
+            candidate.expected_stat,
+            maximum_bytes=_MAX_IMMUTABLE_TQDM_SOURCE_BYTES,
+        )
+        source_hash = hashlib.sha256(source_bytes).hexdigest()
+        if source_hash != manifest_source.sha256:
+            raise DependencyEnvironmentError("installed tqdm source hash does not match the immutable manifest")
+        captured_sources.append(
+            replace(
+                candidate.source,
+                sha256=source_hash,
+                source_bytes=source_bytes,
+            )
+        )
+    current_candidates = _discover_immutable_tqdm_candidates(dependency_paths)
+    if _candidate_identities(current_candidates) != _candidate_identities(candidates):
+        raise DependencyEnvironmentError("installed tqdm package changed during capture")
+    return tuple(captured_sources)
+
+
+def _immutable_source_identity(source: _ImmutableDependencySource) -> tuple[object, ...]:
+    """Return every retained field that must stay immutable during evaluation."""
+    return (
+        source.fullname,
+        source.root_index,
+        source.relative_path,
+        source.is_package,
+        source.size,
+        source.sha256,
+        source.source_bytes,
+    )
+
+
+class _ImmutableDependencySourceLoader(importlib.abc.SourceLoader):
+    """Compile one installed dependency module only from captured source bytes."""
+
+    def __init__(self, source: _ImmutableDependencySource) -> None:
+        self._source = source
+        self._expected_identity = _immutable_source_identity(source)
+
+    def _validate_source(self) -> None:
+        if _immutable_source_identity(self._source) != self._expected_identity:
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+
+    def get_filename(self, fullname: str) -> str:
+        if fullname != self._source.fullname:
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        self._validate_source()
+        return _IMMUTABLE_TQDM_ORIGIN
+
+    def get_data(self, path: str) -> bytes:
+        del path
+        raise OSError(DEPENDENCY_ISOLATION_ERROR)
+
+    def get_resource_reader(self, fullname: str) -> None:
+        self.get_filename(fullname)
+        return None
+
+    def get_code(self, fullname: str) -> CodeType:
+        filename = self.get_filename(fullname)
+        return self.source_to_code(self._source.source_bytes, filename)
+
+    def is_package(self, fullname: str) -> bool:
+        self.get_filename(fullname)
+        return self._source.is_package
+
+
+class _ImmutableDependencyFinder(importlib.abc.MetaPathFinder):
+    """Resolve only exact captured tqdm modules without installed import roots."""
+
+    def __init__(self, sources: Sequence[_ImmutableDependencySource]) -> None:
+        source_map = {source.fullname: source for source in sources}
+        if len(source_map) != len(sources) or "tqdm" not in source_map:
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        self._sources = MappingProxyType(source_map)
+        self._expected_source_identity = tuple(
+            (fullname, _immutable_source_identity(source)) for fullname, source in self._sources.items()
+        )
+        self._loaders = {fullname: _ImmutableDependencySourceLoader(source) for fullname, source in self._sources.items()}
+        self._specs = {
+            fullname: importlib.machinery.ModuleSpec(
+                fullname,
+                self._loaders[fullname],
+                origin=_IMMUTABLE_TQDM_ORIGIN,
+                is_package=source.is_package,
+            )
+            for fullname, source in self._sources.items()
+        }
+        self._expected_loaders = tuple(self._loaders.items())
+        self._expected_specs = tuple(self._specs.items())
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None,
+        target: ModuleType | None = None,
+    ) -> importlib.machinery.ModuleSpec | None:
+        del path
+        del target
+        if fullname != "tqdm" and not fullname.startswith("tqdm."):
+            return None
+        self.validate_sources()
+        spec = self._specs.get(fullname)
+        if spec is None:
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        return spec
+
+    def validate_sources(self) -> None:
+        """Require retained sources and every loaded tqdm module to stay bound."""
+        current_identity = tuple((fullname, _immutable_source_identity(source)) for fullname, source in self._sources.items())
+        if current_identity != self._expected_source_identity:
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        if (
+            tuple(self._loaders) != tuple(name for name, _loader in self._expected_loaders)
+            or tuple(self._specs) != tuple(name for name, _spec in self._expected_specs)
+            or any(self._loaders[name] is not loader for name, loader in self._expected_loaders)
+            or any(self._specs[name] is not spec for name, spec in self._expected_specs)
+        ):
+            raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+        for expected_loader in self._loaders.values():
+            expected_loader._validate_source()
+        for fullname, module in tuple(sys.modules.items()):
+            if fullname != "tqdm" and not fullname.startswith("tqdm."):
+                continue
+            source = self._sources.get(fullname)
+            module_loader = self._loaders.get(fullname)
+            spec = self._specs.get(fullname)
+            if source is None or module_loader is None or spec is None or not isinstance(module, ModuleType):
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+            module_spec = getattr(module, "__spec__", None)
+            loaded_by = getattr(module, "__loader__", None)
+            if (
+                not isinstance(module_spec, importlib.machinery.ModuleSpec)
+                or loaded_by is not module_loader
+                or module_spec is not spec
+                or module_spec.loader is not module_loader
+                or module_spec.origin != _IMMUTABLE_TQDM_ORIGIN
+                or (module_spec.submodule_search_locations is not None) is not source.is_package
+            ):
+                raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
 
 
 def _update_dependency_tree_digest(
@@ -618,11 +1448,13 @@ class _CoordinatorBootstrapState(ModuleType):
         repository_root: Path,
         protected_finder: _WorktreePackageFinder,
         import_paths: Sequence[str],
+        qbittorrentapi_shim: _QbittorrentApiShimState | None,
     ) -> None:
         super().__init__(COORDINATOR_BOOTSTRAP_MODULE)
         self._expected_main = repository_root / "benchmarks" / "gauntlet" / "__main__.py"
         self._protected_finder = protected_finder
         self._import_paths = tuple(import_paths)
+        self._qbittorrentapi_shim = qbittorrentapi_shim
         self._accepted = False
 
     def accept(self, source_file: str) -> bool:
@@ -640,8 +1472,15 @@ class _CoordinatorBootstrapState(ModuleType):
             module = sys.modules.get(module_name)
             if module is None or not isinstance(module.__loader__, _ProtectedSourceLoader):
                 return False
+        if self._qbittorrentapi_shim is not None:
+            self._qbittorrentapi_shim.validate()
         self._accepted = True
         return True
+
+    def validate_after_imports(self) -> None:
+        """Revalidate the protected dependency shim after application imports."""
+        if self._qbittorrentapi_shim is not None:
+            self._qbittorrentapi_shim.validate()
 
 
 def _resolved_dependency_paths(raw_value: str, repository_root: Path) -> list[str]:
@@ -708,6 +1547,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         repository_root,
     )
     expected_dependency_digest: str | None = None
+    immutable_dependency_sources: tuple[_ImmutableDependencySource, ...] = ()
     expected_revision = "HEAD"
     if resolved_arguments[:1] == [EXPECTED_REPOSITORY_COMMIT_ARGUMENT]:
         resolved_arguments.pop(0)
@@ -725,6 +1565,18 @@ def main(arguments: Sequence[str] | None = None) -> None:
         if _current_dependency_digest(dependency_paths) != expected_dependency_digest:
             raise SystemExit("gauntlet dependency environment changed before evaluation")
         _reject_preloaded_dependency_modules(dependency_paths)
+        if resolved_arguments[:1] != [IMMUTABLE_TQDM_MANIFEST_ARGUMENT]:
+            raise SystemExit(DEPENDENCY_ISOLATION_ERROR)
+        resolved_arguments.pop(0)
+        if not resolved_arguments:
+            raise SystemExit(DEPENDENCY_ISOLATION_ERROR)
+        try:
+            immutable_dependency_sources = _capture_immutable_tqdm_sources(
+                dependency_paths,
+                resolved_arguments.pop(0),
+            )
+        except DependencyEnvironmentError:
+            raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
     interpreter_paths = _validate_interpreter_paths(repository_root)
     _require_safe_package_trees(repository_root)
     try:
@@ -739,32 +1591,69 @@ def main(arguments: Sequence[str] | None = None) -> None:
         protected_sources,
         expected_revision,
     )
+    immutable_dependency_finder = (
+        _ImmutableDependencyFinder(immutable_dependency_sources) if expected_dependency_digest is not None else None
+    )
+    qbittorrentapi_shim = _QbittorrentApiShimState() if expected_dependency_digest is not None else None
 
     # The worktree root is deliberately absent. Digest-bound measured children
     # use no installed import roots; ordinary mode keeps them behind stdlib.
     sys.path[:] = interpreter_paths if expected_dependency_digest is not None else [*interpreter_paths, *dependency_paths]
     sys.meta_path.insert(0, protected_finder)
+    if immutable_dependency_finder is not None:
+        sys.meta_path.insert(1, immutable_dependency_finder)
+    if qbittorrentapi_shim is not None:
+        try:
+            qbittorrentapi_shim.install()
+        except DependencyEnvironmentError:
+            raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
     if COORDINATOR_BOOTSTRAP_MODULE in sys.modules:
         raise SystemExit(PROTECTED_IMPORT_ERROR)
     bootstrap_state = _CoordinatorBootstrapState(
         repository_root,
         protected_finder,
         sys.path,
+        qbittorrentapi_shim,
     )
     sys.modules[COORDINATOR_BOOTSTRAP_MODULE] = bootstrap_state
     sys.argv[:] = ["benchmarks.gauntlet", *resolved_arguments]
     try:
         try:
-            runpy.run_module("benchmarks.gauntlet", run_name="__main__", alter_sys=True)
+            try:
+                runpy.run_module("benchmarks.gauntlet", run_name="__main__", alter_sys=True)
+                if qbittorrentapi_shim is not None:
+                    qbittorrentapi_shim.validate()
+            except (AttributeError, ImportError) as error:
+                if qbittorrentapi_shim is None or not qbittorrentapi_shim._matches_unapproved_use(error):
+                    raise
+                raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
+            except DependencyEnvironmentError:
+                raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
         except ProtectedPackageTreeError:
             raise SystemExit(PROTECTED_IMPORT_ERROR) from None
     finally:
         try:
+            if qbittorrentapi_shim is not None:
+                try:
+                    qbittorrentapi_shim.validate()
+                except DependencyEnvironmentError:
+                    raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
             _require_safe_package_trees(repository_root)
             try:
                 protected_finder.validate_sources()
             except ProtectedPackageTreeError:
                 raise SystemExit(PROTECTED_IMPORT_ERROR) from None
+            if immutable_dependency_finder is not None:
+                try:
+                    if (
+                        len(sys.meta_path) < 2
+                        or sys.meta_path[0] is not protected_finder
+                        or sys.meta_path[1] is not immutable_dependency_finder
+                    ):
+                        raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
+                    immutable_dependency_finder.validate_sources()
+                except DependencyEnvironmentError:
+                    raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
             if (
                 expected_dependency_digest is not None
                 and _current_dependency_digest(dependency_paths) != expected_dependency_digest

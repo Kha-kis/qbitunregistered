@@ -6,6 +6,7 @@ import sys
 
 _COORDINATOR_BOOTSTRAP_MODULE = "_qbitunregistered_gauntlet_coordinator_bootstrap"
 _COORDINATOR_LAUNCH_ERROR = "paired gauntlet must be started with benchmarks/gauntlet/launcher.py"
+_COORDINATOR_BOOTSTRAP_STATE = sys.modules.get(_COORDINATOR_BOOTSTRAP_MODULE)
 
 
 def _paired_arguments_requested(arguments: Sequence[str]) -> bool:
@@ -24,6 +25,12 @@ def _require_isolated_coordinator() -> None:
         or accept(__file__) is not True
     ):
         raise SystemExit(_COORDINATOR_LAUNCH_ERROR)
+
+
+def _validate_imported_application_boundary() -> None:
+    """Revalidate protected dependency state after first-party imports."""
+    if _COORDINATOR_BOOTSTRAP_STATE is not None:
+        _COORDINATOR_BOOTSTRAP_STATE.validate_after_imports()
 
 
 _EARLY_COORDINATOR_ISOLATION_VERIFIED = _paired_arguments_requested(sys.argv[1:])
@@ -336,6 +343,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_bound_output_leaf,
         write_serialized_result,
     )
+
+    _validate_imported_application_boundary()
 
     if paired_requested:
         from benchmarks.gauntlet.paired import PairedGauntletError, run_paired_gauntlet

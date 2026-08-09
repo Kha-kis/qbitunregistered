@@ -76,6 +76,78 @@ def _tracker_config() -> dict[str, object]:
     }
 
 
+def test_tracker_apprise_boundary_rejects_notification_enabled_fixture(tmp_path: Path) -> None:
+    """Reject notification configuration before the real CLI can use it."""
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_809,
+    )
+    config_path = tracker_runner._tracker_cli_config_path(fixture)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["apprise_url"] = "json://qbitunregistered-gauntlet.invalid"
+    config_path.write_text(json.dumps(config, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+    with pytest.raises(
+        runner.GauntletSafetyError,
+        match="^tracker scenario notification boundary is not disabled$",
+    ):
+        tracker_runner._execute_scenario_cli(
+            fixture,
+            before_preview=None,
+            before_execution=None,
+            dry_run=True,
+            production_audit=tracker_runner._ProductionBoundaryAudit(),
+        )
+
+    assert fixture.client.logout_count == 0
+    assert fixture.client.mutation_total == 0
+
+
+@pytest.mark.parametrize("available_value", (True, None))
+def test_tracker_apprise_boundary_rejects_non_false_availability_with_protected_shim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    available_value: object,
+) -> None:
+    """Require the exact supported optional-absence state under the shim."""
+    from qbitunregistered import notifications
+
+    tracker_fixture = _tracker_module("tracker_fixture")
+    tracker_runner = _tracker_module("tracker_runner")
+    fixture = tracker_fixture.build_tracker_fixture(
+        tmp_path / "tracker-fixture",
+        _tracker_safety_profile(),
+        seed=20_260_810,
+    )
+    config_path = tracker_runner._tracker_cli_config_path(fixture)
+    qbittorrentapi = sys.modules["qbittorrentapi"]
+    assert qbittorrentapi.__spec__ is not None
+    monkeypatch.setattr(
+        qbittorrentapi.__spec__,
+        "origin",
+        "<qbitunregistered-gauntlet-qbittorrentapi-shim>",
+    )
+    monkeypatch.setattr(notifications, "APPRISE_AVAILABLE", available_value)
+
+    with pytest.raises(
+        runner.GauntletSafetyError,
+        match="^tracker scenario notification boundary is not disabled$",
+    ):
+        tracker_runner._execute_scenario_cli(
+            fixture,
+            before_preview=None,
+            before_execution=None,
+            dry_run=True,
+            production_audit=tracker_runner._ProductionBoundaryAudit(),
+        )
+
+    assert fixture.client.logout_count == 0
+    assert fixture.client.mutation_total == 0
+
+
 def test_tracker_boundary_rejects_preopened_os_write_outside_root(tmp_path: Path) -> None:
     """Reject an outside regular fd before os.write can bypass audit events."""
     tracker_runner = _tracker_module("tracker_runner")

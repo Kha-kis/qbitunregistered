@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Tracker gauntlet schema 9 / evaluator 1.11.0 now measures the
+- Tracker gauntlet schema 9 / evaluator 1.12.0 now measures the
   production-owned initial torrent
   snapshot through the real CLI in every fresh warm-up, timed, and memory pass.
   Control is exactly one ordinary snapshot plus `N` exact tracker reads;
@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate primary triple derives one artifact role, and every primary pass
   plus all twelve scenarios must match that role without per-scenario mixing.
   Earlier tracker artifacts are invalid.
+- Paired evaluator identity is now 1.12.0 and pairing identity is 2.8.0 without
+  changing result schema 9 or paired-result schema 6. Paired children keep all
+  installed dependency roots off `sys.path`, execute real `tqdm` only from
+  captured manifest-matching bytes, and use the evaluator-owned fail-closed
+  fake-client shim as the qBittorrent boundary. Apprise remains intentionally
+  unavailable for tracker fixtures while its normal optional import path is
+  unchanged outside paired evaluation. The full dependency tree is fingerprinted
+  before and after every child; this does not verify installed qBittorrent-client
+  imports or support arbitrary third-party packages. Evaluator 1.11.0 and older
+  artifacts cannot establish the repaired paired tracker gate.
 - Clarified that evaluator establishment must be reviewed and merged before
   production optimization, evaluator inputs stay unchanged on optimization
   branches, private review orchestration is not repository content, and a live

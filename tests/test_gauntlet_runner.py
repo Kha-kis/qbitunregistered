@@ -12,12 +12,13 @@ import logging
 import math
 import os
 import py_compile
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import tracemalloc
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -300,8 +301,11 @@ def _run_import_bootstrap_fixture(
     dependency_root: Path,
 ) -> subprocess.CompletedProcess[str]:
     """Run one tracked bootstrap fixture without inherited Python injection."""
+    if not (dependency_root / "tqdm").exists():
+        _write_test_tqdm_dependency_tree(dependency_root)
     dependency_paths = (str(dependency_root.resolve()),)
     dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
     return subprocess.run(
         [
             sys.executable,
@@ -313,6 +317,8 @@ def _run_import_bootstrap_fixture(
             json.dumps(dependency_paths),
             import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
             dependency_digest,
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
         ],
         cwd=repository_root.parent,
         env={
@@ -324,6 +330,247 @@ def _run_import_bootstrap_fixture(
         text=True,
         timeout=30,
     )
+
+
+def _build_tqdm_dependency_tree(tmp_path: Path) -> tuple[str, ...]:
+    """Create one small, importable tqdm source tree and package data."""
+    dependency_root = tmp_path / "environment" / "site-packages"
+    _write_test_tqdm_dependency_tree(dependency_root)
+    return (str(dependency_root.resolve()),)
+
+
+def _write_test_tqdm_dependency_tree(dependency_root: Path) -> None:
+    """Write one small, importable tqdm source tree and package data."""
+    tqdm_root = dependency_root / "tqdm"
+    contrib_root = tqdm_root / "contrib"
+    contrib_root.mkdir(parents=True)
+    (tqdm_root / "__init__.py").write_bytes(b'from .std import tqdm\n__version__ = "test"\n')
+    (tqdm_root / "std.py").write_bytes(b"class tqdm:\n    pass\n")
+    (contrib_root / "__init__.py").write_bytes(b'NAME = "contrib"\n')
+    (contrib_root / "bells.py").write_bytes(b"ENABLED = True\n")
+    bytecode_root = tqdm_root / "__pycache__"
+    bytecode_root.mkdir()
+    (bytecode_root / "std.cpython-311.pyc").write_bytes(b"source-backed cache data")
+    (tqdm_root / "README.txt").write_bytes(b"ordinary package data\n")
+
+
+@contextmanager
+def _installed_qbittorrentapi_shim():
+    """Install one isolated shim while preserving the test process imports."""
+    protected_names = tuple(name for name in sys.modules if name == "qbittorrentapi" or name.startswith("qbittorrentapi."))
+    previous_modules = {name: sys.modules.pop(name) for name in protected_names}
+    state = import_bootstrap._QbittorrentApiShimState()
+    try:
+        state.install()
+        yield state
+    finally:
+        for name in tuple(sys.modules):
+            if name == "qbittorrentapi" or name.startswith("qbittorrentapi."):
+                del sys.modules[name]
+        sys.modules.update(previous_modules)
+
+
+def _build_unsafe_tqdm_tree(tmp_path: Path, mutation: str) -> tuple[str, ...]:
+    """Create exactly one selected invalid tqdm source-tree shape."""
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    dependency_root = Path(dependency_paths[0])
+    tqdm_root = dependency_root / "tqdm"
+
+    if mutation == "duplicate_root":
+        second_root = tmp_path / "second" / "site-packages"
+        second_tqdm_root = second_root / "tqdm"
+        second_tqdm_root.mkdir(parents=True)
+        (second_tqdm_root / "__init__.py").write_bytes(b"SECOND = True\n")
+        return (*dependency_paths, str(second_root.resolve()))
+    if mutation == "symlink_source":
+        target = tmp_path / "redirected.py"
+        target.write_bytes(b"REDIRECTED = True\n")
+        try:
+            (tqdm_root / "redirected.py").symlink_to(target)
+        except (NotImplementedError, OSError) as error:
+            pytest.skip(f"platform cannot create a symbolic link: {error}")
+    elif mutation == "redirected_package":
+        target = tmp_path / "redirected_package"
+        target.mkdir()
+        (target / "__init__.py").write_bytes(b"REDIRECTED = True\n")
+        try:
+            (tqdm_root / "redirected_package").symlink_to(target, target_is_directory=True)
+        except (NotImplementedError, OSError) as error:
+            pytest.skip(f"platform cannot create a symbolic link: {error}")
+    elif mutation == "casefold_collision":
+        collision_root = tqdm_root / "Collision"
+        collision_root.mkdir()
+        (collision_root / "__init__.py").write_bytes(b"VALUE = 1\n")
+        (tqdm_root / "collision.py").write_bytes(b"VALUE = 2\n")
+    elif mutation == "bytecode_only":
+        (tqdm_root / "bytecode_only.pyc").write_bytes(b"not bytecode")
+    elif mutation == "native_extension":
+        extension_suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
+        (tqdm_root / f"native_extension{extension_suffix}").write_bytes(b"not native code")
+    elif mutation == "oversized_source":
+        (tqdm_root / "oversized.py").write_bytes(b"#" * (1024 * 1024 + 1))
+    elif mutation == "too_many_sources":
+        for index in range(256):
+            (tqdm_root / f"module_{index:03d}.py").write_bytes(b"VALUE = 1\n")
+    else:
+        raise AssertionError(f"unknown unsafe tree mutation: {mutation}")
+    return dependency_paths
+
+
+def test_qbittorrentapi_shim_exposes_only_the_protected_import_contract() -> None:
+    """Reject accidental qBittorrent API surface or path-bearing metadata."""
+    with _installed_qbittorrentapi_shim() as shim:
+        qbittorrentapi = importlib.import_module("qbittorrentapi")
+        exceptions = importlib.import_module("qbittorrentapi.exceptions")
+
+        assert set(vars(qbittorrentapi)) == {
+            "__name__",
+            "__doc__",
+            "__package__",
+            "__loader__",
+            "__spec__",
+            "__path__",
+            "Client",
+            "exceptions",
+        }
+        assert set(vars(exceptions)) == {
+            "__name__",
+            "__doc__",
+            "__package__",
+            "__loader__",
+            "__spec__",
+            "APIConnectionError",
+        }
+        assert qbittorrentapi.exceptions is exceptions
+        assert qbittorrentapi.Client.__module__ == "qbittorrentapi"
+        assert exceptions.APIConnectionError.__module__ == "qbittorrentapi.exceptions"
+        assert issubclass(exceptions.APIConnectionError, Exception)
+        assert qbittorrentapi.__spec__ is not None
+        assert exceptions.__spec__ is not None
+        assert qbittorrentapi.__spec__.origin == "<qbitunregistered-gauntlet-qbittorrentapi-shim>"
+        assert exceptions.__spec__.origin == "<qbitunregistered-gauntlet-qbittorrentapi-shim>"
+        assert qbittorrentapi.__spec__.has_location is False
+        assert exceptions.__spec__.has_location is False
+        assert not hasattr(qbittorrentapi, "__file__")
+        assert not hasattr(exceptions, "__file__")
+        assert shim.client_constructions == 0
+        assert shim.exception_instances == 0
+        shim.validate()
+
+
+@pytest.mark.parametrize(
+    ("probe", "expected_error", "client_constructions", "exception_instances"),
+    (
+        (lambda root: root.Client(), import_bootstrap.DependencyEnvironmentError, 1, 0),
+        (lambda root: root.Client(host="unused"), import_bootstrap.DependencyEnvironmentError, 1, 0),
+        (
+            lambda root: root.exceptions.APIConnectionError(),
+            import_bootstrap.DependencyEnvironmentError,
+            0,
+            1,
+        ),
+        (lambda root: importlib.import_module("qbittorrentapi.torrents"), ModuleNotFoundError, 0, 0),
+        (lambda root: getattr(root, "Session"), AttributeError, 0, 0),
+    ),
+)
+def test_qbittorrentapi_shim_fails_closed_on_unapproved_use(
+    probe: Any,
+    expected_error: type[BaseException],
+    client_constructions: int,
+    exception_instances: int,
+) -> None:
+    """Make every unapproved import or runtime use terminate explicitly."""
+    with _installed_qbittorrentapi_shim() as shim:
+        qbittorrentapi = importlib.import_module("qbittorrentapi")
+
+        with pytest.raises(expected_error):
+            probe(qbittorrentapi)
+
+        assert shim.client_constructions == client_constructions
+        assert shim.exception_instances == exception_instances
+        if client_constructions or exception_instances:
+            with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+                shim.validate()
+        else:
+            shim.validate()
+
+
+def test_qbittorrentapi_shim_rejects_permissive_sentinel_subclasses() -> None:
+    """Prevent subclasses from bypassing either fail-closed constructor."""
+    with _installed_qbittorrentapi_shim() as shim:
+        qbittorrentapi = importlib.import_module("qbittorrentapi")
+
+        with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+
+            class UnsupportedClient(qbittorrentapi.Client):
+                pass
+
+        with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+
+            class UnsupportedApiError(qbittorrentapi.exceptions.APIConnectionError):
+                pass
+
+        assert shim.client_constructions == 0
+        assert shim.exception_instances == 0
+        shim.validate()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("root_module", "exceptions_module", "client", "api_error", "spec", "loader", "exceptions_link"),
+)
+def test_qbittorrentapi_shim_validation_rejects_retained_graph_mutation(mutation: str) -> None:
+    """Detect persistent replacement of every security-relevant shim object."""
+    with _installed_qbittorrentapi_shim() as shim:
+        qbittorrentapi = importlib.import_module("qbittorrentapi")
+        exceptions = importlib.import_module("qbittorrentapi.exceptions")
+
+        if mutation == "root_module":
+            sys.modules["qbittorrentapi"] = ModuleType("qbittorrentapi")
+        elif mutation == "exceptions_module":
+            sys.modules["qbittorrentapi.exceptions"] = ModuleType("qbittorrentapi.exceptions")
+        elif mutation == "client":
+            vars(qbittorrentapi)["Client"] = object
+        elif mutation == "api_error":
+            vars(exceptions)["APIConnectionError"] = RuntimeError
+        elif mutation == "spec":
+            qbittorrentapi.__spec__ = importlib.machinery.ModuleSpec("qbittorrentapi", None)
+        elif mutation == "loader":
+            vars(qbittorrentapi)["__loader__"] = object()
+        elif mutation == "exceptions_link":
+            vars(qbittorrentapi)["exceptions"] = ModuleType("qbittorrentapi.exceptions")
+        else:
+            raise AssertionError(mutation)
+
+        with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+            shim.validate()
+
+
+def test_coordinator_accept_validates_qbittorrentapi_shim_after_protected_imports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject import-time shim drift before the coordinator can evaluate."""
+    with _installed_qbittorrentapi_shim() as shim:
+        protected_finder = object.__new__(import_bootstrap._WorktreePackageFinder)
+        protected_loader = object.__new__(import_bootstrap._ProtectedSourceLoader)
+        monkeypatch.setattr(sys, "meta_path", [protected_finder, *sys.meta_path])
+        for name in ("benchmarks", "benchmarks.gauntlet", "__main__"):
+            module = ModuleType(name)
+            module.__loader__ = protected_loader
+            monkeypatch.setitem(sys.modules, name, module)
+        bootstrap_state = import_bootstrap._CoordinatorBootstrapState(
+            tmp_path,
+            protected_finder,
+            tuple(sys.path),
+            shim,
+        )
+        monkeypatch.setitem(sys.modules, import_bootstrap.COORDINATOR_BOOTSTRAP_MODULE, bootstrap_state)
+        qbittorrentapi = importlib.import_module("qbittorrentapi")
+        vars(qbittorrentapi)["Client"] = object
+
+        with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+            bootstrap_state.accept(str(tmp_path / "benchmarks" / "gauntlet" / "__main__.py"))
 
 
 def _set_test_index_flag(
@@ -2145,7 +2392,7 @@ def test_tracker_oracle_dispatches_through_shared_versioned_result(tmp_path: Pat
     assert result["profile"] == "tracker-quick"
     assert result["schema"] == "qbitunregistered.gauntlet.result"
     assert result["schema_version"] == 9
-    assert result["evaluator_version"] == "1.11.0"
+    assert result["evaluator_version"] == "1.12.0"
     assert result["scope"] == "orphan_and_tracker_dry_run_evaluation"
     assert result["commit"] == "unknown"
     assert result["candidate_state"] == {"clean": None, "diff_sha256": "unknown"}
@@ -2191,7 +2438,7 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
 
     assert quick.kind == full.kind == "tracker"
     assert paired.PAIRED_SCHEMA_VERSION == 6
-    assert paired.PAIRING_VERSION == "2.7.0"
+    assert paired.PAIRING_VERSION == "2.8.0"
     assert quick.tier == "round"
     assert full.tier == "candidate"
     assert quick.fixture_manifest_digest == "348948093b6f400156f97e29c4314a1b0836f31e4d7b3b59d16781008e1a0988"
@@ -2229,6 +2476,37 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
     assert quick.runtime_baseline_fraction_max == full.runtime_baseline_fraction_max == 1.0
     assert quick.peak_memory_baseline_fraction_max == full.peak_memory_baseline_fraction_max == 1.25
     assert set(tracker_fixture.TRACKER_PROFILES) <= set(quality_bar.profiles)
+
+
+def test_evaluator_identity_versions_preserve_existing_result_schemas() -> None:
+    """Catch identity drift without accepting a result-schema change."""
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+
+    assert quality_bar.evaluator_schema_version == SCHEMA_VERSION == 9
+    assert quality_bar.evaluator_version == EVALUATOR_VERSION == "1.12.0"
+    assert paired.PAIRED_SCHEMA_VERSION == 6
+    assert paired.PAIRING_VERSION == "2.8.0"
+
+
+def test_paired_documentation_defines_immutable_child_import_boundary() -> None:
+    """Catch paired docs that omit a protected child-import constraint."""
+    documentation_paths = (
+        REPOSITORY_ROOT / "benchmarks" / "gauntlet" / "README.md",
+        REPOSITORY_ROOT / "ARCHITECTURE.md",
+        REPOSITORY_ROOT / "CONTRIBUTING.md",
+    )
+    required_boundary_statements = (
+        "all installed dependency roots off child `sys.path`",
+        "real `tqdm` executes only from captured manifest-matching bytes",
+        "evaluator-owned, fail-closed fake-client shim",
+        "Apprise is intentionally unavailable for tracker fixtures",
+        "complete dependency tree remains fingerprinted before and after every child",
+    )
+
+    for documentation_path in documentation_paths:
+        content = " ".join(documentation_path.read_text(encoding="utf-8").split())
+        for statement in required_boundary_statements:
+            assert statement in content, f"{documentation_path} omits: {statement}"
 
 
 @pytest.mark.parametrize(
@@ -2859,9 +3137,12 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     }
     dependency_root = tmp_path / "environment" / "site-packages"
     dependency_root.mkdir(parents=True)
+    _write_test_tqdm_dependency_tree(dependency_root)
     (dependency_root / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
     dependency_paths = (str(dependency_root),)
     dependency_environment_identity = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    child_manifests: list[str] = []
 
     monkeypatch.setattr(
         "benchmarks.gauntlet.paired.capture_repository_identity",
@@ -2894,6 +3175,7 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
         role = "control" if root == control_root else "candidate"
         assert kwargs["dependency_paths"] == dependency_paths
         assert kwargs["dependency_environment_digest"] == dependency_environment_identity
+        child_manifests.append(kwargs["immutable_tqdm_manifest"])
         assert kwargs["bootstrap_source"] == b"# immutable bootstrap\n"
         assert kwargs["expected_commit"] == identities[root].commit
         calls.append(role)
@@ -2920,6 +3202,7 @@ def test_paired_runner_uses_crossover_and_emits_all_bound_identities(
     )
 
     assert calls == list(PAIRED_ORDER)
+    assert child_manifests == [immutable_manifest] * len(PAIRED_ORDER)
     assert result["identities"]["orchestrator"]["commit"] == "e" * 40
     assert result["identities"]["control"]["commit"] == "a" * 40
     assert result["identities"]["candidate"]["commit"] == "c" * 40
@@ -3192,6 +3475,7 @@ def test_paired_runner_rechecks_importable_extensions_after_each_child(
         "benchmarks.gauntlet.paired._current_dependency_environment_digest",
         lambda _paths: "a" * 64,
     )
+    monkeypatch.setattr(paired, "immutable_tqdm_manifest", lambda _paths: "immutable tqdm manifest")
     monkeypatch.setattr(
         paired,
         "_verified_canonical_quality_bar",
@@ -3236,6 +3520,7 @@ def test_paired_runner_rejects_dependency_environment_tampering_between_children
     control_root.mkdir()
     candidate_root.mkdir()
     dependency_root.mkdir(parents=True)
+    _write_test_tqdm_dependency_tree(dependency_root)
     dependency_file.write_text("VALUE = 1\n", encoding="utf-8")
     expected_runs = _paired_runs()
     calls: list[Path] = []
@@ -3635,6 +3920,643 @@ def test_dependency_environment_digest_tracks_paths_and_contents_not_mtime(
     assert import_bootstrap.dependency_environment_digest(dependency_paths) != content_changed
 
 
+def _dependency_source_stat(
+    payload: bytes,
+    *,
+    inode: int = 11,
+    size: int | None = None,
+    mtime_ns: int = 13,
+    ctime_ns: int = 17,
+    file_attributes: int = 0,
+) -> os.stat_result:
+    return cast(
+        os.stat_result,
+        SimpleNamespace(
+            st_dev=7,
+            st_ino=inode,
+            st_mode=stat.S_IFREG | 0o600,
+            st_size=len(payload) if size is None else size,
+            st_file_attributes=file_attributes,
+            st_mtime_ns=mtime_ns,
+            st_ctime_ns=ctime_ns,
+        ),
+    )
+
+
+def _mock_dependency_source_read(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    *,
+    descriptor_before: os.stat_result,
+    descriptor_after: os.stat_result,
+    path_after: os.stat_result,
+    platform_name: str,
+) -> None:
+    monkeypatch.setattr(
+        import_bootstrap,
+        "_WINDOWS_PATH_STAT_CTIME_IS_UNSTABLE",
+        platform_name == "nt",
+        raising=False,
+    )
+    monkeypatch.delattr(import_bootstrap.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.setattr(import_bootstrap.os, "open", Mock(return_value=31))
+    monkeypatch.setattr(
+        import_bootstrap.os,
+        "fstat",
+        Mock(side_effect=(descriptor_before, descriptor_after)),
+    )
+    monkeypatch.setattr(import_bootstrap.os, "read", Mock(side_effect=(payload, b"")))
+    monkeypatch.setattr(import_bootstrap.os, "lstat", Mock(return_value=path_after))
+    monkeypatch.setattr(import_bootstrap.os, "close", Mock())
+
+
+def test_windows_bounded_dependency_reader_tolerates_only_cross_interface_ctime_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"verified source\n"
+    process_os_name = os.name
+    path_before = _dependency_source_stat(payload, ctime_ns=17)
+    descriptor_stat = _dependency_source_stat(payload, ctime_ns=19)
+    path_after = _dependency_source_stat(payload, ctime_ns=17)
+    _mock_dependency_source_read(
+        monkeypatch,
+        payload,
+        descriptor_before=descriptor_stat,
+        descriptor_after=descriptor_stat,
+        path_after=path_after,
+        platform_name="nt",
+    )
+
+    assert (
+        import_bootstrap._read_bounded_regular_file(
+            Path("dependency.py"),
+            path_before,
+            maximum_bytes=1024,
+        )
+        == payload
+    )
+    assert os.name == process_os_name
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "mutation"),
+    [
+        ("posix", "path_ctime"),
+        ("nt", "path_ctime"),
+        ("nt", "descriptor_ctime"),
+        ("nt", "path_inode"),
+        ("nt", "path_size"),
+        ("nt", "path_mtime"),
+        ("nt", "path_attributes"),
+    ],
+)
+def test_bounded_dependency_reader_rejects_nonportable_identity_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_name: str,
+    mutation: str,
+) -> None:
+    payload = b"verified source\n"
+    path_before = _dependency_source_stat(payload, ctime_ns=17)
+    descriptor_before = _dependency_source_stat(payload, ctime_ns=19)
+    descriptor_after = _dependency_source_stat(
+        payload,
+        ctime_ns=29 if mutation == "descriptor_ctime" else 19,
+    )
+    path_after = _dependency_source_stat(
+        payload,
+        inode=31 if mutation == "path_inode" else 11,
+        size=len(payload) + 1 if mutation == "path_size" else None,
+        mtime_ns=37 if mutation == "path_mtime" else 13,
+        ctime_ns=23 if mutation == "path_ctime" else 19,
+        file_attributes=1 if mutation == "path_attributes" else 0,
+    )
+    _mock_dependency_source_read(
+        monkeypatch,
+        payload,
+        descriptor_before=descriptor_before,
+        descriptor_after=descriptor_after,
+        path_after=path_after,
+        platform_name=platform_name,
+    )
+
+    with pytest.raises(
+        import_bootstrap.DependencyEnvironmentError,
+        match="installed dependency entry changed during validation",
+    ):
+        import_bootstrap._read_bounded_regular_file(
+            Path("dependency.py"),
+            path_before,
+            maximum_bytes=1024,
+        )
+
+
+def test_immutable_tqdm_manifest_is_canonical_bounded_source_metadata(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    dependency_root = Path(dependency_paths[0])
+    expected_sources = [
+        ("tqdm", "tqdm/__init__.py", True, b'from .std import tqdm\n__version__ = "test"\n'),
+        ("tqdm.contrib", "tqdm/contrib/__init__.py", True, b'NAME = "contrib"\n'),
+        ("tqdm.contrib.bells", "tqdm/contrib/bells.py", False, b"ENABLED = True\n"),
+        ("tqdm.std", "tqdm/std.py", False, b"class tqdm:\n    pass\n"),
+    ]
+    expected_manifest = {
+        "namespace": "tqdm",
+        "schema_version": 1,
+        "sources": [
+            {
+                "fullname": fullname,
+                "is_package": is_package,
+                "relative_path": relative_path,
+                "root_index": 0,
+                "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                "size": len(source_bytes),
+            }
+            for fullname, relative_path, is_package, source_bytes in expected_sources
+        ],
+    }
+
+    assert import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT == "--immutable-tqdm-manifest"
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+    assert manifest == json.dumps(expected_manifest, sort_keys=True, separators=(",", ":"))
+    assert str(dependency_root) not in manifest
+    assert "source_bytes" not in manifest
+    original_dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    (dependency_root / "tqdm" / "README.txt").write_bytes(b"changed ordinary package data\n")
+    assert import_bootstrap.immutable_tqdm_manifest(dependency_paths) == manifest
+    assert import_bootstrap.dependency_environment_digest(dependency_paths) != original_dependency_digest
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "duplicate_root",
+        "symlink_source",
+        "redirected_package",
+        "casefold_collision",
+        "bytecode_only",
+        "native_extension",
+        "oversized_source",
+        "too_many_sources",
+    ],
+)
+def test_immutable_tqdm_manifest_rejects_unsafe_source_trees(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    dependency_paths = _build_unsafe_tqdm_tree(tmp_path, mutation)
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+
+def test_capture_immutable_tqdm_sources_returns_verified_immutable_bytes(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+    sources = import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+
+    assert tuple(source.fullname for source in sources) == (
+        "tqdm",
+        "tqdm.contrib",
+        "tqdm.contrib.bells",
+        "tqdm.std",
+    )
+    assert tuple(source.source_bytes for source in sources) == (
+        b'from .std import tqdm\n__version__ = "test"\n',
+        b'NAME = "contrib"\n',
+        b"ENABLED = True\n",
+        b"class tqdm:\n    pass\n",
+    )
+    assert all(source.relative_path.is_relative_to("tqdm") for source in sources)
+    with pytest.raises(FrozenInstanceError):
+        sources[0].source_bytes = b"replacement"  # type: ignore[misc]
+
+
+def test_immutable_dependency_loader_imports_captured_tqdm_without_dependency_paths(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    sources = import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+    finder = import_bootstrap._ImmutableDependencyFinder(sources)
+    original_modules = {name: module for name, module in sys.modules.items() if name == "tqdm" or name.startswith("tqdm.")}
+    for name in original_modules:
+        del sys.modules[name]
+    sys.meta_path.insert(0, finder)
+    try:
+        imported_tqdm = importlib.import_module("tqdm")
+        imported_std = importlib.import_module("tqdm.std")
+
+        assert imported_tqdm.tqdm is imported_std.tqdm
+        assert imported_tqdm.tqdm.__name__ == "tqdm"
+        assert isinstance(imported_tqdm.__loader__, import_bootstrap._ImmutableDependencySourceLoader)
+        assert isinstance(imported_std.__loader__, import_bootstrap._ImmutableDependencySourceLoader)
+        assert imported_tqdm.__spec__ is not None
+        assert imported_std.__spec__ is not None
+        assert imported_tqdm.__spec__.origin == imported_std.__spec__.origin
+        assert imported_tqdm.__spec__.origin is not None
+        assert not Path(imported_tqdm.__spec__.origin).is_absolute()
+        assert all(path not in sys.path for path in dependency_paths)
+        finder.validate_sources()
+    finally:
+        sys.meta_path.remove(finder)
+        for name in tuple(sys.modules):
+            if name == "tqdm" or name.startswith("tqdm."):
+                del sys.modules[name]
+        sys.modules.update(original_modules)
+
+
+def test_immutable_dependency_loader_rejects_resources_unknown_modules_and_external_imports(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    dependency_root = Path(dependency_paths[0])
+    (dependency_root / "mandatory_external.py").write_text("VALUE = 1\n", encoding="utf-8")
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    sources = import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+    finder = import_bootstrap._ImmutableDependencyFinder(sources)
+    original_modules = {name: module for name, module in sys.modules.items() if name == "tqdm" or name.startswith("tqdm.")}
+    for name in original_modules:
+        del sys.modules[name]
+    try:
+        root_spec = finder.find_spec("tqdm", None)
+
+        assert root_spec is not None
+        assert isinstance(root_spec.loader, import_bootstrap._ImmutableDependencySourceLoader)
+        with pytest.raises(OSError, match=f"^{import_bootstrap.DEPENDENCY_ISOLATION_ERROR}$"):
+            root_spec.loader.get_data("README.txt")
+        assert root_spec.loader.get_resource_reader("tqdm") is None
+        with pytest.raises(
+            import_bootstrap.DependencyEnvironmentError,
+            match=f"^{import_bootstrap.DEPENDENCY_ISOLATION_ERROR}$",
+        ):
+            finder.find_spec("tqdm.unknown", [])
+        assert finder.find_spec("mandatory_external", None) is None
+    finally:
+        sys.modules.update(original_modules)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "loader",
+        "missing_loader",
+        "spec",
+        "missing_spec",
+        "origin",
+        "package_status",
+        "source",
+        "finder_loader_map",
+        "finder_spec_map",
+    ],
+)
+def test_immutable_dependency_loader_rejects_loaded_module_mutation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    sources = import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+    finder = import_bootstrap._ImmutableDependencyFinder(sources)
+    original_modules = {name: module for name, module in sys.modules.items() if name == "tqdm" or name.startswith("tqdm.")}
+    for name in original_modules:
+        del sys.modules[name]
+    sys.meta_path.insert(0, finder)
+    try:
+        imported_tqdm = importlib.import_module("tqdm")
+        if mutation == "loader":
+            imported_tqdm.__loader__ = None
+        elif mutation == "missing_loader":
+            del imported_tqdm.__loader__
+        elif mutation == "spec":
+            imported_tqdm.__spec__ = importlib.machinery.ModuleSpec("tqdm", loader=None)
+        elif mutation == "missing_spec":
+            del imported_tqdm.__spec__
+        elif mutation == "origin":
+            assert imported_tqdm.__spec__ is not None
+            imported_tqdm.__spec__.origin = str(Path(dependency_paths[0]) / "tqdm" / "__init__.py")
+        elif mutation == "package_status":
+            assert imported_tqdm.__spec__ is not None
+            imported_tqdm.__spec__.submodule_search_locations = None
+        elif mutation == "source":
+            object.__setattr__(sources[0], "source_bytes", b"MUTATED = True\n")
+        elif mutation == "finder_loader_map":
+            replacement_loader = import_bootstrap._ImmutableDependencySourceLoader(sources[0])
+            finder._loaders["tqdm"] = replacement_loader
+            imported_tqdm.__loader__ = replacement_loader
+            assert imported_tqdm.__spec__ is not None
+            imported_tqdm.__spec__.loader = replacement_loader
+        else:
+            replacement_spec = importlib.machinery.ModuleSpec(
+                "tqdm",
+                cast(Any, imported_tqdm.__loader__),
+                origin="<qbitunregistered-gauntlet-immutable-tqdm>",
+                is_package=True,
+            )
+            finder._specs["tqdm"] = replacement_spec
+            imported_tqdm.__spec__ = replacement_spec
+
+        with pytest.raises(
+            import_bootstrap.DependencyEnvironmentError,
+            match=f"^{import_bootstrap.DEPENDENCY_ISOLATION_ERROR}$",
+        ):
+            finder.validate_sources()
+    finally:
+        sys.meta_path.remove(finder)
+        for name in tuple(sys.modules):
+            if name == "tqdm" or name.startswith("tqdm."):
+                del sys.modules[name]
+        sys.modules.update(original_modules)
+
+
+def test_immutable_dependency_loader_rejects_non_module_spec_with_bounded_error(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    sources = import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+    finder = import_bootstrap._ImmutableDependencyFinder(sources)
+    original_modules = {name: module for name, module in sys.modules.items() if name == "tqdm" or name.startswith("tqdm.")}
+    for name in original_modules:
+        del sys.modules[name]
+    sys.meta_path.insert(0, finder)
+    try:
+        imported_tqdm = importlib.import_module("tqdm")
+        module_spec = imported_tqdm.__spec__
+        assert module_spec is not None
+
+        class MalformedModuleSpec:
+            pass
+
+        cast(Any, module_spec).__class__ = MalformedModuleSpec
+        del cast(Any, module_spec).loader
+
+        with pytest.raises(
+            import_bootstrap.DependencyEnvironmentError,
+            match=f"^{import_bootstrap.DEPENDENCY_ISOLATION_ERROR}$",
+        ):
+            finder.validate_sources()
+    finally:
+        sys.meta_path.remove(finder)
+        for name in tuple(sys.modules):
+            if name == "tqdm" or name.startswith("tqdm."):
+                del sys.modules[name]
+        sys.modules.update(original_modules)
+
+
+@pytest.mark.parametrize("mutation", ["removed", "reordered"])
+def test_digest_bound_bootstrap_rejects_immutable_finder_installation_mutation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    _write_test_tqdm_dependency_tree(dependency_root)
+    mutation_lines = ["sys.meta_path.remove(finder)"]
+    if mutation == "reordered":
+        mutation_lines.append("sys.meta_path.append(finder)")
+    _write_import_bootstrap_fixture(
+        repository_root,
+        "\n".join(
+            (
+                "import sys",
+                "import tqdm",
+                'finder = next(item for item in sys.meta_path if type(item).__name__ == "_ImmutableDependencyFinder")',
+                *mutation_lines,
+            )
+        )
+        + "\n",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+
+    completed = _run_import_bootstrap_fixture(repository_root, dependency_root)
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == import_bootstrap.DEPENDENCY_ISOLATION_ERROR
+    assert "Traceback" not in completed.stderr
+    assert str(tmp_path) not in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "malformed_json",
+        "overlong_schema_integer",
+        "unknown_top_level_key",
+        "wrong_schema_type",
+        "wrong_schema_version",
+        "wrong_namespace_type",
+        "wrong_namespace",
+        "wrong_sources_type",
+        "unknown_source_key",
+        "wrong_source_field_type",
+        "wrong_package_type",
+        "duplicate_record",
+        "path_traversal",
+        "reordered_records",
+        "noncanonical_json",
+        "size_drift",
+        "hash_drift",
+        "missing_record",
+    ],
+)
+def test_capture_immutable_tqdm_sources_rejects_malformed_or_drifted_manifest(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    canonical_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    manifest_data = json.loads(canonical_manifest)
+
+    if mutation == "malformed_json":
+        raw_manifest = "{"
+    elif mutation == "overlong_schema_integer":
+        raw_manifest = canonical_manifest.replace('"schema_version":1', f'"schema_version":{"1" * 5000}')
+    else:
+        if mutation == "unknown_top_level_key":
+            manifest_data["unexpected"] = True
+        elif mutation == "wrong_schema_type":
+            manifest_data["schema_version"] = True
+        elif mutation == "wrong_schema_version":
+            manifest_data["schema_version"] = 2
+        elif mutation == "wrong_namespace_type":
+            manifest_data["namespace"] = ["tqdm"]
+        elif mutation == "wrong_namespace":
+            manifest_data["namespace"] = "other"
+        elif mutation == "wrong_sources_type":
+            manifest_data["sources"] = {}
+        elif mutation == "unknown_source_key":
+            manifest_data["sources"][0]["unexpected"] = True
+        elif mutation == "wrong_source_field_type":
+            manifest_data["sources"][0]["root_index"] = False
+        elif mutation == "wrong_package_type":
+            manifest_data["sources"][0]["is_package"] = 1
+        elif mutation == "duplicate_record":
+            manifest_data["sources"].append(dict(manifest_data["sources"][0]))
+        elif mutation == "path_traversal":
+            manifest_data["sources"][0]["relative_path"] = "../tqdm/__init__.py"
+        elif mutation == "reordered_records":
+            manifest_data["sources"].reverse()
+        elif mutation == "size_drift":
+            manifest_data["sources"][0]["size"] += 1
+        elif mutation == "hash_drift":
+            manifest_data["sources"][0]["sha256"] = "0" * 64
+        elif mutation == "missing_record":
+            manifest_data["sources"].pop()
+        if mutation == "noncanonical_json":
+            raw_manifest = json.dumps(manifest_data, indent=2, sort_keys=True)
+        else:
+            raw_manifest = json.dumps(manifest_data, sort_keys=True, separators=(",", ":"))
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, raw_manifest)
+
+
+def test_capture_immutable_tqdm_sources_rejects_installed_tree_drift(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    tqdm_root = Path(dependency_paths[0]) / "tqdm"
+
+    (tqdm_root / "new_module.py").write_bytes(b"VALUE = 1\n")
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+
+    (tqdm_root / "new_module.py").unlink()
+    (tqdm_root / "std.py").write_bytes(b"class tqdm:\n    stop\n")
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+
+
+def test_capture_immutable_tqdm_sources_rejects_same_size_content_drift(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    source_path = Path(dependency_paths[0]) / "tqdm" / "std.py"
+    original_source = source_path.read_bytes()
+    replacement_source = original_source.replace(b"pass", b"stop")
+    assert replacement_source != original_source
+    assert len(replacement_source) == len(original_source)
+    source_path.write_bytes(replacement_source)
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+
+
+@pytest.mark.parametrize(
+    ("without_no_follow", "replacement_kind"),
+    [(False, "regular"), (True, "regular"), (True, "symlink")],
+)
+def test_capture_immutable_tqdm_sources_rejects_source_swap_during_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    without_no_follow: bool,
+    replacement_kind: str,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    source_path = Path(dependency_paths[0]) / "tqdm" / "std.py"
+    replacement_path = tmp_path / "replacement.py"
+    replacement_path.write_bytes(source_path.read_bytes())
+    original_path = tmp_path / "original.py"
+    real_open = os.open
+    swapped = False
+
+    def swap_before_open(path: os.PathLike[str] | str, flags: int, mode: int = 0o777) -> int:
+        nonlocal swapped
+        if Path(path) == source_path and not swapped:
+            swapped = True
+            source_path.replace(original_path)
+            if replacement_kind == "symlink":
+                try:
+                    source_path.symlink_to(original_path)
+                except (NotImplementedError, OSError) as error:
+                    pytest.skip(f"platform cannot create a symbolic link: {error}")
+            else:
+                replacement_path.replace(source_path)
+        return real_open(path, flags, mode)
+
+    if without_no_follow:
+        monkeypatch.delattr(import_bootstrap.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.setattr(import_bootstrap.os, "open", swap_before_open)
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+    assert swapped is True
+
+
+def test_capture_immutable_tqdm_sources_rejects_oversized_manifest(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, " " * (256 * 1024 + 1))
+
+
+def test_immutable_tqdm_manifest_rejects_excessive_total_source_bytes(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    tqdm_root = Path(dependency_paths[0]) / "tqdm"
+    for index in range(8):
+        (tqdm_root / f"large_{index}.py").write_bytes(b"#" * (1024 * 1024))
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+
+@pytest.mark.parametrize("root_shape", ["absent", "namespace_only", "top_level_ambiguity"])
+def test_immutable_tqdm_manifest_requires_one_unambiguous_package_root(
+    tmp_path: Path,
+    root_shape: str,
+) -> None:
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_root.mkdir(parents=True)
+    if root_shape == "namespace_only":
+        tqdm_root = dependency_root / "tqdm"
+        tqdm_root.mkdir()
+        (tqdm_root / "std.py").write_bytes(b"VALUE = 1\n")
+    elif root_shape == "top_level_ambiguity":
+        dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+        dependency_root = Path(dependency_paths[0])
+        (dependency_root / "tqdm.py").write_bytes(b"VALUE = 1\n")
+    elif root_shape != "absent":
+        raise AssertionError(f"unknown root shape: {root_shape}")
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap.immutable_tqdm_manifest((str(dependency_root.resolve()),))
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    [
+        "tqdm.pyc",
+        "tqdm.pyo",
+        f"tqdm{importlib.machinery.EXTENSION_SUFFIXES[0]}",
+    ],
+)
+def test_immutable_tqdm_manifest_rejects_earlier_top_level_import_artifact(
+    tmp_path: Path,
+    artifact_name: str,
+) -> None:
+    earlier_root = tmp_path / "earlier" / "site-packages"
+    earlier_root.mkdir(parents=True)
+    (earlier_root / artifact_name).write_bytes(b"untrusted import artifact")
+    later_paths = _build_tqdm_dependency_tree(tmp_path / "later")
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap.immutable_tqdm_manifest((str(earlier_root.resolve()), *later_paths))
+
+
 def test_dependency_environment_digest_rejects_redirecting_entries(
     tmp_path: Path,
 ) -> None:
@@ -3795,6 +4717,7 @@ def test_verified_child_bootstrap_executes_original_commit_bytes_from_stdin(
     repository_root = tmp_path / "repository"
     dependency_root = tmp_path / "environment" / "site-packages"
     dependency_root.mkdir(parents=True)
+    _write_test_tqdm_dependency_tree(dependency_root)
     _write_import_bootstrap_fixture(repository_root, 'print("trusted child")\n')
     _commit_gauntlet_test_repository(repository_root)
     expected_commit = subprocess.run(
@@ -3812,6 +4735,7 @@ def test_verified_child_bootstrap_executes_original_commit_bytes_from_stdin(
     bootstrap_path.write_text('raise SystemExit("mutable worktree bootstrap ran")\n', encoding="utf-8")
     dependency_paths = (str(dependency_root.resolve()),)
     dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
 
     completed = subprocess.run(
         [
@@ -3826,6 +4750,8 @@ def test_verified_child_bootstrap_executes_original_commit_bytes_from_stdin(
             expected_commit,
             import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
             dependency_digest,
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
         ],
         cwd=tmp_path,
         env={
@@ -4521,6 +5447,7 @@ def test_import_bootstrap_rejects_package_redirects_inside_each_child(
     gauntlet_root.mkdir(parents=True)
     qbitunregistered_root.mkdir()
     dependency_root.mkdir(parents=True)
+    _write_test_tqdm_dependency_tree(dependency_root)
     (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
     (gauntlet_root / "__init__.py").write_text("", encoding="utf-8")
     (qbitunregistered_root / "__init__.py").write_text("", encoding="utf-8")
@@ -4545,6 +5472,7 @@ def test_import_bootstrap_rejects_package_redirects_inside_each_child(
     _commit_gauntlet_test_repository(repository_root)
     dependency_paths = (str(dependency_root.resolve()),)
     expected_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
 
     # Model a redirect introduced after the coordinator's preflight scan.
     import_bootstrap._validate_protected_package_trees(repository_root)
@@ -4573,6 +5501,8 @@ def test_import_bootstrap_rejects_package_redirects_inside_each_child(
             json.dumps(dependency_paths),
             import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
             expected_digest,
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
         ],
         cwd=tmp_path,
         env={
@@ -4605,6 +5535,7 @@ def test_import_bootstrap_rejects_dependency_tampering_without_traceback(
     gauntlet_root.mkdir(parents=True)
     qbitunregistered_root.mkdir()
     dependency_root.mkdir(parents=True)
+    _write_test_tqdm_dependency_tree(dependency_root)
     (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
     (gauntlet_root / "__init__.py").write_text("", encoding="utf-8")
     (qbitunregistered_root / "__init__.py").write_text("", encoding="utf-8")
@@ -4626,6 +5557,7 @@ def test_import_bootstrap_rejects_dependency_tampering_without_traceback(
     _commit_gauntlet_test_repository(repository_root)
     dependency_paths = (str(dependency_root.resolve()),)
     expected_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
     if tamper_stage == "before":
         dependency_file.write_text("VALUE = 2\n", encoding="utf-8")
 
@@ -4640,6 +5572,8 @@ def test_import_bootstrap_rejects_dependency_tampering_without_traceback(
             json.dumps(dependency_paths),
             import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
             expected_digest,
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
         ],
         cwd=tmp_path,
         env={
@@ -4658,26 +5592,421 @@ def test_import_bootstrap_rejects_dependency_tampering_without_traceback(
     assert marker.exists() is (tamper_stage == "during")
 
 
+def test_immutable_dependency_loader_imports_real_unregistered_checks_in_isolated_child(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    installed_tqdm_spec = importlib.util.find_spec("tqdm")
+    assert installed_tqdm_spec is not None
+    assert installed_tqdm_spec.submodule_search_locations is not None
+    installed_tqdm_root = Path(next(iter(installed_tqdm_spec.submodule_search_locations))).resolve()
+    dependency_root.mkdir(parents=True)
+    shutil.copytree(installed_tqdm_root, dependency_root / "tqdm")
+    (dependency_root / "mandatory_external.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _write_import_bootstrap_fixture(
+        repository_root,
+        "\n".join(
+            (
+                "import importlib",
+                "import json",
+                "import sys",
+                "import tqdm",
+                "from qbitunregistered.operations import unregistered_checks",
+                "try:",
+                '    importlib.import_module("tqdm.unknown")',
+                "except Exception:",
+                "    unknown_rejected = True",
+                "else:",
+                "    unknown_rejected = False",
+                "try:",
+                '    tqdm.__loader__.get_data("README.rst")',
+                "except OSError:",
+                "    resource_rejected = True",
+                "else:",
+                "    resource_rejected = False",
+                "try:",
+                "    import mandatory_external",
+                "except ModuleNotFoundError:",
+                "    external_rejected = True",
+                "else:",
+                "    external_rejected = False",
+                'loaded_tqdm = [module for name, module in sys.modules.items() if name == "tqdm" or name.startswith("tqdm.")]',
+                "print(json.dumps({",
+                '    "dependency_paths_absent": all(',
+                f"        value != {str(dependency_root.resolve())!r} for value in sys.path",
+                "    ),",
+                '    "external_rejected": external_rejected,',
+                '    "loader_names": sorted({type(module.__loader__).__name__ for module in loaded_tqdm}),',
+                '    "origins": sorted({module.__spec__.origin for module in loaded_tqdm}),',
+                '    "resource_rejected": resource_rejected,',
+                '    "tqdm_class": tqdm.tqdm.__name__,',
+                '    "tqdm_module": tqdm.tqdm.__module__,',
+                '    "unknown_rejected": unknown_rejected,',
+                '    "unregistered_imported": callable(unregistered_checks.unregistered_checks),',
+                "}))",
+            )
+        )
+        + "\n",
+    )
+    source_package_root = REPOSITORY_ROOT / "qbitunregistered"
+    target_package_root = repository_root / "qbitunregistered"
+    for source_path in source_package_root.rglob("*.py"):
+        target_path = target_package_root / source_path.relative_to(source_package_root)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(source_path.read_bytes())
+    _commit_gauntlet_test_repository(repository_root)
+    dependency_paths = (str(dependency_root.resolve()),)
+    dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-s",
+            "-S",
+            "-P",
+            "-",
+            str(repository_root),
+            json.dumps(dependency_paths),
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            dependency_digest,
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
+        ],
+        cwd=tmp_path,
+        env={
+            **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        input=import_bootstrap.verified_import_bootstrap_source(
+            repository_root,
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repository_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+        ),
+        check=False,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode()
+    result = json.loads(completed.stdout)
+    assert result == {
+        "dependency_paths_absent": True,
+        "external_rejected": True,
+        "loader_names": ["_ImmutableDependencySourceLoader"],
+        "origins": ["<qbitunregistered-gauntlet-immutable-tqdm>"],
+        "resource_rejected": True,
+        "tqdm_class": "tqdm",
+        "tqdm_module": "tqdm.std",
+        "unknown_rejected": True,
+        "unregistered_imported": True,
+    }
+    assert str(dependency_root) not in completed.stdout.decode()
+
+
+def test_digest_bound_tracker_cli_uses_protected_qbittorrentapi_shim_and_absent_apprise(
+    tmp_path: Path,
+) -> None:
+    """Run a real CLI scenario without admitting the installed client closure."""
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    installed_tqdm_spec = importlib.util.find_spec("tqdm")
+    assert installed_tqdm_spec is not None
+    assert installed_tqdm_spec.submodule_search_locations is not None
+    installed_tqdm_root = Path(next(iter(installed_tqdm_spec.submodule_search_locations))).resolve()
+    dependency_root.mkdir(parents=True)
+    shutil.copytree(installed_tqdm_root, dependency_root / "tqdm")
+    shutil.copytree(
+        REPOSITORY_ROOT / "benchmarks",
+        repository_root / "benchmarks",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    shutil.copytree(
+        REPOSITORY_ROOT / "qbitunregistered",
+        repository_root / "qbitunregistered",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    (repository_root / "benchmarks" / "gauntlet" / "__main__.py").write_text(
+        "\n".join(
+            (
+                "import json",
+                "import tempfile",
+                "from pathlib import Path",
+                "import qbittorrentapi",
+                "import tqdm",
+                "from benchmarks.gauntlet import tracker_runner",
+                "from benchmarks.gauntlet.tracker_fixture import TrackerGauntletProfile, build_tracker_fixture",
+                "from qbitunregistered import notifications",
+                "profile = TrackerGauntletProfile(",
+                '    name="digest-bound-cli",',
+                "    torrent_count=6,",
+                "    tracker_record_count=18,",
+                "    save_path_group_count=4,",
+                "    default_tag_count=2,",
+                "    cross_seed_tag_count=2,",
+                "    delete_count=1,",
+                '    tier="test",',
+                ")",
+                'with tempfile.TemporaryDirectory(prefix="qbitunregistered-digest-cli-") as root:',
+                "    fixture = build_tracker_fixture(Path(root), profile, seed=20_260_809)",
+                "    config_path = tracker_runner._tracker_cli_config_path(fixture)",
+                '    config = json.loads(config_path.read_text(encoding="utf-8"))',
+                "    audit = tracker_runner._ProductionBoundaryAudit()",
+                "    result = tracker_runner._execute_scenario_cli(",
+                "        fixture,",
+                "        before_preview=None,",
+                "        before_execution=None,",
+                "        dry_run=True,",
+                "        production_audit=audit,",
+                "    )",
+                "    print(json.dumps({",
+                '        "apprise_available": notifications.APPRISE_AVAILABLE,',
+                '        "apprise_configured": bool(config.get("apprise_url")),',
+                '        "client_module": qbittorrentapi.Client.__module__,',
+                '        "client_origin": qbittorrentapi.__spec__.origin,',
+                '        "exception_module": qbittorrentapi.exceptions.APIConnectionError.__module__,',
+                '        "exit_code": result.exit_code,',
+                '        "filesystem_attempts": audit.filesystem_attempt_count,',
+                '        "notifiarr_configured": bool(config.get("notifiarr_key")),',
+                '        "qbittorrent_mutations": fixture.client.mutation_total,',
+                '        "tqdm_loader": type(tqdm.__loader__).__name__,',
+                "    }, sort_keys=True))",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+    expected_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dependency_paths = (str(dependency_root.resolve()),)
+    dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-s",
+            "-S",
+            "-P",
+            "-",
+            str(repository_root),
+            json.dumps(dependency_paths),
+            import_bootstrap.EXPECTED_REPOSITORY_COMMIT_ARGUMENT,
+            expected_commit,
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            dependency_digest,
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
+        ],
+        cwd=tmp_path,
+        env={
+            **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        input=import_bootstrap.verified_import_bootstrap_source(repository_root, expected_commit),
+        check=False,
+        capture_output=True,
+        timeout=120,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode()
+    assert json.loads(completed.stdout) == {
+        "apprise_available": False,
+        "apprise_configured": False,
+        "client_module": "qbittorrentapi",
+        "client_origin": "<qbitunregistered-gauntlet-qbittorrentapi-shim>",
+        "exception_module": "qbittorrentapi.exceptions",
+        "exit_code": 0,
+        "filesystem_attempts": 0,
+        "notifiarr_configured": False,
+        "qbittorrent_mutations": 0,
+        "tqdm_loader": "_ImmutableDependencySourceLoader",
+    }
+    assert str(dependency_root) not in completed.stdout.decode()
+    assert str(dependency_root) not in completed.stderr.decode()
+
+
+def test_digest_bound_tracker_import_drift_fails_before_scenario_evaluation(
+    tmp_path: Path,
+) -> None:
+    """Stop before evaluator code when an application import mutates the shim."""
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    installed_tqdm_spec = importlib.util.find_spec("tqdm")
+    assert installed_tqdm_spec is not None
+    assert installed_tqdm_spec.submodule_search_locations is not None
+    installed_tqdm_root = Path(next(iter(installed_tqdm_spec.submodule_search_locations))).resolve()
+    dependency_root.mkdir(parents=True)
+    shutil.copytree(installed_tqdm_root, dependency_root / "tqdm")
+    shutil.copytree(
+        REPOSITORY_ROOT / "benchmarks",
+        repository_root / "benchmarks",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    shutil.copytree(
+        REPOSITORY_ROOT / "qbitunregistered",
+        repository_root / "qbitunregistered",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    client_path = repository_root / "qbitunregistered" / "client.py"
+    client_path.write_text(
+        client_path.read_text(encoding="utf-8") + "\nimport qbittorrentapi\n" + 'vars(qbittorrentapi)["Client"] = object\n',
+        encoding="utf-8",
+    )
+    (repository_root / "benchmarks" / "gauntlet" / "__main__.py").write_text(
+        "\n".join(
+            (
+                "import os",
+                "import tempfile",
+                "from pathlib import Path",
+                "from benchmarks.gauntlet import tracker_runner",
+                "from benchmarks.gauntlet.tracker_fixture import TrackerGauntletProfile, build_tracker_fixture",
+                "profile = TrackerGauntletProfile(",
+                '    name="import-drift",',
+                "    torrent_count=6,",
+                "    tracker_record_count=18,",
+                "    save_path_group_count=4,",
+                "    default_tag_count=2,",
+                "    cross_seed_tag_count=2,",
+                "    delete_count=1,",
+                '    tier="test",',
+                ")",
+                "def enter_evaluation_body(_fixture):",
+                '    os.write(1, b"EVALUATION_BODY_ENTERED\\n")',
+                'with tempfile.TemporaryDirectory(prefix="qbitunregistered-import-drift-") as root:',
+                "    fixture = build_tracker_fixture(Path(root), profile, seed=20_260_809)",
+                "    audit = tracker_runner._ProductionBoundaryAudit()",
+                "    tracker_runner._execute_scenario_cli(",
+                "        fixture,",
+                "        before_preview=enter_evaluation_body,",
+                "        before_execution=None,",
+                "        dry_run=True,",
+                "        production_audit=audit,",
+                "    )",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+    expected_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dependency_paths = (str(dependency_root.resolve()),)
+    dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-s",
+            "-S",
+            "-P",
+            "-",
+            str(repository_root),
+            json.dumps(dependency_paths),
+            import_bootstrap.EXPECTED_REPOSITORY_COMMIT_ARGUMENT,
+            expected_commit,
+            import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
+            dependency_digest,
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
+        ],
+        cwd=tmp_path,
+        env={
+            **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        input=import_bootstrap.verified_import_bootstrap_source(repository_root, expected_commit),
+        check=False,
+        capture_output=True,
+        timeout=120,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == b""
+    assert completed.stderr.strip().decode() == import_bootstrap.DEPENDENCY_ISOLATION_ERROR
+    assert "Traceback" not in completed.stderr.decode()
+    assert str(tmp_path) not in completed.stderr.decode()
+
+
+@pytest.mark.parametrize(
+    "main_source",
+    (
+        "import qbittorrentapi\nqbittorrentapi.Session\n",
+        "import qbittorrentapi.torrents\n",
+        "from qbittorrentapi import Session\n",
+        "from qbittorrentapi import torrents\n",
+        "from qbittorrentapi.exceptions import Missing\n",
+    ),
+)
+def test_digest_bound_bootstrap_sanitizes_unknown_qbittorrentapi_use(
+    tmp_path: Path,
+    main_source: str,
+) -> None:
+    """Map unknown shim access to one path-free dependency diagnostic."""
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_root.mkdir(parents=True)
+    _write_import_bootstrap_fixture(repository_root, main_source)
+    _commit_gauntlet_test_repository(repository_root)
+
+    completed = _run_import_bootstrap_fixture(repository_root, dependency_root)
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == import_bootstrap.DEPENDENCY_ISOLATION_ERROR
+    assert "Traceback" not in completed.stderr
+    assert str(tmp_path) not in completed.stderr
+
+
 def test_digest_bound_bootstrap_never_imports_swap_restored_dependency(
     tmp_path: Path,
 ) -> None:
     repository_root = tmp_path / "repository"
     dependency_root = tmp_path / "environment" / "site-packages"
-    dependency_root.mkdir(parents=True)
-    dependency_name = "gauntlet_swap_dependency"
-    dependency_file = dependency_root / f"{dependency_name}.py"
+    _write_test_tqdm_dependency_tree(dependency_root)
+    dependency_file = dependency_root / "tqdm" / "std.py"
     replacement_file = tmp_path / "replacement.py"
     original_file = tmp_path / "original.py"
     outcome_marker = tmp_path / "import-outcome"
+    verified_execution_marker = tmp_path / "verified-tqdm-executed"
     execution_marker = tmp_path / "replacement-executed"
-    canonical_bytes = b'VALUE = "verified"\n'
+    canonical_source = (
+        "\n".join(
+            (
+                "from pathlib import Path",
+                f'Path({str(verified_execution_marker)!r}).write_text("verified", encoding="utf-8")',
+                "class tqdm:",
+                '    VALUE = "verified"',
+            )
+        )
+        + "\n"
+    )
+    canonical_bytes = canonical_source.encode()
     dependency_file.write_bytes(canonical_bytes)
     replacement_file.write_text(
         "\n".join(
             (
                 "from pathlib import Path",
                 f'Path({str(execution_marker)!r}).write_text("executed", encoding="utf-8")',
-                'VALUE = "swapped"',
+                "class tqdm:",
+                '    VALUE = "swapped"',
             )
         )
         + "\n",
@@ -4695,12 +6024,8 @@ def test_digest_bound_bootstrap_never_imports_swap_restored_dependency(
                 "dependency_file.replace(original_file)",
                 "replacement_file.replace(dependency_file)",
                 "try:",
-                "    try:",
-                f"        dependency = importlib.import_module({dependency_name!r})",
-                "    except ModuleNotFoundError:",
-                '        outcome = "unavailable"',
-                "    else:",
-                '        outcome = f"loaded:{dependency.VALUE}"',
+                '    dependency = importlib.import_module("tqdm")',
+                '    outcome = f"loaded:{dependency.tqdm.VALUE}"',
                 "finally:",
                 "    dependency_file.replace(replacement_file)",
                 "    original_file.replace(dependency_file)",
@@ -4717,7 +6042,8 @@ def test_digest_bound_bootstrap_never_imports_swap_restored_dependency(
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stderr == ""
-    assert outcome_marker.read_text(encoding="utf-8") == "unavailable"
+    assert outcome_marker.read_text(encoding="utf-8") == "loaded:verified"
+    assert verified_execution_marker.read_text(encoding="utf-8") == "verified"
     assert not execution_marker.exists()
     assert dependency_file.read_bytes() == canonical_bytes
     assert import_bootstrap.dependency_environment_digest(dependency_paths) == expected_digest
@@ -4738,6 +6064,7 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     pycache_roots: list[Path] = []
     dependency_paths = paired._dependency_import_paths()
     dependency_environment_identity = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
     bootstrap_source = b"# immutable bootstrap\n"
     expected_commit = "a" * 40
 
@@ -4753,6 +6080,10 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
         assert command[9:11] == [
             import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
             dependency_environment_identity,
+        ]
+        assert command[11:13] == [
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
         ]
         assert kwargs["input"] == bootstrap_source
         environment = kwargs["env"]
@@ -4781,6 +6112,7 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
             output=output,
             dependency_paths=dependency_paths,
             dependency_environment_digest=dependency_environment_identity,
+            immutable_tqdm_manifest=immutable_manifest,
             bootstrap_source=bootstrap_source,
             expected_commit=expected_commit,
         )
@@ -4803,6 +6135,7 @@ def test_controlled_bootstrap_isolates_paired_dependencies_and_preserves_ordinar
     gauntlet_root.mkdir(parents=True)
     selected_package.mkdir()
     installed_package.mkdir(parents=True)
+    _write_test_tqdm_dependency_tree(dependency_root)
     (repository_root / "benchmarks" / "__init__.py").write_text("", encoding="utf-8")
     (gauntlet_root / "__init__.py").write_text("", encoding="utf-8")
     (selected_package / "__init__.py").write_text('ORIGIN = "selected-worktree"\n', encoding="utf-8")
@@ -4821,6 +6154,7 @@ def test_controlled_bootstrap_isolates_paired_dependencies_and_preserves_ordinar
                 "except ModuleNotFoundError:",
                 "    schedule = None",
                 "import statistics",
+                "import tqdm",
                 "import qbitunregistered",
                 "print(json.dumps({",
                 '    "bootstrap_accepted": bootstrap_accepted,',
@@ -4834,6 +6168,8 @@ def test_controlled_bootstrap_isolates_paired_dependencies_and_preserves_ordinar
                 '    "third_party_file": None if schedule is None else schedule.__file__,',
                 '    "statistics_file": statistics.__file__,',
                 '    "statistics_marker": getattr(statistics, "ORIGIN", "stdlib"),',
+                '    "tqdm_loader": type(tqdm.__loader__).__name__,',
+                '    "tqdm_origin": tqdm.__spec__.origin,',
                 '    "path": sys.path,',
                 "}))",
             )
@@ -4881,6 +6217,7 @@ def test_controlled_bootstrap_isolates_paired_dependencies_and_preserves_ordinar
 
     dependency_json = json.dumps([str(dependency_root.resolve())])
     dependency_environment_identity = import_bootstrap.dependency_environment_digest((str(dependency_root.resolve()),))
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest((str(dependency_root.resolve()),))
     controlled = subprocess.run(
         [
             sys.executable,
@@ -4892,6 +6229,8 @@ def test_controlled_bootstrap_isolates_paired_dependencies_and_preserves_ordinar
             dependency_json,
             import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
             dependency_environment_identity,
+            import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
+            immutable_manifest,
         ],
         cwd=repository_root,
         env=clean_environment,
@@ -4932,9 +6271,12 @@ def test_controlled_bootstrap_isolates_paired_dependencies_and_preserves_ordinar
     controlled_paths = [Path(value) for value in controlled_result["path"]]
     assert controlled_result["third_party"] is None
     assert controlled_result["third_party_file"] is None
+    assert controlled_result["tqdm_loader"] == "_ImmutableDependencySourceLoader"
+    assert controlled_result["tqdm_origin"] == "<qbitunregistered-gauntlet-immutable-tqdm>"
     assert dependency_root.resolve() not in controlled_paths
 
     assert launched_result["third_party"] == "installed-dependency"
+    assert launched_result["tqdm_loader"] != "_ImmutableDependencySourceLoader"
     assert Path(launched_result["third_party_file"]) != repository_root / "schedule.py"
     launched_paths = [Path(value) for value in launched_result["path"]]
     third_party_path = Path(launched_result["third_party_file"]).resolve()
@@ -5025,6 +6367,7 @@ def test_paired_child_failure_reports_sanitized_stderr(
             output=output,
             dependency_paths=("dependencies",),
             dependency_environment_digest="a" * 64,
+            immutable_tqdm_manifest="{}",
             bootstrap_source=b"# immutable bootstrap\n",
             expected_commit="a" * 40,
         )
@@ -5072,6 +6415,7 @@ def test_paired_child_failure_suppresses_contextless_truncated_stderr(
             output=output,
             dependency_paths=("dependencies",),
             dependency_environment_digest="a" * 64,
+            immutable_tqdm_manifest="{}",
             bootstrap_source=b"# immutable bootstrap\n",
             expected_commit="a" * 40,
         )
@@ -5108,6 +6452,7 @@ def test_paired_child_failure_with_empty_stderr_reports_only_exit_code(
             output=output,
             dependency_paths=("dependencies",),
             dependency_environment_digest="a" * 64,
+            immutable_tqdm_manifest="{}",
             bootstrap_source=b"# immutable bootstrap\n",
             expected_commit="a" * 40,
         )
