@@ -83,9 +83,27 @@ the captured bytes. The loader never reopens installed files. Module specs and
 origins use a fixed evaluator-owned synthetic scheme and do not disclose local
 paths in artifacts or diagnostics.
 
-The child validates after evaluation that every loaded `tqdm` module came from
-this loader and that the loader's manifest and captured byte identities are
-unchanged.
+The child validates after evaluation that every loaded `tqdm` module retains
+the expected loader, spec, synthetic origin, and package status, and that the
+loader's manifest and captured byte identities are unchanged. These final
+checks detect current metadata or finder drift; they are not cryptographic
+attestation of the complete historical execution path.
+
+## Approved Python threat boundary
+
+This evaluator boundary assumes verified evaluator/bootstrap bytes, conforming
+CPython, and control, candidate, and dependency code that does not deliberately
+inspect or mutate evaluator-private Python state. Under those assumptions,
+every normal digest-bound `tqdm` import resolves through the manifest finder,
+compiles the captured bytes, cannot reopen the installed tree, and retains the
+expected loader/spec/origin/package metadata at final validation.
+
+Deliberate access to or mutation of evaluator globals, frames, `sys.meta_path`,
+evaluator-owned `sys.modules` entries, loader/finder internals, or audit
+registries is outside the approved boundary. Protecting evaluator-owned Python
+objects from arbitrary code already executing in the same interpreter would
+require a separate native or process isolation architecture and is not claimed
+by this design.
 
 ## Protected qBittorrent API shim
 
@@ -136,8 +154,8 @@ process-audit boundary.
    matching `tqdm` sources into memory, removes dependency roots from
    `sys.path`, and installs the immutable loader and protected qBittorrent shim.
 5. Protected first-party imports and tracker evaluation run normally.
-6. The child validates loaded-module and shim identities, protected sources,
-   and the complete dependency environment before exiting.
+6. The child validates current loaded-module/finder and shim identities,
+   protected sources, and the complete dependency environment before exiting.
 7. The coordinator repeats its existing worktree, evaluator, and dependency
    checks after every crossover child.
 
@@ -155,6 +173,10 @@ No fallback may add `site-packages` to `sys.path`, import an installed package
 directly, substitute a simplified `tqdm`, or continue after a loader/shim
 validation failure. Ordinary non-paired execution keeps its current installed-
 dependency behavior.
+
+The fail-closed metadata checks operate within the approved Python threat
+boundary above. They detect final drift but do not prove that evaluator-private
+state was never deliberately changed and restored during historical execution.
 
 ## Test-first acceptance
 

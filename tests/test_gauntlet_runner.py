@@ -3941,6 +3941,75 @@ def test_immutable_dependency_loader_rejects_loaded_module_mutation(
         sys.modules.update(original_modules)
 
 
+def test_immutable_dependency_loader_rejects_non_module_spec_with_bounded_error(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    sources = import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+    finder = import_bootstrap._ImmutableDependencyFinder(sources)
+    original_modules = {name: module for name, module in sys.modules.items() if name == "tqdm" or name.startswith("tqdm.")}
+    for name in original_modules:
+        del sys.modules[name]
+    sys.meta_path.insert(0, finder)
+    try:
+        imported_tqdm = importlib.import_module("tqdm")
+        module_spec = imported_tqdm.__spec__
+        assert module_spec is not None
+
+        class MalformedModuleSpec:
+            pass
+
+        cast(Any, module_spec).__class__ = MalformedModuleSpec
+        del cast(Any, module_spec).loader
+
+        with pytest.raises(
+            import_bootstrap.DependencyEnvironmentError,
+            match=f"^{import_bootstrap.DEPENDENCY_ISOLATION_ERROR}$",
+        ):
+            finder.validate_sources()
+    finally:
+        sys.meta_path.remove(finder)
+        for name in tuple(sys.modules):
+            if name == "tqdm" or name.startswith("tqdm."):
+                del sys.modules[name]
+        sys.modules.update(original_modules)
+
+
+@pytest.mark.parametrize("mutation", ["removed", "reordered"])
+def test_digest_bound_bootstrap_rejects_immutable_finder_installation_mutation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repository_root = tmp_path / "repository"
+    dependency_root = tmp_path / "environment" / "site-packages"
+    _write_test_tqdm_dependency_tree(dependency_root)
+    mutation_lines = ["sys.meta_path.remove(finder)"]
+    if mutation == "reordered":
+        mutation_lines.append("sys.meta_path.append(finder)")
+    _write_import_bootstrap_fixture(
+        repository_root,
+        "\n".join(
+            (
+                "import sys",
+                "import tqdm",
+                'finder = next(item for item in sys.meta_path if type(item).__name__ == "_ImmutableDependencyFinder")',
+                *mutation_lines,
+            )
+        )
+        + "\n",
+    )
+    _commit_gauntlet_test_repository(repository_root)
+
+    completed = _run_import_bootstrap_fixture(repository_root, dependency_root)
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == import_bootstrap.DEPENDENCY_ISOLATION_ERROR
+    assert "Traceback" not in completed.stderr
+    assert str(tmp_path) not in completed.stderr
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

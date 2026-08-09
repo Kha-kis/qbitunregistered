@@ -801,9 +801,28 @@ also requires evaluator sources, the quality bar, and both dependency inputs to
 remain regular stage-0 index entries without skip-worktree or assume-unchanged
 flags in every worktree. Digest-bound measured children reject modules already
 loaded from those dependency directories and exclude the directories from
-`sys.path`; their measured import closure is the standard library plus the
-immutable protected-source finder. The environment fingerprint therefore
-records and compares the installed tree but does not claim package provenance.
+`sys.path`; their measured import closure is the standard library, the
+immutable protected-source finder, and real `tqdm` modules compiled from the
+manifest-matching bytes captured before path removal. The dependency loader
+never reopens the installed tree. Final validation requires the protected and
+`tqdm` finders to remain in their first and second meta-path slots and checks
+the current loader, spec, synthetic origin, and package status of loaded
+`tqdm` modules. The environment fingerprint therefore records and compares the
+installed tree but does not claim package provenance.
+
+This same-process Python boundary assumes verified evaluator/bootstrap bytes,
+conforming CPython, and control, candidate, and dependency code that does not
+deliberately inspect or mutate evaluator-private state. Deliberate access to or
+mutation of evaluator globals, frames, `sys.meta_path`, evaluator-owned
+`sys.modules` entries, loader/finder internals, or audit registries is excluded.
+The final loader/spec checks detect current drift and are not cryptographic
+attestation that those bindings existed throughout historical execution.
+Protecting evaluator-owned objects from arbitrary code already running in the
+interpreter requires a separate native or process isolation architecture. This
+limitation does not weaken the normal-import guarantee: verified `tqdm` source
+bytes are captured once, installed paths remain absent, installed sources are
+never reopened, and the complete dependency fingerprint is revalidated after
+evaluation.
 Ordinary non-paired launcher execution retains its installed-dependency import
 behavior.
 

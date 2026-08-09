@@ -17,6 +17,15 @@
 - Reject redirects, duplicate roots/modules, case-fold collisions, bytecode-only modules, native extensions, unsupported resource requests, and unexpected imports fail closed.
 - Expose only `qbittorrentapi.Client` and `qbittorrentapi.exceptions.APIConnectionError`; both must fail closed if instantiated and must remain unused by a successful tracker run.
 - Ordinary non-paired execution retains its existing installed-dependency behavior.
+- Assume verified evaluator/bootstrap bytes, conforming CPython, and control,
+  candidate, and dependency code that does not deliberately inspect or mutate
+  evaluator-private Python state.
+- Exclude deliberate mutation of evaluator globals, frames, `sys.meta_path`,
+  evaluator-owned `sys.modules` entries, loader/finder internals, and audit
+  registries. Protecting those objects from arbitrary same-interpreter code
+  requires a separate native or process-isolation design.
+- Treat final finder/loader/spec/origin/package checks as current drift
+  detection, not cryptographic attestation of historical execution.
 - Tests use synthetic worktrees, mocked clients, and temporary filesystems. Do not contact qBittorrent, the network, or the media library.
 - Every Python change is implemented or reviewed by PythonPro after reading `AGENTS.md`, with `uv run basedpyright` and an actual `basedpyright-langserver --stdio` session.
 - Use test-first red/green cycles, commit each independently reviewed task, and run full security/quality gates before publication.
@@ -160,7 +169,13 @@ Expected: the new digest-bound imports fail because dependency paths are removed
 
 The finder accepts only exact names present in its frozen source map and returns `None` for names outside `tqdm`. The loader compiles only retained bytes, exposes a fixed path-free origin, implements no resource reader or data access, and refuses a second source mutation. Keep `_WorktreePackageFinder` first for protected first-party names and place the immutable finder before ordinary path-based finders.
 
-After evaluation, validate the source map identity and require every loaded `tqdm` module to retain the expected loader, spec, origin, and package status. Convert any loader validation error into the existing bounded dependency-isolation diagnostic.
+After evaluation, validate the source map identity, require the protected
+finder and immutable finder to retain their first and second meta-path slots,
+and require every loaded `tqdm` module to retain the expected loader, spec,
+origin, and package status. Reject malformed non-`ModuleSpec` metadata through
+the existing bounded dependency-isolation diagnostic rather than leaking a raw
+attribute error. These checks detect final drift within the approved threat
+boundary; they do not attest the complete historical execution path.
 
 - [ ] **Step 4: Wire the manifest through paired orchestration**
 
@@ -301,7 +316,8 @@ Run:
 uv run pytest tests/test_gauntlet_runner.py -k 'version or evaluator_identity or documentation' -vv
 ```
 
-Expected: failures still report evaluator `1.11.0`, pairing `2.7.0`, or stale stdlib/first-party-only wording.
+Expected: failures still report evaluator `1.11.0` or pairing `2.7.0`;
+the approved immutable-`tqdm` boundary wording is already carried forward.
 
 - [ ] **Step 3: Update code and documentation consistently**
 

@@ -248,9 +248,25 @@ and native-module directory, remain first. The coordinator keeps ordinary
 installed dependency directories behind those paths without executing editable
 install hooks. Digest-bound measured children instead reject modules already
 loaded from dependency origins and remove those directories from `sys.path`;
-their imports are limited to the standard library and immutable protected
-first-party sources. Thus checkout-level or temporarily replaced dependency
-modules cannot enter measured execution.
+their imports are limited to the standard library, immutable protected
+first-party sources, and the real `tqdm` namespace compiled by the dedicated
+manifest finder from source bytes captured before those paths are removed. The
+loader cannot reopen the installed tree. Final validation requires the
+protected finder and manifest finder to remain first and second on
+`sys.meta_path`, and requires loaded `tqdm` modules to retain the expected
+loader, spec, synthetic origin, and package status.
+
+This boundary assumes verified evaluator/bootstrap bytes, conforming CPython,
+and control, candidate, and dependency code that does not deliberately inspect
+or mutate evaluator-private Python state. Deliberate mutation of evaluator
+globals, frames, `sys.meta_path`, evaluator-owned `sys.modules` entries,
+loader/finder internals, or audit registries is outside scope. The final
+metadata checks detect current drift; they are not cryptographic historical
+execution attestation. Protecting evaluator objects from arbitrary code already
+executing in the same interpreter would require separate native or process
+isolation. Swap/restore and path-race protection still follows from capturing
+manifest-matching source bytes once, never reopening the installed tree, and
+revalidating the complete dependency fingerprint after evaluation.
 
 The coordinator fixes one ordered set of installed dependency paths for the
 complete crossover and fingerprints every relative path and regular file's

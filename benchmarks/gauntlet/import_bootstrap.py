@@ -704,7 +704,7 @@ class _ImmutableDependencyFinder(importlib.abc.MetaPathFinder):
             module_spec = getattr(module, "__spec__", None)
             loaded_by = getattr(module, "__loader__", None)
             if (
-                module_spec is None
+                not isinstance(module_spec, importlib.machinery.ModuleSpec)
                 or loaded_by is not module_loader
                 or module_spec is not spec
                 or module_spec.loader is not module_loader
@@ -1386,6 +1386,12 @@ def main(arguments: Sequence[str] | None = None) -> None:
                 raise SystemExit(PROTECTED_IMPORT_ERROR) from None
             if immutable_dependency_finder is not None:
                 try:
+                    if (
+                        len(sys.meta_path) < 2
+                        or sys.meta_path[0] is not protected_finder
+                        or sys.meta_path[1] is not immutable_dependency_finder
+                    ):
+                        raise DependencyEnvironmentError(DEPENDENCY_ISOLATION_ERROR)
                     immutable_dependency_finder.validate_sources()
                 except DependencyEnvironmentError:
                     raise SystemExit(DEPENDENCY_ISOLATION_ERROR) from None
