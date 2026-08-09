@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate primary triple derives one artifact role, and every primary pass
   plus all twelve scenarios must match that role without per-scenario mixing.
   Earlier tracker artifacts are invalid.
-- Paired evaluator identity is now 1.12.0 and pairing identity is 2.8.0 without
+- Paired evaluator identity is now 1.12.0 and pairing identity is 2.9.0 without
   changing result schema 9 or paired-result schema 6. Paired children keep all
   installed dependency roots off `sys.path`, execute real `tqdm` only from
   captured manifest-matching bytes, and use the evaluator-owned fail-closed
@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidate passes structurally. Synthetic runtime uses a `1.0` regression
   ceiling without artificial latency; protected live evidence is required for
   a wall-clock improvement claim.
+
+### Fixed
+
+- Paired coordinator and child interpreters now disable bytecode writes
+  explicitly. Lazy standard-library imports inside audited tracker calls can no
+  longer attempt to create a temporary bytecode-cache directory and fail an
+  otherwise safe isolated run.
 
 ## [2.3.1] - 2026-08-05
 
