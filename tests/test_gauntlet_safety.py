@@ -336,6 +336,10 @@ def test_tracker_evaluator_rejects_transient_writes_outside_fixture_root(
     assert not marker.exists()
 
 
+@pytest.mark.skipif(
+    os.open not in os.supports_dir_fd or os.unlink not in os.supports_dir_fd,
+    reason="descriptor-relative os.open and os.unlink are unavailable",
+)
 def test_tracker_evaluator_rejects_descriptor_relative_write_attempts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

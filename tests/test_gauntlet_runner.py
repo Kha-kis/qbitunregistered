@@ -483,7 +483,7 @@ def _tracker_scenario_contract_toml_blocks() -> dict[str, bytes]:
 
 def _quality_bar_source_with_tracker_scenario_contracts() -> bytes:
     """Supply the wished-for table until the production quality bar owns it."""
-    source = QUALITY_BAR_PATH.read_bytes()
+    source = QUALITY_BAR_PATH.read_bytes().replace(b"\r\n", b"\n")
     if b"[tracker_scenario_contracts." in source:
         return source
     blocks = _tracker_scenario_contract_toml_blocks()
@@ -668,8 +668,16 @@ def test_quality_bar_loads_frozen_tracker_scenario_contracts() -> None:
         "inconsistent_execution_failure",
     ),
 )
-def test_quality_bar_rejects_malformed_tracker_scenario_contracts(case: str) -> None:
+def test_quality_bar_rejects_malformed_tracker_scenario_contracts(
+    case: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Reject schema drift and internally inconsistent scenario contracts."""
+    checkout_source = QUALITY_BAR_PATH.read_bytes().replace(b"\r\n", b"\n")
+    crlf_quality_bar = tmp_path / "quality-bar.toml"
+    crlf_quality_bar.write_bytes(checkout_source.replace(b"\n", b"\r\n"))
+    monkeypatch.setattr(sys.modules[__name__], "QUALITY_BAR_PATH", crlf_quality_bar)
     source = _quality_bar_source_with_tracker_scenario_contracts()
     blocks = _tracker_scenario_contract_toml_blocks()
     complete_block = blocks["complete_embedded"]
@@ -726,6 +734,7 @@ def test_quality_bar_rejects_malformed_tracker_scenario_contracts(case: str) -> 
         assert original in source
         malformed = source.replace(original, replacement, 1)
 
+    assert malformed != source
     with pytest.raises(QualityBarError, match="tracker_scenario_contracts"):
         load_quality_bar_bytes(malformed)
 
