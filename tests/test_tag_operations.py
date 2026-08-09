@@ -355,6 +355,32 @@ class TestTrackerTagging:
         assert fetch_torrent_trackers(client, "embedded-hash", cache_scope=id(client)) == embedded
         client.torrents_trackers.assert_not_called()
 
+    def test_primed_tracker_metadata_uses_one_client_scoped_cache_entry(self) -> None:
+        """A bulk response stays bulk in memory and retains its decoded lists."""
+        from qbitunregistered.cache import clear_cache, get_cache
+        from qbitunregistered.operations.seeding_management import (
+            fetch_torrent_trackers,
+            prime_torrent_trackers,
+        )
+
+        clear_cache()
+        client = Mock()
+        first_trackers = [{"url": "https://first.example/announce"}]
+        second_trackers = [{"url": "https://second.example/announce"}]
+
+        prime_torrent_trackers(
+            client,
+            [
+                {"hash": "first-hash", "trackers": first_trackers},
+                {"hash": "second-hash", "trackers": second_trackers},
+            ],
+        )
+
+        assert get_cache().stats()["size"] == 1
+        assert fetch_torrent_trackers(client, "first-hash", cache_scope=id(client)) is first_trackers
+        assert fetch_torrent_trackers(client, "second-hash", cache_scope=id(client)) is second_trackers
+        client.torrents_trackers.assert_not_called()
+
     def test_omitted_tracker_metadata_falls_back_only_for_that_torrent(self) -> None:
         from qbitunregistered.cache import clear_cache
         from qbitunregistered.operations.seeding_management import (

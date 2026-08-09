@@ -20,6 +20,10 @@ def _tracker_cache_key(torrent_hash: str, cache_scope: int) -> str:
     return f"torrent_trackers:{cache_scope}:{torrent_hash}"
 
 
+def _bulk_tracker_cache_key(cache_scope: int) -> str:
+    return f"torrent_trackers:{cache_scope}:bulk"
+
+
 def _store_tracker_metadata(
     torrent_hash: str,
     cache_scope: int,
@@ -37,16 +41,21 @@ def prime_torrent_trackers(client: QBittorrentClient, torrents: Sequence[Any]) -
             raise RuntimeError("qBittorrent returned a missing or duplicate torrent hash while preloading tracker metadata")
         torrent_hashes.add(torrent_hash)
 
-    cache_scope = id(client)
+    tracker_metadata_by_hash: dict[str, list[Any] | object] = {}
     for torrent in torrents:
         if not isinstance(torrent, Mapping) or "trackers" not in torrent:
             continue
         torrent_hash = cast(str, torrent.get("hash"))
         trackers = torrent["trackers"]
-        if isinstance(trackers, Sequence) and not isinstance(trackers, (str, bytes, bytearray)):
-            _store_tracker_metadata(torrent_hash, cache_scope, list(trackers))
+        if isinstance(trackers, list):
+            tracker_metadata_by_hash[torrent_hash] = trackers
+        elif isinstance(trackers, Sequence) and not isinstance(trackers, (str, bytes, bytearray)):
+            tracker_metadata_by_hash[torrent_hash] = list(trackers)
         else:
-            _store_tracker_metadata(torrent_hash, cache_scope, _MALFORMED_TRACKER_METADATA)
+            tracker_metadata_by_hash[torrent_hash] = _MALFORMED_TRACKER_METADATA
+
+    cache_scope = id(client)
+    get_cache().set_for_execution(_bulk_tracker_cache_key(cache_scope), tracker_metadata_by_hash)
 
 
 def fetch_torrent_trackers(client: QBittorrentClient, torrent_hash: str, *, cache_scope: int | None) -> list[Any]:
@@ -64,11 +73,20 @@ def fetch_torrent_trackers(client: QBittorrentClient, torrent_hash: str, *, cach
     if cache_scope is None:
         raise ValueError("cache_scope must be provided (use id(client))")
 
-    cached_trackers = get_cache().get(
-        _tracker_cache_key(torrent_hash, cache_scope),
-        _TRACKER_CACHE_MISS,
-        namespace="torrent_trackers",
-    )
+    cache = get_cache()
+    bulk_cache_key = _bulk_tracker_cache_key(cache_scope)
+    bulk_trackers = cache.get(bulk_cache_key, _TRACKER_CACHE_MISS)
+    if bulk_trackers is not _TRACKER_CACHE_MISS and torrent_hash in cast(dict[str, object], bulk_trackers):
+        # Record a bulk hit only after resolving it, so an exact fallback keeps
+        # one cache miss per API fetch in the operator-facing statistics.
+        cache.get(bulk_cache_key, namespace="torrent_trackers")
+        cached_trackers = cast(dict[str, object], bulk_trackers)[torrent_hash]
+    else:
+        cached_trackers = cache.get(
+            _tracker_cache_key(torrent_hash, cache_scope),
+            _TRACKER_CACHE_MISS,
+            namespace="torrent_trackers",
+        )
     if cached_trackers is _MALFORMED_TRACKER_METADATA:
         raise MalformedEmbeddedTrackerMetadataError(
             f"qBittorrent returned malformed tracker metadata for torrent {torrent_hash}"
