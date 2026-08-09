@@ -55,7 +55,7 @@ from benchmarks.gauntlet.runner import DEFAULT_SAMPLES
 
 PAIRED_SCHEMA_NAME = "qbitunregistered.gauntlet.paired-result"
 PAIRED_SCHEMA_VERSION = 6
-PAIRING_VERSION = "2.8.0"
+PAIRING_VERSION = "2.9.0"
 PAIRED_ORDER: tuple[Literal["control", "candidate"], ...] = (
     "control",
     "candidate",
@@ -1006,6 +1006,7 @@ def _run_child(
     environment["PYTHONNOUSERSITE"] = "1"
     command = [
         sys.executable,
+        "-B",
         "-s",
         "-S",
         "-P",

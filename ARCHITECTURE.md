@@ -757,7 +757,12 @@ non-comparable before schema 9 / evaluator 1.12.0.
 
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,
-and no-bytecode interpreter flags; additional flags are permitted. It discovers
+and no-bytecode interpreter flags; additional flags are permitted. Every paired
+child separately starts with `-B -s -S -P`, because interpreter flags do not
+propagate to subprocesses. Disabling child bytecode prevents a lazy standard-
+library import during an audited production call from attempting to create its
+temporary cache hierarchy. The child cache prefix remains outside every
+evaluated repository as a defensive containment boundary. The launcher discovers
 virtual-environment package roots from the lexical interpreter path and a bounded, stable,
 nonredirecting `pyvenv.cfg`, then uses explicit `sysconfig` virtual-environment
 paths plus hook-free system-site path construction when configured. Only

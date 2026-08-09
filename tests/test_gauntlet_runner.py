@@ -2438,7 +2438,7 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
 
     assert quick.kind == full.kind == "tracker"
     assert paired.PAIRED_SCHEMA_VERSION == 6
-    assert paired.PAIRING_VERSION == "2.8.0"
+    assert paired.PAIRING_VERSION == "2.9.0"
     assert quick.tier == "round"
     assert full.tier == "candidate"
     assert quick.fixture_manifest_digest == "348948093b6f400156f97e29c4314a1b0836f31e4d7b3b59d16781008e1a0988"
@@ -2485,7 +2485,7 @@ def test_evaluator_identity_versions_preserve_existing_result_schemas() -> None:
     assert quality_bar.evaluator_schema_version == SCHEMA_VERSION == 9
     assert quality_bar.evaluator_version == EVALUATOR_VERSION == "1.12.0"
     assert paired.PAIRED_SCHEMA_VERSION == 6
-    assert paired.PAIRING_VERSION == "2.8.0"
+    assert paired.PAIRING_VERSION == "2.9.0"
 
 
 def test_paired_documentation_defines_immutable_child_import_boundary() -> None:
@@ -6050,6 +6050,59 @@ def test_digest_bound_bootstrap_never_imports_swap_restored_dependency(
 
 
 @requires_descriptor_no_follow
+def test_paired_child_disables_bytecode_before_lazy_stdlib_import(
+    tmp_path: Path,
+) -> None:
+    """Catch a paired child creating bytecode inside the production audit."""
+    output = tmp_path / "child.json"
+    dependency_paths = paired._dependency_import_paths()
+    dependency_environment_identity = import_bootstrap.dependency_environment_digest(dependency_paths)
+    immutable_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    expected_result = _valid_quick_result()
+    bootstrap_source = (
+        "import json\n"
+        "import os\n"
+        "import sys\n"
+        "if '-B' not in sys.orig_argv:\n"
+        "    raise SystemExit('paired child did not start with -B')\n"
+        "audit_active = True\n"
+        "def reject_writes(event, arguments):\n"
+        "    if not audit_active:\n"
+        "        return\n"
+        "    write_open = (\n"
+        "        event == 'open'\n"
+        "        and len(arguments) >= 3\n"
+        "        and (\n"
+        "            (isinstance(arguments[1], str) and any(marker in arguments[1] for marker in 'wax+'))\n"
+        "            or (isinstance(arguments[2], int) and arguments[2] & (os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC))\n"
+        "        )\n"
+        "    )\n"
+        "    if write_open or event == 'os.mkdir':\n"
+        "        raise RuntimeError('lazy stdlib import attempted a filesystem write')\n"
+        "sys.addaudithook(reject_writes)\n"
+        "import multiprocessing\n"
+        "audit_active = False\n"
+        f"with open(sys.argv[-1], 'w', encoding='utf-8') as output_file:\n"
+        f"    json.dump({expected_result!r}, output_file)\n"
+    ).encode("utf-8")
+
+    result = paired._run_child(
+        tmp_path,
+        profile="quick",
+        seed=20_260_729,
+        samples=DEFAULT_SAMPLES,
+        output=output,
+        dependency_paths=dependency_paths,
+        dependency_environment_digest=dependency_environment_identity,
+        immutable_tqdm_manifest=immutable_manifest,
+        bootstrap_source=bootstrap_source,
+        expected_commit="a" * 40,
+    )
+
+    assert result == expected_result
+
+
+@requires_descriptor_no_follow
 def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6069,19 +6122,19 @@ def test_paired_child_uses_isolated_python_environment_and_fresh_bytecode_caches
     expected_commit = "a" * 40
 
     def fake_run(command, **kwargs):
-        assert command[1:4] == ["-s", "-S", "-P"]
-        assert command[4] == "-"
-        assert command[5] == str(tmp_path)
-        assert json.loads(command[6]) == list(dependency_paths)
-        assert command[7:9] == [
+        assert command[1:5] == ["-B", "-s", "-S", "-P"]
+        assert command[5] == "-"
+        assert command[6] == str(tmp_path)
+        assert json.loads(command[7]) == list(dependency_paths)
+        assert command[8:10] == [
             import_bootstrap.EXPECTED_REPOSITORY_COMMIT_ARGUMENT,
             expected_commit,
         ]
-        assert command[9:11] == [
+        assert command[10:12] == [
             import_bootstrap.DEPENDENCY_DIGEST_ARGUMENT,
             dependency_environment_identity,
         ]
-        assert command[11:13] == [
+        assert command[12:14] == [
             import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT,
             immutable_manifest,
         ]
