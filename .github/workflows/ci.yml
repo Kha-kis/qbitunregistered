@@ -77,13 +77,8 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip "setuptools>=83" build
       - run: python -m pip install -e ".[dev]"
-      - name: "Temporary diagnostic: isolated tracker descriptor boundary"
-        continue-on-error: true
-        run: >-
-          pytest --capture=sys
-          tests/test_gauntlet_runner.py::test_tracker_evaluator_rejects_hash_level_action_drift_with_unchanged_counts
-      - name: Run tests
-        run: pytest --capture=sys
+      - name: "Temporary diagnostic: locate first leaked regular descriptor"
+        run: pytest --capture=sys --maxfail=1
       - name: Build wheel
         run: python -m build
       - name: Install wheel
