@@ -329,6 +329,16 @@ def _stable_entry_identity(file_stat: os.stat_result) -> tuple[int, int, int, in
     )
 
 
+def _path_descriptor_entry_identity(file_stat: os.stat_result) -> tuple[int, ...]:
+    """Return metadata comparable across path and descriptor stat APIs."""
+    stable_identity = _stable_entry_identity(file_stat)
+    if os.name == "nt":
+        # Windows path stat preserves creation time in deprecated st_ctime,
+        # while descriptor stat can expose metadata-change time instead.
+        return stable_identity[:-1]
+    return stable_identity
+
+
 def _open_stable_regular_file(path: Path, expected_stat: os.stat_result) -> tuple[int, os.stat_result]:
     """Open one expected regular file without following its final component."""
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
@@ -426,7 +436,9 @@ def _read_bounded_regular_file(
             path_stat = os.lstat(path)
         except OSError as error:
             raise DependencyEnvironmentError("could not revalidate an installed dependency safely") from error
-        if _entry_is_redirecting(path_stat) or _stable_entry_identity(path_stat) != _stable_entry_identity(after):
+        if _entry_is_redirecting(path_stat) or _path_descriptor_entry_identity(path_stat) != _path_descriptor_entry_identity(
+            after
+        ):
             raise DependencyEnvironmentError("installed dependency entry changed during validation")
     return b"".join(chunks)
 

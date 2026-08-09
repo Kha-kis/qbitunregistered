@@ -3920,6 +3920,128 @@ def test_dependency_environment_digest_tracks_paths_and_contents_not_mtime(
     assert import_bootstrap.dependency_environment_digest(dependency_paths) != content_changed
 
 
+def _dependency_source_stat(
+    payload: bytes,
+    *,
+    inode: int = 11,
+    size: int | None = None,
+    mtime_ns: int = 13,
+    ctime_ns: int = 17,
+    file_attributes: int = 0,
+) -> os.stat_result:
+    return cast(
+        os.stat_result,
+        SimpleNamespace(
+            st_dev=7,
+            st_ino=inode,
+            st_mode=stat.S_IFREG | 0o600,
+            st_size=len(payload) if size is None else size,
+            st_file_attributes=file_attributes,
+            st_mtime_ns=mtime_ns,
+            st_ctime_ns=ctime_ns,
+        ),
+    )
+
+
+def _mock_dependency_source_read(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    *,
+    descriptor_before: os.stat_result,
+    descriptor_after: os.stat_result,
+    path_after: os.stat_result,
+    platform_name: str,
+) -> None:
+    monkeypatch.setattr(import_bootstrap.os, "name", platform_name)
+    monkeypatch.delattr(import_bootstrap.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.setattr(import_bootstrap.os, "open", Mock(return_value=31))
+    monkeypatch.setattr(
+        import_bootstrap.os,
+        "fstat",
+        Mock(side_effect=(descriptor_before, descriptor_after)),
+    )
+    monkeypatch.setattr(import_bootstrap.os, "read", Mock(side_effect=(payload, b"")))
+    monkeypatch.setattr(import_bootstrap.os, "lstat", Mock(return_value=path_after))
+    monkeypatch.setattr(import_bootstrap.os, "close", Mock())
+
+
+def test_windows_bounded_dependency_reader_tolerates_only_cross_interface_ctime_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"verified source\n"
+    path_before = _dependency_source_stat(payload, ctime_ns=17)
+    descriptor_stat = _dependency_source_stat(payload, ctime_ns=19)
+    path_after = _dependency_source_stat(payload, ctime_ns=23)
+    _mock_dependency_source_read(
+        monkeypatch,
+        payload,
+        descriptor_before=descriptor_stat,
+        descriptor_after=descriptor_stat,
+        path_after=path_after,
+        platform_name="nt",
+    )
+
+    assert (
+        import_bootstrap._read_bounded_regular_file(
+            Path("dependency.py"),
+            path_before,
+            maximum_bytes=1024,
+        )
+        == payload
+    )
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "mutation"),
+    [
+        ("posix", "path_ctime"),
+        ("nt", "descriptor_ctime"),
+        ("nt", "path_inode"),
+        ("nt", "path_size"),
+        ("nt", "path_mtime"),
+        ("nt", "path_attributes"),
+    ],
+)
+def test_bounded_dependency_reader_rejects_nonportable_identity_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_name: str,
+    mutation: str,
+) -> None:
+    payload = b"verified source\n"
+    path_before = _dependency_source_stat(payload, ctime_ns=17)
+    descriptor_before = _dependency_source_stat(payload, ctime_ns=19)
+    descriptor_after = _dependency_source_stat(
+        payload,
+        ctime_ns=29 if mutation == "descriptor_ctime" else 19,
+    )
+    path_after = _dependency_source_stat(
+        payload,
+        inode=31 if mutation == "path_inode" else 11,
+        size=len(payload) + 1 if mutation == "path_size" else None,
+        mtime_ns=37 if mutation == "path_mtime" else 13,
+        ctime_ns=23 if mutation == "path_ctime" else 19,
+        file_attributes=1 if mutation == "path_attributes" else 0,
+    )
+    _mock_dependency_source_read(
+        monkeypatch,
+        payload,
+        descriptor_before=descriptor_before,
+        descriptor_after=descriptor_after,
+        path_after=path_after,
+        platform_name=platform_name,
+    )
+
+    with pytest.raises(
+        import_bootstrap.DependencyEnvironmentError,
+        match="installed dependency entry changed during validation",
+    ):
+        import_bootstrap._read_bounded_regular_file(
+            Path("dependency.py"),
+            path_before,
+            maximum_bytes=1024,
+        )
+
+
 def test_immutable_tqdm_manifest_is_canonical_bounded_source_metadata(
     tmp_path: Path,
 ) -> None:
@@ -4301,6 +4423,22 @@ def test_capture_immutable_tqdm_sources_rejects_installed_tree_drift(
 
     (tqdm_root / "new_module.py").unlink()
     (tqdm_root / "std.py").write_bytes(b"class tqdm:\n    stop\n")
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+
+
+def test_capture_immutable_tqdm_sources_rejects_same_size_content_drift(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    source_path = Path(dependency_paths[0]) / "tqdm" / "std.py"
+    original_source = source_path.read_bytes()
+    replacement_source = original_source.replace(b"pass", b"stop")
+    assert replacement_source != original_source
+    assert len(replacement_source) == len(original_source)
+    source_path.write_bytes(replacement_source)
+
     with pytest.raises(import_bootstrap.DependencyEnvironmentError):
         import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
 
