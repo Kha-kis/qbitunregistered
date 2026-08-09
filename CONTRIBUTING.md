@@ -341,9 +341,12 @@ uv run python -m benchmarks.gauntlet \
 Results contain sanitized workload identity and tier, intended and shadow
 execution-action digests, API read counts normalized per pass, mutation and
 global isolation counters, sample median/minimum/maximum and median absolute
-deviation, and separately traced peak memory. Candidate identity covers the
-commit plus staged, unstaged, and untracked content without including raw
-paths or diffs in the result.
+deviation, and separately traced peak memory. Tracker scenario results also
+retain exact endpoint counters, CLI exit code, terminal phase, observation
+order, and zero mutation/isolation counters. Candidate identity covers the
+commit plus staged, unstaged, and untracked content without including raw paths
+or diffs in the result. Tracker artifacts older than evaluator schema 8 are
+non-comparable.
 
 Compare an optimization candidate with the checked-in quality bar:
 

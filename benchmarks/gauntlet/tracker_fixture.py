@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter
+from collections import Counter, UserList
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -127,26 +127,62 @@ class TrackerTorrent:
     files: list[Any] | None = None
 
 
-class FakeTrackerBulkTorrent(dict[str, object]):
-    """Dependency-free equivalent of qBittorrent's torrent dictionary wrapper."""
+class FakeAttrDict(dict[str, object]):
+    """Dependency-free mapping normalization used by installed API responses."""
 
-    def __init__(self, payload: Mapping[str, object], client: FakeTrackerClient) -> None:
-        converted = dict(payload)
-        converted["reannounce_in"] = converted.pop("reannounce")
-        super().__init__(converted)
-        self._client = client
+    def __init__(self, payload: Mapping[str, object]) -> None:
+        super().__init__({key: FakeAttrDict(value) if isinstance(value, Mapping) else value for key, value in payload.items()})
 
     def __getattr__(self, name: str) -> object:
-        """Expose ordinary mapping fields with the installed client's attribute shape."""
+        """Expose valid response mapping fields through attribute access."""
         try:
             return self[name]
         except KeyError as error:
             raise AttributeError(name) from error
 
+
+class FakeTrackerBulkTorrent(FakeAttrDict):
+    """Dependency-free equivalent of qBittorrent's torrent dictionary wrapper."""
+
+    def __init__(self, payload: Mapping[str, object], client: FakeTrackerClient | None) -> None:
+        converted = dict(payload)
+        converted["reannounce_in"] = converted.pop("reannounce")
+        super().__init__(converted)
+        self._client = client
+
     @property
     def trackers(self) -> object:
         """Fetch exact tracker metadata as the installed client property does."""
+        if self._client is None:
+            raise AttributeError("trackers")
         return self._client.torrents_trackers(torrent_hash=cast(str, self["hash"]))
+
+
+class FakeTorrentInfoList(UserList[FakeTrackerBulkTorrent]):
+    """Dependency-free equivalent of the installed TorrentInfoList."""
+
+    def __init__(
+        self,
+        payloads: Sequence[Mapping[str, object]],
+        client: FakeTrackerClient | None = None,
+    ) -> None:
+        super().__init__(
+            [
+                payload if isinstance(payload, FakeTrackerBulkTorrent) else FakeTrackerBulkTorrent(payload, client)
+                for payload in payloads
+            ]
+        )
+
+
+class FakeTracker(FakeAttrDict):
+    """Dependency-free equivalent of one installed exact Tracker response."""
+
+
+class FakeTrackersList(UserList[FakeTracker]):
+    """Dependency-free equivalent of the installed TrackersList."""
+
+    def __init__(self, payloads: Sequence[Mapping[str, object]]) -> None:
+        super().__init__([payload if isinstance(payload, FakeTracker) else FakeTracker(payload) for payload in payloads])
 
 
 EmbeddedTrackersMode = Literal["supported", "omitted", "rejected", "malformed"]
@@ -243,6 +279,38 @@ def _torrent_state(torrent: TrackerTorrent) -> str:
     return "stoppedDL" if torrent.state_enum.is_paused else "downloading"
 
 
+def effective_torrent_info_payload(
+    stored_payload: Mapping[str, object],
+    torrent: TrackerTorrent,
+) -> dict[str, object]:
+    """Return the authoritative post-overlay torrent-info base mapping."""
+    save_path = Path(torrent.save_path)
+    payload = dict(stored_payload)
+    payload.update(
+        {
+            "added_on": torrent.added_on,
+            "category": torrent.category,
+            "completion_on": torrent.completion_on,
+            "content_path": torrent.content_path,
+            "downloaded": torrent.downloaded,
+            "download_path": str(save_path / ".unfinished"),
+            "hash": torrent.hash,
+            "magnet_uri": (
+                f"magnet:?xt=urn:btih:{torrent.hash}&dn={torrent.name}" "&tr=https%3A%2F%2Ftracker.invalid%2Fannounce"
+            ),
+            "name": torrent.name,
+            "ratio": torrent.ratio,
+            "root_path": torrent.content_path,
+            "save_path": torrent.save_path,
+            "seeding_time": torrent.seeding_time,
+            "state": _torrent_state(torrent),
+            "tags": torrent.tags,
+            "uploaded": torrent.uploaded,
+        }
+    )
+    return payload
+
+
 class _FakeTrackerTorrents:
     def __init__(self, client: FakeTrackerClient) -> None:
         self._client = client
@@ -265,29 +333,9 @@ class _FakeTrackerTorrents:
         for index, torrent in enumerate(snapshot):
             if not isinstance(torrent, TrackerTorrent):
                 return snapshot
-            payload = dict(self._client.torrent_info_by_hash[torrent.hash])
-            save_path = Path(torrent.save_path)
-            payload.update(
-                {
-                    "added_on": torrent.added_on,
-                    "category": torrent.category,
-                    "completion_on": torrent.completion_on,
-                    "content_path": torrent.content_path,
-                    "downloaded": torrent.downloaded,
-                    "download_path": str(save_path / ".unfinished"),
-                    "hash": torrent.hash,
-                    "magnet_uri": (
-                        f"magnet:?xt=urn:btih:{torrent.hash}&dn={torrent.name}" "&tr=https%3A%2F%2Ftracker.invalid%2Fannounce"
-                    ),
-                    "name": torrent.name,
-                    "ratio": torrent.ratio,
-                    "root_path": torrent.content_path,
-                    "save_path": torrent.save_path,
-                    "seeding_time": torrent.seeding_time,
-                    "state": _torrent_state(torrent),
-                    "tags": torrent.tags,
-                    "uploaded": torrent.uploaded,
-                }
+            payload = effective_torrent_info_payload(
+                self._client.torrent_info_by_hash[torrent.hash],
+                torrent,
             )
             if include_trackers and self._client.embedded_trackers_mode != "omitted":
                 payload["trackers"] = (
@@ -299,7 +347,10 @@ class _FakeTrackerTorrents:
         decoded = _fresh_decoded_payload(response)
         if not isinstance(decoded, list):
             raise TypeError("tracker snapshot did not decode to a list")
-        return [FakeTrackerBulkTorrent(item, self._client) for item in decoded if isinstance(item, Mapping)]
+        return FakeTorrentInfoList(
+            [item for item in decoded if isinstance(item, Mapping)],
+            self._client,
+        )
 
 
 class FakeTrackerClient:
@@ -385,18 +436,21 @@ class FakeTrackerClient:
         """Expose the direct API shape required by the project protocol."""
         return cast(list[Any], self.torrents.info(**kwargs))
 
-    def torrents_trackers(self, torrent_hash: str | None = None, **_kwargs: Any) -> list[dict[str, object]]:
+    def torrents_trackers(self, torrent_hash: str | None = None, **_kwargs: Any) -> list[Any]:
         """Return qBittorrent pseudo records followed by fresh real trackers."""
         self.read_counts["torrents_trackers"] += 1
         trackers = self.trackers_by_hash.get(torrent_hash or "", [])
         if isinstance(trackers, BaseException):
             raise trackers
         if trackers is None:
-            return cast(list[dict[str, object]], trackers)
+            return cast(list[Any], trackers)
         if not isinstance(trackers, Sequence) or isinstance(trackers, (str, bytes, bytearray)):
-            return cast(list[dict[str, object]], _fresh_decoded_payload(trackers))
+            return cast(list[Any], _fresh_decoded_payload(trackers))
         payload = [*_PSEUDO_TRACKERS, *trackers]
-        return cast(list[dict[str, object]], _fresh_decoded_payload(payload))
+        decoded = _fresh_decoded_payload(payload)
+        if not isinstance(decoded, list) or any(not isinstance(item, Mapping) for item in decoded):
+            raise TypeError("exact tracker response did not decode to mappings")
+        return cast(list[Any], FakeTrackersList(cast(list[Mapping[str, object]], decoded)))
 
     def torrents_files(self, torrent_hash: str | None = None, **_kwargs: Any) -> list[object]:
         """Return no files because tracker deletion candidates are torrent-only."""
@@ -678,9 +732,13 @@ def build_tracker_fixture(
 
 __all__ = [
     "EmbeddedTrackersMode",
+    "FakeAttrDict",
     "TrackerActionRecord",
     "FakeTrackerBulkTorrent",
     "FakeTrackerClient",
+    "FakeTorrentInfoList",
+    "FakeTracker",
+    "FakeTrackersList",
     "TRACKER_FULL_PROFILE",
     "TRACKER_PROFILES",
     "TRACKER_QUICK_PROFILE",
@@ -690,5 +748,6 @@ __all__ = [
     "build_tracker_fixture",
     "expected_tracker_action_digest",
     "expected_tracker_action_records",
+    "effective_torrent_info_payload",
     "torrent_info_payload",
 ]

@@ -679,3 +679,145 @@ actual BasedPyright LSP session over every changed Python file, and
 `git diff --check`. Commit one coherent evaluator-only round, generate clean
 `round4` quick/full JSON under `/tmp`, and append the ignored report and progress
 ledger with exact sanitized evidence using `apply_patch`.
+
+### Task 6: Establish correction round 5
+
+**Files:**
+- Modify: `benchmarks/gauntlet/tracker_fixture.py`
+- Modify: `benchmarks/gauntlet/tracker_runner.py`
+- Modify: `benchmarks/gauntlet/baseline.py`
+- Modify: `benchmarks/gauntlet/paired_evidence.py`
+- Modify: `benchmarks/gauntlet/paired.py`
+- Modify: `benchmarks/gauntlet/runner.py`
+- Modify: `benchmarks/gauntlet/quality-bar.toml`
+- Test: `tests/test_gauntlet_runner.py`
+- Test: `tests/test_gauntlet_safety.py`
+- Modify: `README.md`
+- Modify: `CONTRIBUTING.md`
+- Modify: `ARCHITECTURE.md`
+- Modify: `CHANGELOG.md`
+- Modify: `benchmarks/gauntlet/README.md`
+- Modify: this design and plan
+- Append ignored evidence: `.superpowers/sdd/2026-08-08-tracker-gauntlet/`
+
+**Interfaces:**
+- `effective_torrent_info_payload(stored, torrent)` returns the authoritative
+  post-overlay base mapping shared by manifest and response construction.
+- Dependency-free response containers mirror installed 2026.8.0
+  TorrentInfoList/TorrentDictionary and TrackersList/Tracker allocation.
+- `_execute_scenario_cli(...)` runs real CLI acquisition with optional
+  post-acquisition and post-preview hooks and returns structured observations.
+- `TrackerScenarioEvidence` contains strict exit, phase, observation, action,
+  endpoint, mutation, and isolation evidence.
+
+- [ ] **Step 1: Add effective-manifest RED tests**
+
+Add a literal parameter matrix that replaces one valid snapshot field at a
+time and proves the manifest changes for hash/name/category/tags, save and
+content paths, derived download/root paths and magnet identity, state,
+added/completion/seeding times, ratio, uploaded, and downloaded. Add one stored
+non-overlay mutation that must change the digest and one stored overwritten
+field mutation that must not.
+
+- [ ] **Step 2: Run effective-manifest tests and verify RED**
+
+Run only the new manifest node IDs. Expected failures are unchanged digests for
+snapshot overlays and a changed digest for a stored field that cannot reach the
+effective response. Test setup, ownership validation, and path normalization
+must remain valid.
+
+- [ ] **Step 3: Implement the shared effective payload builder**
+
+Move the complete overlay mapping into
+`effective_torrent_info_payload(stored, torrent)`. Use its result in `.info()`
+and in `tracker_fixture_manifest_digest`; add optional embedded trackers only
+after the base result. Preserve stored mappings and existing ownership checks.
+
+- [ ] **Step 4: Run effective-manifest tests and verify GREEN**
+
+Run the Step 2 matrix plus existing ownership, response overlay, payload key,
+manifest determinism, and fresh nested identity nodes. Recompute no locked
+digest until all behavioral assertions pass.
+
+- [ ] **Step 5: Add installed-wrapper graph RED tests**
+
+Construct literal torrent and exact-tracker payloads with installed
+`qbittorrent-api 2026.8.0` and the fake. Assert equivalent container,
+top-level wrapper, recursive mapping, embedded sequence, exact Tracker, and
+endpoint sequence shapes; repeated calls must share no mutable wrapper or
+nested identity. Assert `.trackers` still performs exactly one exact call.
+
+- [ ] **Step 6: Run wrapper tests and verify RED**
+
+Run only the graph, identity, and endpoint nodes. Expected failures are the
+fake's plain top response list, missing exact response/entry wrappers, or
+different mapping normalization. The installed characterization must pass.
+
+- [ ] **Step 7: Implement dependency-free response wrappers**
+
+Add minimal AttrDict-normalizing mappings and UserList-shaped torrent/exact
+containers. Match installed normalization through mappings but not through
+sequences, retain reannounce renaming and `.trackers` delegation, and keep
+every response freshly allocated.
+
+- [ ] **Step 8: Run wrapper tests and verify GREEN**
+
+Run Step 6 plus existing complete payload, wrapper behavior, truncation, and
+control endpoint tests. Confirm the evaluator imports no new dependency and
+stored payloads remain unchanged.
+
+- [ ] **Step 9: Add real-CLI scenario and role-contract RED tests**
+
+For all twelve scenarios, require one real initial CLI acquisition, exact
+preview/execution order, correct hook phase, expected exit/terminal phase,
+literal complete endpoint triple, action outcome, zero mutation, and zero
+isolation. Add paired negative cases for a candidate that skips bulk, accepts
+malformed bulk, uses exact fallback after malformed bulk, omits a refresh, or
+forges aggregate-only scenario evidence.
+
+- [ ] **Step 10: Run scenario/paired tests and verify RED**
+
+Run only the new scenario and paired node IDs. Expected failures must show the
+direct analyzer bypass, missing exit/phase observations, permissive per-role
+scenario validation, and live evaluator use in the sanitizer unit test.
+
+- [ ] **Step 11: Implement the CLI scenario harness and strict evidence**
+
+Add `_execute_scenario_cli` using sanitized config, fake `create_client`, and
+transparent preview/execution observers. Invoke bounded hooks only at the two
+approved observer phases. Convert every compatibility, failure, refresh,
+preflight, and snapshot-binding scenario to this harness and validate its
+role-neutral local invariants before emitting evidence.
+
+- [ ] **Step 12: Implement paired role contracts and fixed unit evidence**
+
+Extend scenario sanitization with exact keys and bounded values, validate every
+scenario by paired role without passing that role into child execution, and
+replace the paired sanitizer test's `run_gauntlet` call with five literal
+samples plus literal valid memory and static scenario evidence.
+
+- [ ] **Step 13: Run scenario/paired tests and verify GREEN**
+
+Run Step 10 plus all tracker primary, scenario, paired, sanitizer, and safety
+tests. Confirm malformed candidate bulk fails before execution with
+`(0, 1, 0)`, only omitted/rejected compatibility paths accept mixed transport,
+and all hook-based churn remains fail closed.
+
+- [ ] **Step 14: Advance schemas, locks, and documentation**
+
+Advance result/evaluator/quality/paired versions together, recompute quick/full
+effective manifest and scenario locks, preserve action/reconciliation digests
+and CPU `1.0`/memory `1.25`, and update root/gauntlet docs, architecture,
+contribution workflow, changelog, design, and plan. Mark round-4 artifacts
+invalid for candidate decisions while recording their actual `(1, 0, N)`
+control evidence and the critic reporting typo.
+
+- [ ] **Step 15: Verify, commit, and regenerate clean artifacts**
+
+Run grouped RED/GREEN evidence, all gauntlet runner/safety tests, full pytest
+with coverage, `gauntlet_full`, Black, fatal and scoped Flake8, BasedPyright
+CLI, mypy, pip-audit, Bandit, build, installed-wheel console smoke outside the
+checkout, actual BasedPyright LSP diagnostics/navigation for every changed
+Python file, and `git diff --check`. Commit one evaluator-only change, generate
+clean `round5` quick/full JSON under `/tmp`, inspect actual scenario/primary
+triples, and append the ignored task report and ledger using `apply_patch`.

@@ -871,7 +871,16 @@ def test_tracker_semantic_matrix_emits_only_normalized_sanitized_pass_evidence(t
         "tracker_change_snapshot_bound",
     }
     for evidence in scenarios.values():
-        assert set(evidence) == {"outcome", "action_digest", "endpoint_counters", "isolation_counters"}
+        assert set(evidence) == {
+            "outcome",
+            "action_digest",
+            "endpoint_counters",
+            "exit_code",
+            "terminal_phase",
+            "observation_order",
+            "mutation_counters",
+            "isolation_counters",
+        }
         assert evidence["outcome"] == "pass"
         assert len(evidence["action_digest"]) == 64
         assert set(evidence["endpoint_counters"]) == {
@@ -880,6 +889,14 @@ def test_tracker_semantic_matrix_emits_only_normalized_sanitized_pass_evidence(t
             "torrents_trackers",
         }
         assert all(isinstance(count, int) and count >= 0 for count in evidence["endpoint_counters"].values())
+        assert evidence["exit_code"] in {0, 1}
+        assert evidence["terminal_phase"] in {
+            "execution_complete",
+            "preview_fail_closed",
+            "execution_fail_closed",
+        }
+        assert evidence["observation_order"] in [["preview"], ["preview", "execution"]]
+        assert all(count == 0 for count in evidence["mutation_counters"].values())
         assert evidence["isolation_counters"] == {
             "filesystem_write_attempts": 0,
             "network_connect_attempts": 0,

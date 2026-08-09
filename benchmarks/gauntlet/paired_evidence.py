@@ -232,7 +232,16 @@ def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: st
     for name in sorted(profile.scenario_action_digests):
         raw_evidence = _exact_mapping(
             scenarios[name],
-            {"outcome", "action_digest", "endpoint_counters", "isolation_counters"},
+            {
+                "outcome",
+                "action_digest",
+                "endpoint_counters",
+                "exit_code",
+                "terminal_phase",
+                "observation_order",
+                "mutation_counters",
+                "isolation_counters",
+            },
             f"scenarios.{name}",
         )
         if raw_evidence["outcome"] != "pass":
@@ -247,6 +256,24 @@ def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: st
         )
         if isolation_counters != dict(profile.isolation_counters):
             raise PairedEvidenceError(f"scenarios.{name}.isolation_counters are not canonical")
+        mutation_counters = _integer_mapping(
+            raw_evidence["mutation_counters"],
+            MUTATION_COUNTER_KEYS,
+            f"scenarios.{name}.mutation_counters",
+        )
+        if any(mutation_counters.values()):
+            raise PairedEvidenceError(f"scenarios.{name}.mutation_counters must be zero")
+        exit_code = _integer(raw_evidence["exit_code"], f"scenarios.{name}.exit_code")
+        if exit_code not in {0, 1}:
+            raise PairedEvidenceError(f"scenarios.{name}.exit_code is not a locked CLI result")
+        terminal_phase = _bounded_string(
+            raw_evidence["terminal_phase"],
+            f"scenarios.{name}.terminal_phase",
+            maximum=32,
+        )
+        raw_order = raw_evidence["observation_order"]
+        if not isinstance(raw_order, list) or raw_order not in [["preview"], ["preview", "execution"]]:
+            raise PairedEvidenceError(f"scenarios.{name}.observation_order is not a locked CLI phase order")
         sanitized[name] = {
             "outcome": "pass",
             "action_digest": action_digest,
@@ -255,6 +282,10 @@ def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: st
                 TRACKER_ENDPOINT_KEYS,
                 f"scenarios.{name}.endpoint_counters",
             ),
+            "exit_code": exit_code,
+            "terminal_phase": terminal_phase,
+            "observation_order": list(raw_order),
+            "mutation_counters": mutation_counters,
             "isolation_counters": isolation_counters,
         }
     return sanitized

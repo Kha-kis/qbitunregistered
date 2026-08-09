@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 import tracemalloc
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -37,12 +37,12 @@ from benchmarks.gauntlet.tracker_fixture import (
     TrackerGauntletProfile,
     TrackerTorrent,
     build_tracker_fixture,
+    effective_torrent_info_payload,
     expected_tracker_action_digest,
     expected_tracker_action_records,
 )
 from qbitunregistered.cache import clear_cache
-from qbitunregistered.file_operations import SafetyCheckError
-from qbitunregistered.impact import ImpactAnalysisError, ImpactSummary, analyze_impact
+from qbitunregistered.impact import ImpactSummary, analyze_impact
 from qbitunregistered.operations.unregistered_checks import (
     DeletionAction,
     UnregisteredDeletionPlan,
@@ -121,6 +121,10 @@ class TrackerScenarioEvidence(TypedDict):
     outcome: str
     action_digest: str
     endpoint_counters: dict[str, int]
+    exit_code: int
+    terminal_phase: str
+    observation_order: list[str]
+    mutation_counters: dict[str, int]
     isolation_counters: dict[str, int]
 
 
@@ -138,6 +142,16 @@ class _TrackerPassEvidence:
     reconciliation: TrackerReconciliationEvidence
     candidate_counts: dict[str, int]
     endpoint_counters: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _ScenarioCliResult:
+    """Structured observations from one real semantic-scenario CLI run."""
+
+    exit_code: int
+    observation_order: list[str]
+    summary: ImpactSummary | None
+    execution_result: tuple[dict[str, list[str]], dict[str, int]] | None
 
 
 @dataclass(slots=True)
@@ -360,14 +374,14 @@ def tracker_config() -> dict[str, object]:
     }
 
 
-def _tracker_cli_config_path(fixture: TrackerGauntletFixture) -> Path:
+def _tracker_cli_config_path(fixture: TrackerGauntletFixture, *, dry_run: bool = True) -> Path:
     """Materialize one sanitized CLI configuration outside production calls."""
     config_path = fixture.root / "gauntlet-config.json"
     config = {
         **tracker_config(),
         "host": "http://qbitunregistered-gauntlet.invalid",
         "api_key": "synthetic-gauntlet-placeholder",
-        "dry_run": True,
+        "dry_run": dry_run,
         "log_level": "ERROR",
     }
     config_path.write_text(json.dumps(config, sort_keys=True, separators=(",", ":")), encoding="utf-8")
@@ -420,7 +434,8 @@ def tracker_fixture_manifest_digest(fixture: TrackerGauntletFixture) -> str:  # 
         if not isinstance(stored_info, Mapping) or stored_info.get("hash") != torrent.hash:
             raise GauntletSafetyError("tracker fixture contains a mismatched torrent-info payload hash")
         try:
-            normalized_info = json.loads(json.dumps(stored_info, separators=(",", ":")))
+            effective_info = effective_torrent_info_payload(stored_info, torrent)
+            normalized_info = json.loads(json.dumps(effective_info, separators=(",", ":")))
         except (TypeError, ValueError) as error:
             raise GauntletSafetyError("tracker fixture contains malformed torrent-info payload") from error
         if not isinstance(normalized_info, dict):
@@ -962,6 +977,135 @@ def _scenario_endpoint_counters(fixture: TrackerGauntletFixture) -> dict[str, in
     return counters
 
 
+def _scenario_mutation_counters(
+    fixture: TrackerGauntletFixture,
+    production_audit: _ProductionBoundaryAudit,
+) -> dict[str, int]:
+    counters = {
+        "filesystem": production_audit.filesystem_attempt_count,
+        "qbittorrent": fixture.client.mutation_total,
+        **dict(sorted(fixture.client.mutation_counts.items())),
+    }
+    if set(counters) != set(MUTATION_COUNTER_KEYS):
+        raise GauntletSafetyError("tracker scenario mutation evidence is malformed")
+    return counters
+
+
+def _execute_scenario_cli(  # noqa: C901
+    fixture: TrackerGauntletFixture,
+    *,
+    before_preview: Callable[[TrackerGauntletFixture], None] | None,
+    before_execution: Callable[[TrackerGauntletFixture, ImpactSummary], None] | None,
+    dry_run: bool,
+    production_audit: _ProductionBoundaryAudit,
+) -> _ScenarioCliResult:
+    """Run one semantic scenario through the real CLI with transparent phase hooks."""
+    from qbitunregistered import cli as cli_module
+    from qbitunregistered import impact as impact_module
+
+    config_path = fixture.root / "gauntlet-config.json"
+    if not config_path.is_file():
+        config_path = _tracker_cli_config_path(fixture, dry_run=dry_run)
+    observation_order: list[str] = []
+    summaries: list[ImpactSummary] = []
+    execution_results: list[tuple[dict[str, list[str]], dict[str, int]]] = []
+    client_call_count = 0
+    root_logger = logging.getLogger()
+    previous_level = root_logger.level
+    previous_handlers = list(root_logger.handlers)
+
+    def observed_create_client(_config: dict[str, object]) -> object:
+        nonlocal client_call_count
+        client_call_count += 1
+        return fixture.client
+
+    selected_analyze_impact = analyze_impact
+
+    def observed_analyze_impact(
+        client: QBittorrentClient,
+        torrents: Sequence[TorrentInfo],
+        config: dict[str, object],
+        operations: Sequence[str],
+    ) -> ImpactSummary:
+        observation_order.append("preview")
+        if before_preview is not None:
+            before_preview(fixture)
+        summary = selected_analyze_impact(client, torrents, config, operations)
+        summaries.append(summary)
+        return summary
+
+    selected_unregistered_checks = unregistered_checks
+
+    def observed_unregistered_checks(
+        client: QBittorrentClient,
+        torrents: Sequence[TorrentInfo],
+        config: dict[str, object],
+        use_delete_tags: bool,
+        delete_tags: list[str],
+        delete_files: dict[str, bool],
+        dry_run: bool,
+        recycle_bin: str | None = None,
+        *,
+        deletion_plan: UnregisteredDeletionPlan | None = None,
+    ) -> tuple[dict[str, list[str]], dict[str, int]]:
+        observation_order.append("execution")
+        if len(summaries) != 1:
+            raise GauntletSafetyError("tracker scenario execution did not follow one successful preview")
+        if before_execution is not None:
+            before_execution(fixture, summaries[0])
+        result = selected_unregistered_checks(
+            client,
+            torrents,
+            config,
+            use_delete_tags,
+            delete_tags,
+            delete_files,
+            dry_run,
+            recycle_bin,
+            deletion_plan=deletion_plan,
+        )
+        execution_results.append(result)
+        return result
+
+    arguments = ["--config", str(config_path), "--unregistered"]
+    if dry_run:
+        arguments.append("--dry-run")
+    try:
+        with (
+            patch.object(cli_module, "create_client", observed_create_client),
+            patch.object(impact_module, "analyze_impact", observed_analyze_impact),
+            patch.object(cli_module, "unregistered_checks", observed_unregistered_checks),
+            patch("builtins.input", return_value="yes"),
+            redirect_stdout(_DiscardCliOutput()),
+            redirect_stderr(_DiscardCliOutput()),
+            production_audit,
+        ):
+            exit_code = cli_module.main(arguments)
+    finally:
+        for handler in list(root_logger.handlers):
+            if handler not in previous_handlers:
+                root_logger.removeHandler(handler)
+                handler.close()
+        for handler in previous_handlers:
+            if handler not in root_logger.handlers:
+                root_logger.addHandler(handler)
+        root_logger.setLevel(previous_level)
+    if client_call_count != 1:
+        raise GauntletSafetyError("tracker scenario CLI client observation did not occur exactly once")
+    if fixture.client.logout_count != 1:
+        raise GauntletSafetyError("tracker scenario CLI did not log out exactly once")
+    if observation_order not in (["preview"], ["preview", "execution"]):
+        raise GauntletSafetyError("tracker scenario CLI phase observations were missing, duplicated, or reordered")
+    if len(summaries) > 1 or len(execution_results) > 1:
+        raise GauntletSafetyError("tracker scenario CLI phase observations were duplicated")
+    return _ScenarioCliResult(
+        exit_code=exit_code,
+        observation_order=observation_order,
+        summary=summaries[0] if summaries else None,
+        execution_result=execution_results[0] if execution_results else None,
+    )
+
+
 def _validate_scenario_unchanged(fixture: TrackerGauntletFixture, before: str) -> None:
     if fixture.client.mutation_total:
         raise GauntletSafetyError("tracker safety scenario attempted a qBittorrent mutation")
@@ -969,12 +1113,106 @@ def _validate_scenario_unchanged(fixture: TrackerGauntletFixture, before: str) -
         raise GauntletSafetyError("tracker safety scenario changed the fixture filesystem")
 
 
+_SCENARIO_PHASE_CONTRACTS: dict[
+    str,
+    frozenset[tuple[tuple[int, int, int], int, str, tuple[str, ...]]],
+] = {
+    "complete_embedded": frozenset(
+        {
+            ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
+            ((0, 1, 0), 0, "execution_complete", ("preview", "execution")),
+        }
+    ),
+    "omitted_embedded_fallback": frozenset(
+        {
+            ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
+            ((0, 1, 6), 0, "execution_complete", ("preview", "execution")),
+        }
+    ),
+    "rejected_embedded_fallback": frozenset(
+        {
+            ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
+            ((1, 1, 6), 0, "execution_complete", ("preview", "execution")),
+        }
+    ),
+    "malformed_embedded_transport_aware": frozenset(
+        {
+            ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
+            ((0, 1, 0), 1, "preview_fail_closed", ("preview",)),
+        }
+    ),
+    "malformed_exact_fail_closed": frozenset(
+        {
+            ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
+            ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
+        }
+    ),
+    "proven_disappearance": frozenset(
+        {
+            ((2, 0, 6), 0, "execution_complete", ("preview", "execution")),
+            ((1, 1, 6), 0, "execution_complete", ("preview", "execution")),
+        }
+    ),
+    "same_hash_readd_fail_closed": frozenset(
+        {
+            ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
+            ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
+        }
+    ),
+    "malformed_refresh_fail_closed": frozenset(
+        {
+            ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
+            ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
+        }
+    ),
+    "duplicate_refresh_fail_closed": frozenset(
+        {
+            ((2, 0, 6), 1, "preview_fail_closed", ("preview",)),
+            ((1, 1, 6), 1, "preview_fail_closed", ("preview",)),
+        }
+    ),
+    "delete_disappearance_preflight": frozenset(
+        {
+            ((2, 0, 6), 1, "execution_fail_closed", ("preview", "execution")),
+            ((1, 1, 0), 1, "execution_fail_closed", ("preview", "execution")),
+        }
+    ),
+    "delete_tag_change_preflight": frozenset(
+        {
+            ((2, 0, 6), 1, "execution_fail_closed", ("preview", "execution")),
+            ((1, 1, 0), 1, "execution_fail_closed", ("preview", "execution")),
+        }
+    ),
+    "tracker_change_snapshot_bound": frozenset(
+        {
+            ((1, 0, 6), 0, "execution_complete", ("preview", "execution")),
+            ((0, 1, 0), 0, "execution_complete", ("preview", "execution")),
+        }
+    ),
+}
+
+
+def _scenario_terminal_phase(result: _ScenarioCliResult) -> str:
+    if result.exit_code == 0 and result.summary is not None and result.execution_result is not None:
+        return "execution_complete"
+    if result.exit_code == 1 and result.summary is None and result.observation_order == ["preview"]:
+        return "preview_fail_closed"
+    if (
+        result.exit_code == 1
+        and result.summary is not None
+        and result.execution_result is None
+        and result.observation_order == ["preview", "execution"]
+    ):
+        return "execution_fail_closed"
+    raise GauntletSafetyError("tracker scenario CLI result did not terminate at a locked phase")
+
+
 def evaluate_tracker_scenarios(  # noqa: C901
     _fixture: TrackerGauntletFixture,
     *,
     production_audit: _ProductionBoundaryAudit | None = None,
 ) -> dict[str, TrackerScenarioEvidence]:
-    """Run the transport-aware semantic matrix outside measured execution."""
+    """Run every transport-aware semantic scenario through the real CLI."""
     if production_audit is None:
         production_audit = _ProductionBoundaryAudit()
     scenario_profile = TrackerGauntletProfile(
@@ -989,31 +1227,31 @@ def evaluate_tracker_scenarios(  # noqa: C901
     )
     evidence: dict[str, TrackerScenarioEvidence] = {}
 
-    def analyze_scenario(
-        fixture: TrackerGauntletFixture,
-        config: dict[str, object],
-    ) -> ImpactSummary:
-        with production_audit:
-            return analyze_impact(
-                fixture.client,
-                _production_torrents(fixture),
-                config,
-                ["unregistered"],
-            )
-
     def record(
         name: str,
         fixture: TrackerGauntletFixture,
         before: str,
+        result: _ScenarioCliResult,
         *,
         action_digest: str | None = None,
     ) -> None:
         _validate_scenario_unchanged(fixture, before)
         counters = _scenario_endpoint_counters(fixture)
+        terminal_phase = _scenario_terminal_phase(result)
+        shape = tuple(counters[endpoint] for endpoint in TRACKER_READ_ENDPOINTS)
+        actual_contract = (shape, result.exit_code, terminal_phase, tuple(result.observation_order))
+        if name == "malformed_embedded_transport_aware" and shape == (0, 1, 0) and result.exit_code == 0:
+            raise GauntletSafetyError("malformed embedded metadata did not fail closed")
+        if actual_contract not in _SCENARIO_PHASE_CONTRACTS[name]:
+            raise GauntletSafetyError("tracker scenario CLI evidence did not match a locked transport contract")
         evidence[name] = {
             "outcome": "pass",
             "action_digest": action_digest or _scenario_digest(name, "fail_closed"),
             "endpoint_counters": counters,
+            "exit_code": result.exit_code,
+            "terminal_phase": terminal_phase,
+            "observation_order": list(result.observation_order),
+            "mutation_counters": _scenario_mutation_counters(fixture, production_audit),
             "isolation_counters": dict(production_audit.counters),
         }
 
@@ -1033,37 +1271,25 @@ def evaluate_tracker_scenarios(  # noqa: C901
                 scenario_seed,
                 embedded_trackers_mode=mode,
             )
+            _tracker_cli_config_path(fixture)
             before = _filesystem_digest(fixture.root)
             clear_cache()
-            try:
-                summary = analyze_scenario(fixture, tracker_config())
-            except ImpactAnalysisError:
-                counters = _scenario_endpoint_counters(fixture)
-                if mode != "malformed" or counters["torrents.info.include_trackers"] != 1:
-                    raise GauntletSafetyError(
-                        "tracker compatibility scenario failed without consuming malformed bulk metadata"
-                    )
-                if counters["torrents_trackers"] != 0:
-                    raise GauntletSafetyError("malformed bulk tracker scenario used a redundant exact fallback")
-                record(
-                    name,
-                    fixture,
-                    before,
-                    action_digest=_scenario_digest(name, "transport_safe"),
-                )
+            result = _execute_scenario_cli(
+                fixture,
+                before_preview=None,
+                before_execution=None,
+                dry_run=True,
+                production_audit=production_audit,
+            )
+            if result.summary is not None:
+                action_digest = _validated_scenario_action_digest(result.summary, scenario_profile, scenario_seed)
+            elif mode == "malformed":
+                action_digest = _scenario_digest(name, "transport_safe")
             else:
-                counters = _scenario_endpoint_counters(fixture)
-                transport = (counters["torrents.info.include_trackers"], counters["torrents_trackers"])
-                if mode == "supported" and transport not in {(0, 6), (1, 0)}:
-                    raise GauntletSafetyError("supported tracker scenario used an incomplete transport")
-                if mode in {"omitted", "rejected"} and transport not in {(0, 6), (1, 6)}:
-                    raise GauntletSafetyError("tracker compatibility fallback evidence is incomplete")
-                if mode == "malformed" and transport != (0, 6):
-                    raise GauntletSafetyError("malformed embedded metadata was normalized without a safe exact-only control")
-                action_digest = _validated_scenario_action_digest(summary, scenario_profile, scenario_seed)
-                if mode == "malformed":
-                    action_digest = _scenario_digest(name, "transport_safe")
-                record(name, fixture, before, action_digest=action_digest)
+                raise GauntletSafetyError("tracker compatibility scenario failed before producing canonical actions")
+            if mode == "malformed":
+                action_digest = _scenario_digest(name, "transport_safe")
+            record(name, fixture, before, result, action_digest=action_digest)
 
         fixture = build_tracker_fixture(
             scenario_root / "malformed-exact",
@@ -1071,15 +1297,21 @@ def evaluate_tracker_scenarios(  # noqa: C901
             30_010,
             embedded_trackers_mode="omitted",
         )
+        _tracker_cli_config_path(fixture)
         before = _filesystem_digest(fixture.root)
-        fixture.client.set_exact_trackers(fixture.initial_torrents[0].hash, None)
         clear_cache()
-        try:
-            analyze_scenario(fixture, tracker_config())
-        except ImpactAnalysisError:
-            record("malformed_exact_fail_closed", fixture, before)
-        else:
-            raise GauntletSafetyError("malformed exact tracker metadata did not fail closed")
+
+        def malformed_exact(current_fixture: TrackerGauntletFixture) -> None:
+            current_fixture.client.set_exact_trackers(current_fixture.initial_torrents[0].hash, None)
+
+        result = _execute_scenario_cli(
+            fixture,
+            before_preview=malformed_exact,
+            before_execution=None,
+            dry_run=True,
+            production_audit=production_audit,
+        )
+        record("malformed_exact_fail_closed", fixture, before, result)
 
         fixture = build_tracker_fixture(
             scenario_root / "disappearance",
@@ -1087,16 +1319,34 @@ def evaluate_tracker_scenarios(  # noqa: C901
             30_011,
             embedded_trackers_mode="omitted",
         )
+        _tracker_cli_config_path(fixture)
         before = _filesystem_digest(fixture.root)
-        failed = fixture.initial_torrents[0]
-        fixture.client.set_exact_trackers(failed.hash, OSError("removed"))
-        fixture.client.set_torrent_snapshot(fixture.initial_torrents[1:])
         clear_cache()
-        summary = analyze_scenario(fixture, tracker_config())
-        plan = summary.unregistered_deletion_plan
+        failed = fixture.initial_torrents[0]
+
+        def disappear(current_fixture: TrackerGauntletFixture) -> None:
+            current_fixture.client.set_exact_trackers(failed.hash, OSError("removed"))
+            current_fixture.client.set_torrent_snapshot(current_fixture.initial_torrents[1:])
+
+        result = _execute_scenario_cli(
+            fixture,
+            before_preview=disappear,
+            before_execution=None,
+            dry_run=True,
+            production_audit=production_audit,
+        )
+        if result.summary is None:
+            raise GauntletSafetyError("tracker disappearance scenario did not produce a preview")
+        plan = result.summary.unregistered_deletion_plan
         if plan is None or plan.confirmed_absent_hashes != (failed.hash,):
             raise GauntletSafetyError("tracker disappearance scenario lacked an exact fresh absence proof")
-        record("proven_disappearance", fixture, before, action_digest=_intended_action_digest(summary))
+        record(
+            "proven_disappearance",
+            fixture,
+            before,
+            result,
+            action_digest=_intended_action_digest(result.summary),
+        )
 
         fixture = build_tracker_fixture(
             scenario_root / "readd",
@@ -1104,19 +1354,25 @@ def evaluate_tracker_scenarios(  # noqa: C901
             30_012,
             embedded_trackers_mode="omitted",
         )
+        _tracker_cli_config_path(fixture)
         before = _filesystem_digest(fixture.root)
-        failed = fixture.initial_torrents[0]
-        fixture.client.set_exact_trackers(failed.hash, OSError("removed and re-added"))
-        current = list(fixture.initial_torrents)
-        current[0] = replace(failed, name="same-hash-readded")
-        fixture.client.set_torrent_snapshot(current)
         clear_cache()
-        try:
-            analyze_scenario(fixture, tracker_config())
-        except ImpactAnalysisError:
-            record("same_hash_readd_fail_closed", fixture, before)
-        else:
-            raise GauntletSafetyError("same-hash re-add did not remain active and fail closed")
+        failed = fixture.initial_torrents[0]
+
+        def readd(current_fixture: TrackerGauntletFixture) -> None:
+            current_fixture.client.set_exact_trackers(failed.hash, OSError("removed and re-added"))
+            current = list(current_fixture.initial_torrents)
+            current[0] = replace(failed, name="same-hash-readded")
+            current_fixture.client.set_torrent_snapshot(current)
+
+        result = _execute_scenario_cli(
+            fixture,
+            before_preview=readd,
+            before_execution=None,
+            dry_run=True,
+            production_audit=production_audit,
+        )
+        record("same_hash_readd_fail_closed", fixture, before, result)
 
         for offset, (name, snapshot) in enumerate(
             (
@@ -1130,16 +1386,28 @@ def evaluate_tracker_scenarios(  # noqa: C901
                 30_020 + offset,
                 embedded_trackers_mode="omitted",
             )
+            _tracker_cli_config_path(fixture)
             before = _filesystem_digest(fixture.root)
-            fixture.client.set_exact_trackers(fixture.initial_torrents[0].hash, OSError("unavailable"))
-            fixture.client.set_torrent_snapshot(snapshot)
             clear_cache()
-            try:
-                analyze_scenario(fixture, tracker_config())
-            except ImpactAnalysisError:
-                record(name, fixture, before)
-            else:
-                raise GauntletSafetyError("malformed tracker refresh did not fail closed")
+
+            def corrupt_refresh(
+                current_fixture: TrackerGauntletFixture,
+                replacement: list[SimpleNamespace] = snapshot,
+            ) -> None:
+                current_fixture.client.set_exact_trackers(
+                    current_fixture.initial_torrents[0].hash,
+                    OSError("unavailable"),
+                )
+                current_fixture.client.set_torrent_snapshot(replacement)
+
+            result = _execute_scenario_cli(
+                fixture,
+                before_preview=corrupt_refresh,
+                before_execution=None,
+                dry_run=True,
+                production_audit=production_audit,
+            )
+            record(name, fixture, before, result)
 
         for offset, (name, change) in enumerate(
             (
@@ -1148,66 +1416,64 @@ def evaluate_tracker_scenarios(  # noqa: C901
             )
         ):
             fixture = build_tracker_fixture(scenario_root / name, scenario_profile, 30_030 + offset)
+            _tracker_cli_config_path(fixture, dry_run=False)
             before = _filesystem_digest(fixture.root)
             clear_cache()
-            config = tracker_config()
-            summary = analyze_scenario(fixture, config)
-            plan = summary.unregistered_deletion_plan
-            if plan is None:
-                raise GauntletSafetyError("tracker preflight scenario lacks a deletion plan")
-            current = list(fixture.initial_torrents)
-            delete_index = next(
-                index
-                for index, torrent in enumerate(current)
-                if DELETE_TAG in {tag.strip() for tag in torrent.tags.split(",") if tag.strip()}
+
+            def change_preflight(
+                current_fixture: TrackerGauntletFixture,
+                _summary: ImpactSummary,
+                selected_change: str = change,
+            ) -> None:
+                current = list(current_fixture.initial_torrents)
+                delete_index = next(
+                    index
+                    for index, torrent in enumerate(current)
+                    if DELETE_TAG in {tag.strip() for tag in torrent.tags.split(",") if tag.strip()}
+                )
+                if selected_change == "disappear":
+                    current.pop(delete_index)
+                else:
+                    current[delete_index] = replace(current[delete_index], tags="")
+                current_fixture.client.set_torrent_snapshot(current)
+
+            result = _execute_scenario_cli(
+                fixture,
+                before_preview=None,
+                before_execution=change_preflight,
+                dry_run=False,
+                production_audit=production_audit,
             )
-            if change == "disappear":
-                current.pop(delete_index)
-            else:
-                current[delete_index] = replace(current[delete_index], tags="")
-            fixture.client.set_torrent_snapshot(current)
-            try:
-                with production_audit:
-                    unregistered_checks(
-                        fixture.client,
-                        _production_torrents(fixture),
-                        config,
-                        True,
-                        [DELETE_TAG],
-                        {DELETE_TAG: False},
-                        False,
-                        deletion_plan=plan,
-                    )
-            except SafetyCheckError:
-                record(name, fixture, before, action_digest=_intended_action_digest(summary))
-            else:
-                raise GauntletSafetyError("tracker mutating preflight churn did not fail closed")
+            if result.summary is None:
+                raise GauntletSafetyError("tracker preflight scenario lacks a preview")
+            record(name, fixture, before, result, action_digest=_intended_action_digest(result.summary))
 
         name = "tracker_change_snapshot_bound"
         fixture = build_tracker_fixture(scenario_root / name, scenario_profile, 30_040)
+        _tracker_cli_config_path(fixture)
         before = _filesystem_digest(fixture.root)
         clear_cache()
-        config = tracker_config()
-        summary = analyze_scenario(fixture, config)
-        plan = summary.unregistered_deletion_plan
-        if plan is None:
-            raise GauntletSafetyError("tracker snapshot-binding scenario lacks a deletion plan")
-        changed_hash = fixture.initial_torrents[0].hash
-        fixture.client.set_exact_trackers(changed_hash, fixture.client.trackers_by_hash[fixture.initial_torrents[-1].hash])
-        with production_audit:
-            _paths, counts = unregistered_checks(
-                fixture.client,
-                _production_torrents(fixture),
-                config,
-                True,
-                [DELETE_TAG],
-                {DELETE_TAG: False},
-                True,
-                deletion_plan=plan,
+
+        def change_trackers(current_fixture: TrackerGauntletFixture, _summary: ImpactSummary) -> None:
+            changed_hash = current_fixture.initial_torrents[0].hash
+            current_fixture.client.set_exact_trackers(
+                changed_hash,
+                current_fixture.client.trackers_by_hash[current_fixture.initial_torrents[-1].hash],
             )
+
+        result = _execute_scenario_cli(
+            fixture,
+            before_preview=None,
+            before_execution=change_trackers,
+            dry_run=True,
+            production_audit=production_audit,
+        )
+        if result.summary is None or result.execution_result is None:
+            raise GauntletSafetyError("tracker snapshot-binding scenario did not complete")
+        _paths, counts = result.execution_result
         if sum(counts.values()) != scenario_profile.default_tag_count + scenario_profile.cross_seed_tag_count:
             raise GauntletSafetyError("tracker dry-run was not bound to the preview snapshot")
-        record(name, fixture, before, action_digest=_intended_action_digest(summary))
+        record(name, fixture, before, result, action_digest=_intended_action_digest(result.summary))
     clear_cache()
     return evidence
 

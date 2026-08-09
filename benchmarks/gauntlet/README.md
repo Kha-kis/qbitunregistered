@@ -76,8 +76,8 @@ evidence.
 ### Evidence semantics
 
 - `tier` locks whether a profile is a round or candidate workload.
-- `fixture_manifest_digest` hashes the validated materialized
-  `torrent_info_by_hash` payload after host-path normalization, while
+- `fixture_manifest_digest` hashes the exact effective torrent-info mapping
+  returned after mutable snapshot overlays and host-path normalization, while
   `intended_action_digest` locks the exact preview action, tag, and torrent-hash
   tuples.
 - `execution_action_digest` locks the normalized per-hash arguments observed
@@ -102,10 +102,13 @@ evidence.
   real `unregistered_checks()` call returns. Fixture construction, sanitized
   CLI-config creation, manifest verification, and semantic safety scenarios
   remain outside that interval.
-- The twelve normalized scenario results lock compatibility and fail-closed
-  behavior. Legacy omission or rejection of embedded trackers may use the
-  exact fallback; malformed metadata, uncertain refreshes, hash re-addition,
-  or preflight churn must not authorize mutation.
+- The twelve normalized scenario results traverse the real CLI and lock
+  compatibility and fail-closed behavior with endpoint, exit-code, terminal
+  phase, observation-order, mutation, and isolation evidence. Scenario hooks
+  inject churn only after initial acquisition or after preview. Legacy omission
+  or rejection of embedded trackers may use the exact fallback; malformed
+  metadata, uncertain refreshes, hash re-addition, or preflight churn must not
+  authorize mutation.
 
 See the [tracker gauntlet design](../../docs/superpowers/specs/2026-08-08-tracker-gauntlet-design.md)
 for fixture and compatibility details. The longer trust-boundary and
@@ -304,9 +307,9 @@ identical production code. It is a stability check: ratios should be near
 `1.0`; it cannot satisfy the tracker transport gate because candidate passes
 must use one bulk request while control passes must use exact requests.
 
-Round-3 tracker artifacts predate the real CLI acquisition boundary and the
-materialized-payload manifest. They are non-comparable and must not be used as
-control evidence; regenerate quick and full artifacts with schema version 7.
+Earlier tracker artifacts predate the effective-payload manifest and real-CLI
+scenario phase evidence. They are non-comparable and must not be used as
+control evidence; regenerate quick and full artifacts with schema version 8.
 
 ## qBittorrent file metadata fixture
 

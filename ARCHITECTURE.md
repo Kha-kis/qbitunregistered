@@ -707,7 +707,11 @@ fixture-independent preview oracle. The shadow sets `delete_files=False` and
 is excluded from runtime and peak-memory samples. A process audit denies all
 filesystem writes or mutations plus network connection, DNS, `sendto`, and
 `sendmsg` events while production boundaries execute; artifacts and semantic
-scenarios require every sanitized isolation counter to remain zero. This is an
+scenarios require every sanitized isolation and mutation counter to remain
+zero. Each semantic scenario also invokes `cli.main()`; transparent hooks apply
+compatibility or churn after initial acquisition or after preview, and the
+artifact retains the CLI exit code, terminal phase, and observed phase order.
+This is an
 audit-event boundary, not a syscall-level network sandbox: CPython does not
 emit separate events for `send` or `sendall` on a socket connected before the
 guarded boundary.
@@ -733,12 +737,16 @@ defines these semantics; the
 [evaluator guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation)
 documents operator commands and evidence fields.
 
-The tracker manifest hashes the actual stored torrent-info mappings after
-fixture-root paths are normalized, validates one payload per current snapshot
-hash, and overlays every snapshot-controlled identity, path, state, time,
-ratio, and transfer value before fresh wrapper conversion. Round-3 tracker
-artifacts used the former regenerated manifest and pre-acquisition measurement
-boundary, so they are non-comparable with schema version 7.
+The tracker manifest validates one stored payload per current snapshot hash,
+applies every snapshot-controlled identity, path, state, time, ratio, and
+transfer overlay through the same helper used by response materialization, and
+then hashes that exact effective mapping after fixture-root paths are
+normalized. Fake torrent and tracker responses reproduce the dependency-free
+allocation graph of `qbittorrent-api` 2026.8.0, including `UserList` outer
+containers, mapping-recursive attribute wrappers, and plain sequence-nested
+records. Earlier tracker artifacts used an incomplete manifest or lacked
+real-CLI scenario phase evidence, so they are non-comparable with schema
+version 8.
 
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,

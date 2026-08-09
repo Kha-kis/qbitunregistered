@@ -662,24 +662,43 @@ def _runtime_tracker_scenarios(
             "outcome",
             "action_digest",
             "endpoint_counters",
+            "exit_code",
+            "terminal_phase",
+            "observation_order",
+            "mutation_counters",
             "isolation_counters",
         }:
             return None
         action_digest = raw_evidence["action_digest"]
         endpoints = _mapping_of_ints(raw_evidence["endpoint_counters"])
+        mutation_counters = _mapping_of_ints(raw_evidence["mutation_counters"])
         isolation_counters = _mapping_of_ints(raw_evidence["isolation_counters"])
+        exit_code = raw_evidence["exit_code"]
+        terminal_phase = raw_evidence["terminal_phase"]
+        observation_order = raw_evidence["observation_order"]
         if (
             raw_evidence["outcome"] != "pass"
             or action_digest != profile.scenario_action_digests.get(name)
             or endpoints is None
             or set(endpoints) != endpoint_keys
+            or mutation_counters is None
+            or set(mutation_counters) != MUTATION_COUNTER_KEYS
+            or any(mutation_counters.values())
             or isolation_counters != dict(profile.isolation_counters)
+            or isinstance(exit_code, bool)
+            or exit_code not in {0, 1}
+            or terminal_phase not in {"execution_complete", "preview_fail_closed", "execution_fail_closed"}
+            or observation_order not in [["preview"], ["preview", "execution"]]
         ):
             return None
         sanitized[name] = {
             "outcome": "pass",
             "action_digest": action_digest,
             "endpoint_counters": endpoints,
+            "exit_code": exit_code,
+            "terminal_phase": terminal_phase,
+            "observation_order": list(observation_order),
+            "mutation_counters": mutation_counters,
             "isolation_counters": isolation_counters,
         }
     return sanitized
@@ -742,9 +761,15 @@ def _safety_gate(result: Mapping[str, object]) -> GateResult:
             if not isinstance(evidence, dict):
                 return _gate("fail", "scenario isolation counters are missing or malformed")
             scenario_isolation = _mapping_of_ints(evidence.get("isolation_counters"))
-            if scenario_isolation is None or set(scenario_isolation) != ISOLATION_COUNTER_KEYS:
+            scenario_mutations = _mapping_of_ints(evidence.get("mutation_counters"))
+            if (
+                scenario_isolation is None
+                or set(scenario_isolation) != ISOLATION_COUNTER_KEYS
+                or scenario_mutations is None
+                or set(scenario_mutations) != MUTATION_COUNTER_KEYS
+            ):
                 return _gate("fail", "scenario isolation counters are missing or malformed")
-            total += sum(scenario_isolation.values())
+            total += sum(scenario_isolation.values()) + sum(scenario_mutations.values())
     if total:
         return _gate("fail", "dry-run mutation evidence is nonzero", actual=total)
     return _gate("pass", "all mutation and isolation counters are zero", actual=0)

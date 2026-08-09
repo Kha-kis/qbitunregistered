@@ -679,7 +679,7 @@ writes plus audited connection, DNS, `sendto`, and `sendmsg` attempts during
 production calls, and invokes the real CLI so the initial torrent response is
 inside every measured pass. Paired control must use one ordinary snapshot plus
 `N` exact tracker reads; candidate must replace it with one bulk snapshot and
-zero exact reads. Artifacts older than evaluator schema 7 are non-comparable.
+zero exact reads. Artifacts older than evaluator schema 8 are non-comparable.
 This audit hook is not a syscall-level network
 sandbox and cannot separately observe `send` or `sendall` on a socket connected
 before the guarded boundary. See the

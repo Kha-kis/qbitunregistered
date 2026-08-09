@@ -298,3 +298,87 @@ fresh round-4 quick and full controls must be produced from the clean committed
 evaluator before another independent critic review. Shadow execution, semantic
 scenarios, the global filesystem/network audit, sanitizer strictness, and the
 separate protected-live approval gate remain unchanged.
+
+## Establish correction round 5: effective payloads and CLI scenarios
+
+The fixture manifest binds the effective torrent-info mapping that production
+can consume, not a pre-overlay template. A single dependency-free builder
+combines one validated stored mapping with every snapshot-owned overlay and is
+used by both response materialization and manifest hashing. The manifest deep
+copies and path-normalizes that exact effective base mapping. It excludes only
+the transport-specific `trackers` member, whose complete metadata is already
+hashed separately, so control and candidate revisions retain the same fixture
+identity. Snapshot-owned changes must change the digest; stored non-overlay
+changes must change it; and a stored value hidden by an authoritative overlay
+must not change it because it cannot affect the response.
+
+The fake mirrors the installed `qbittorrent-api 2026.8.0` allocation graph
+without importing that package in evaluator children. An ordinary or bulk call
+returns a `UserList`-shaped torrent-info container whose items are
+`TorrentDictionary`-shaped mapping/attribute wrappers. Mapping-valued fields
+are recursively converted to dependency-free AttrDict equivalents. Installed
+`Dictionary._normalize` does not descend through sequence elements, so
+embedded tracker and endpoint lists retain decoded list/dict entries. Exact
+tracker calls return a fresh `UserList`-shaped TrackersList equivalent whose
+entries are Tracker mapping/attribute wrappers; their sequence-valued endpoint
+entries likewise remain decoded dictionaries. Tests compare this graph and
+fresh-identity behavior with locally installed 2026.8.0 source behavior.
+Over-wrapping sequence elements is rejected because it is not source-faithful
+and could falsely reject the unchanged `1.25` memory gate.
+
+Every semantic tracker scenario invokes real `qbitunregistered.cli.main` with
+the same sanitized configuration and fake-client substitution as primary
+passes. Transparent preview and execution observers optionally invoke bounded
+scenario hooks immediately before preview or immediately before execution.
+Those hooks inject refresh, disappearance, same-hash re-add, tracker change,
+or tag change only after real initial acquisition; they never choose ordinary
+or bulk transport. Evidence records the exit code, terminal phase, preview and
+execution observation counts/order, action digest, complete endpoint triple,
+mutation counters, and isolation counters.
+
+For scenario workload size `N`, paired validation locks these role contracts:
+
+- complete metadata: control `(1, 0, N)` and candidate `(0, 1, 0)` both exit
+  zero after preview and execution with fixture-derived actions;
+- omitted metadata: control `(1, 0, N)` and candidate `(0, 1, N)` both exit
+  zero with fixture-derived actions;
+- rejected bulk request: control `(1, 0, N)` and candidate `(1, 1, N)` both
+  exit zero with fixture-derived actions;
+- malformed embedded metadata: control `(1, 0, N)` exits zero with canonical
+  actions, while candidate `(0, 1, 0)` fails during preview with exit one and
+  performs no exact fallback or execution;
+- malformed exact metadata under omitted bulk metadata: control `(1, 0, N)`
+  and candidate `(0, 1, N)` both fail during preview with exit one;
+- disappearance after an exact failure: control `(2, 0, N)` and candidate
+  `(1, 1, N)` use one fresh ordinary refresh and exit zero with the confirmed
+  absence bound into their plan;
+- same-hash re-add plus malformed and duplicate refreshes use those same
+  role-specific refresh triples and fail during preview with exit one;
+- deletion disappearance and delete-tag churn occur after successful preview,
+  fail closed during execution, and lock any safety-required ordinary refresh
+  in addition to the role's acquisition transport;
+- tracker metadata change after preview succeeds through execution from the
+  accepted plan and retains the role's complete primary transport.
+
+Only omitted and rejected optional bulk metadata authorize mixed compatibility
+fallbacks. The child evaluator never receives a control/candidate label.
+Paired comparison assigns the role after sanitization and validates every
+scenario against this table. In particular, a candidate can pass malformed
+embedded evidence only by proving one bulk call, zero exact calls, preview
+failure, nonzero CLI exit, zero execution, and zero mutation.
+
+Scenario evidence adds exit/phase/observation fields, so result, evaluator,
+quality-bar, paired-result, and pairing versions advance together. Quick/full
+manifest locks and scenario evidence locks are recomputed; intended action and
+reconciliation digests remain unchanged. The CPU ceiling remains `1.0` and the
+memory ceiling remains `1.25`. Exact response wrappers may increase retained
+control allocation, while the bulk response still retains all embedded
+metadata at once; only fresh round-5 measurements may establish the resulting
+ratio. Round-4 artifacts remain useful audit records of `(1, 0, N)` control
+behavior but are invalid for a later candidate decision.
+
+The paired sanitizer regression uses a fixed, fully valid evidence object with
+five literal samples and literal peak memory. It does not invoke the evaluator
+or measure the host. This isolates schema/transport behavior from scheduling
+noise and prevents a unit assertion from intermittently crossing the `1.0`
+runtime or `1.25` memory thresholds.

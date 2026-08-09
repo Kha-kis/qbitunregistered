@@ -1,6 +1,6 @@
 schema_version = 6
-evaluator_schema_version = 7
-evaluator_version = "1.7.0"
+evaluator_schema_version = 8
+evaluator_version = "1.8.0"
 result_schema = "qbitunregistered.gauntlet.result"
 scope = "orphan_and_tracker_dry_run_evaluation"
 
@@ -126,7 +126,7 @@ relative_range_max = 0.50
 kind = "tracker"
 tier = "round"
 seed = 20260729
-fixture_manifest_digest = "5e55f2d970dfaa7e0845b170afebd5ede39f4b6e78f82faf1844b79a02080037"
+fixture_manifest_digest = "348948093b6f400156f97e29c4314a1b0836f31e4d7b3b59d16781008e1a0988"
 intended_action_digest = "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
 execution_action_digest = "32d7fa3e759c435f3cecdb1f06ebaa7fdb9579aa65e40217a461aeebb3da4ba5"
 
@@ -193,7 +193,7 @@ relative_range_max = 0.50
 kind = "tracker"
 tier = "candidate"
 seed = 20260729
-fixture_manifest_digest = "a44fb8760f130a2008bff63ff75df880923d4490bf3bc4f9b5a031814a9e4fc3"
+fixture_manifest_digest = "1a371b15a44d78cc1a83a1634e4687a554df3ed59515b7f952945698c0dd491c"
 intended_action_digest = "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87"
 execution_action_digest = "69b19b35391a37571b23268c257eb9bec540d30ee81414981df7a1c91f58ec87"
 

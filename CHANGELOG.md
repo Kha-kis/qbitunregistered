@@ -26,12 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Tracker gauntlet schema 7 now measures the production-owned initial torrent
+- Tracker gauntlet schema 8 now measures the production-owned initial torrent
   snapshot through the real CLI in every fresh warm-up, timed, and memory pass.
   Control is exactly one ordinary snapshot plus `N` exact tracker reads;
   candidate must replace it with one bulk snapshot and zero exact reads. The
-  materialized torrent-info payload now owns the manifest, all mutable snapshot
-  fields overlay each fresh response, and round-3 artifacts are invalid.
+  effective torrent-info payload now owns the manifest after every mutable
+  snapshot field is overlaid, and fake response wrappers match the allocation
+  shapes of `qbittorrent-api` 2026.8.0 without adding a runtime dependency.
+  All twelve semantic scenarios now traverse the real CLI and retain exact
+  endpoint, exit-code, phase-order, mutation, and isolation evidence. Earlier
+  tracker artifacts are invalid.
 - Clarified that evaluator establishment must be reviewed and merged before
   production optimization, evaluator inputs stay unchanged on optimization
   branches, private review orchestration is not repository content, and a live
