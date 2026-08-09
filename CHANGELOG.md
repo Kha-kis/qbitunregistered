@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Tracker-dependent runs now request one initial `includeTrackers` torrent
+  snapshot and reuse complete embedded tracker metadata, collapsing supported
+  server reads to one bulk request and zero exact tracker requests. Servers
+  that reject the optional request, and torrents that omit the optional field,
+  retain the compatible exact-read fallback; a present malformed field fails
+  closed. Pseudo tracker URLs retain their matching priority without creating
+  synthesized unregistered-status records, and tracker metadata remains
+  execution-local and client-scoped.
 - Tracker gauntlet schema 9 / evaluator 1.13.0 now measures client-side wire
   receipt, JSON decoding, response wrapping, and production use while excluding
   construction and serialization of the fake server response graph. Canonical

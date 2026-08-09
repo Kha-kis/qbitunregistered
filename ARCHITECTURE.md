@@ -41,7 +41,9 @@ in 3.0. New integrations should use the installed console commands or
 2. Load and validate config.json
 3. Setup logging (console + optional file)
 4. Connect to qBittorrent API
-5. Fetch all torrents once (reused by all modules)
+5. Fetch all torrents once. If a tracker-dependent operation is selected,
+   request embedded tracker metadata and prime the execution-local tracker
+   cache; otherwise use the ordinary snapshot.
 6. Build a complete impact preview for every selected operation unless `--yes` explicitly bypasses it
 7. Require confirmation for non-dry-run execution and reuse confirmed filesystem plans
 8. Execute enabled operations. Orphan scanning precedes hard-link creation;
@@ -57,7 +59,8 @@ in 3.0. New integrations should use the installed console commands or
 - Graceful exception handling per operation (failure in one doesn't block others)
 - A hard-link failure blocks only dependent unregistered file cleanup; unrelated
   selected operations continue and both failures appear in the final summary
-- Torrents fetched once and passed to all modules (avoid redundant API calls)
+- Torrents fetched once and passed to all modules; only tracker-dependent
+  operation sets request the larger embedded-tracker response
 - Operation results tracked for summary reporting
 
 ### 2. Application Modules
@@ -95,6 +98,8 @@ in 3.0. New integrations should use the installed console commands or
 - General cached values use a 300-second TTL
 - Torrent tracker and file metadata remain cached for the complete execution,
   including scans that take longer than 300 seconds
+- Tracker entries are scoped by both torrent hash and client identity; embedded
+  metadata from one client or execution cannot satisfy another client's read
 - Global singleton instance accessible to all modules
 - Entries and statistics are reset when each CLI execution begins
 - Decorator pattern for easy application to functions
@@ -108,7 +113,9 @@ in 3.0. New integrations should use the installed console commands or
 
 **Use Cases**:
 - Tracker information shared by impact, unregistered, tagging, and seeding
-  operations
+  operations. A tracker-dependent initial snapshot primes complete embedded
+  metadata; omitted fields use the exact endpoint, while present malformed
+  fields fail closed rather than falling back
 - Torrent file information shared by orphan discovery and ownership checks
 - Default save paths (cached globally)
 - Category information (cached globally)
@@ -180,6 +187,15 @@ so execution cannot process a same-hash re-add through the stale bulk snapshot.
 An execution-time removal that conflicts with a supplied deletion plan aborts
 before tagging or deletion. Active or uncertain state also fails closed before
 tagging.
+
+The initial snapshot requests `include_trackers` only when an enabled operation
+needs tracker matching. A rejected optional request retries the ordinary
+snapshot, and a torrent that omits embedded tracker metadata uses its compatible
+exact tracker read. A present malformed tracker field aborts before an exact
+read or disappearance refresh can reinterpret it. Pseudo tracker URLs (DHT,
+PeX, and LSD) keep their historic matching priority before embedded real URLs
+for tagging and seeding, but do not create synthesized unregistered-status
+records.
 
 #### `qbitunregistered/operations/orphaned.py` - Detect & Delete Orphaned Files
 
@@ -300,10 +316,12 @@ separate seeding-management operation.
 **Core Responsibility**: Enforce seed time and ratio limits per tracker
 
 **Architecture**:
-- `find_tracker_config()`: Locate matching tracker in config (uses cached tracker fetching)
+- `find_tracker_config()`: Locate matching tracker in config using client-scoped,
+  execution-local cached metadata; pseudo URLs retain priority over real URLs
 - `apply_seed_limits()`: Consolidated batched application of both time and ratio limits
-- `fetch_torrent_trackers()`: Execution-scoped tracker API calls shared with
-  impact and unregistered checks
+- `fetch_torrent_trackers()`: Returns primed complete embedded metadata or,
+  when that field was omitted or the bulk request was rejected, one compatible
+  exact tracker read; present malformed metadata fails closed
 
 **Batching**: Groups torrents by (time_limit, ratio_limit) tuple
 - Reduces API calls for 1000 torrents from 1000 to number of unique configurations
@@ -456,6 +474,8 @@ Main Script
 ├─ Load config → Validate
 ├─ Connect to qBittorrent
 ├─ Fetch torrents once (cached, reused)
+│  └─ For unregistered, tag-by-tracker, or seeding-management: request
+│     embedded trackers and prime client-scoped execution metadata
 ├─ For each enabled operation:
 │  ├─ Load operation-specific config
 │  ├─ Process torrents
@@ -475,20 +495,28 @@ Main Script
 **Optimized Approach** (current):
 - Tag by tracker: Group by tag → 5 tags = 5 calls
 - Seeding management: Group by limits → 3 configs = 3 calls  
+- Tracker-dependent operations: one `include_trackers` snapshot and zero exact
+  tracker reads when every embedded `trackers` field is complete; rejected
+  optional snapshots or omitted fields retain the compatible exact-read path
 - Orphaned files: one bulk snapshot plus exact file-list requests only for
   uncertain or candidate-overlapping multi-file torrents; existing regular
   single-file torrents require no file-list request
 
 ### Caching Strategy
 
-**Cache Scope**: In-memory, cleared between script runs
+**Cache Scope**: In-memory, cleared between script runs; tracker values are
+also scoped to the qBittorrent client that supplied them
 **Lifetime**: 300 seconds by default; tracker and torrent-file metadata lasts
 until the execution cache is cleared
-**Keys Generated**: `(prefix, function_name, args, kwargs)` → JSON/pickle hash
+**Keys Generated**: General values use `(prefix, function_name, args, kwargs)`
+→ JSON/pickle hash. Tracker metadata uses the explicit client-identity and
+torrent-hash key so it cannot cross clients.
 
 **Cached Operations**:
-1. Tracker fetching: `fetch_torrent_trackers(client, torrent_hash)` → one API
-   fetch per client/torrent/execution
+1. Tracker fetching: `fetch_torrent_trackers(client, torrent_hash)` → complete
+   embedded metadata from the initial tracker-dependent snapshot, or one exact
+   fetch per client/torrent/execution when the optional request was rejected or
+   that torrent omitted the field. Present malformed metadata fails closed.
 2. Torrent-file fetching: `fetch_torrent_files(client, torrent_hash)` → one API
    fetch per client/torrent/execution, except an explicit post-orphan-scan
    refresh that replaces a possibly older entry
@@ -619,11 +647,15 @@ Each script module is independent and can be:
 - Torrents list passed to avoid redundant fetching
 - Enables testing and flexibility
 
-### 3. Caching Decorator
+### 3. Execution-Scoped Tracker Metadata
 ```python
-@cached(ttl=None, key_prefix="torrent_trackers", skip_first_arg=True)
-def fetch_torrent_trackers(client, torrent_hash, *, cache_scope):
-    return client.torrents_trackers(torrent_hash)
+if tracker_dependent_operations:
+    torrents = client.torrents.info(include_trackers=True)
+    prime_torrent_trackers(client, torrents)
+
+# A complete embedded field is reused; an omitted field can use the exact
+# endpoint. A present malformed field raises a safety error instead.
+trackers = fetch_torrent_trackers(client, torrent_hash, cache_scope=id(client))
 ```
 
 ### 4. Batching Pattern

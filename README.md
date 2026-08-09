@@ -365,6 +365,25 @@ still appears in a confirmed deletion plan, the operation aborts before tagging
 or deletion. An active torrent, malformed response, or failed refresh also
 aborts the operation.
 
+### Tracker metadata acquisition
+
+Only tracker-dependent operation sets (unregistered checks, tag-by-tracker,
+and seeding management) request the initial torrent snapshot with embedded
+tracker metadata. On servers that provide complete embedded metadata, that one
+bulk snapshot supplies the tracker data and no per-torrent exact tracker reads
+are needed. Runs without one of those operations continue to request the
+ordinary, smaller snapshot.
+
+Older or partial server responses remain compatible: if the optional bulk
+request is rejected, the CLI retries the ordinary snapshot; if an individual
+torrent omits its `trackers` field, only that torrent uses the exact tracker
+endpoint. A `trackers` field that is present but malformed is different: the
+run fails closed and does not treat the bad data as permission to fall back.
+For tagging and seeding compatibility, pseudo tracker URLs (DHT, PeX, and LSD)
+are checked before embedded real tracker URLs, but they are not synthesized as
+unregistered-status records. Tracker metadata is cached only for the current
+execution and client; no live qBittorrent data is persisted.
+
 For an existing regular single-file torrent, the canonical bulk
 `content_path` is already an exact owned pathname, so no per-torrent file-list
 request is needed. Multi-file torrents still use exact file paths; their file
@@ -672,15 +691,16 @@ If you encounter issues, check the following:
 
 Your contributions make this project better! Feel free to report bugs, suggest features, or submit pull requests. For major changes, please open an issue first to discuss what you'd like to change.
 
-Tracker batching changes are evaluated with deterministic `tracker-quick` and
-`tracker-full` gauntlets before any protected live dry-run. The evaluator locks
+The shipped tracker-metadata acquisition is evaluated with deterministic
+`tracker-quick` and `tracker-full` gauntlets before any protected live dry-run.
+The evaluator locks
 the preview and fresh-fake shadow execution actions, rejects unsafe pre-existing
 Python regular-file descriptors, denies audited write acquisition/mutations
 plus connection, DNS, `sendto`, and `sendmsg` attempts during production calls,
 and invokes the real CLI so client-side wire receipt, decoding, response
 wrapping, and the initial torrent response lifetime are inside every measured
 pass while fake server response construction remains outside. Paired control must use one ordinary snapshot plus
-`N` exact tracker reads; candidate must replace it with one bulk snapshot and
+`N` exact tracker reads; the shipped bulk candidate replaces it with one bulk snapshot and
 zero exact reads. Each semantic scenario must match its named control or
 candidate endpoint/exit/phase/order contract selected by that same primary
 transport role; per-scenario role mixing fails in standalone and paired modes.
