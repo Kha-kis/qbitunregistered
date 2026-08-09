@@ -1919,6 +1919,40 @@ def test_tracker_measurement_excludes_server_models_and_includes_client_material
     assert tracemalloc.is_tracing() is False
 
 
+def test_tracker_exact_wire_refresh_is_transactional_on_serialization_failure(tmp_path: Path) -> None:
+    """Keep every prior wire entry when a later server payload cannot encode."""
+    fixture = _small_tracker_fixture(tmp_path, seed=153)
+    client = fixture.client
+    original_cache = client._exact_tracker_wire_by_hash
+    original_entries = dict(original_cache)
+    first_hash = next(iter(client.trackers_by_hash))
+    client.trackers_by_hash[first_hash] = []
+    client.trackers_by_hash["f" * 64] = object()
+
+    with pytest.raises(TypeError, match="JSON serializable"):
+        client.prepare_exact_tracker_wire_payloads()
+
+    assert client._exact_tracker_wire_by_hash is original_cache
+    assert client._exact_tracker_wire_by_hash == original_entries
+
+
+def test_tracker_exact_wire_setter_is_transactional_on_serialization_failure(tmp_path: Path) -> None:
+    """Keep the source and wire bytes aligned when a replacement cannot encode."""
+    fixture = _small_tracker_fixture(tmp_path, seed=154)
+    client = fixture.client
+    torrent_hash = next(iter(client.trackers_by_hash))
+    original_trackers = client.trackers_by_hash[torrent_hash]
+    original_cache = client._exact_tracker_wire_by_hash
+    original_wire_payload = original_cache[torrent_hash]
+
+    with pytest.raises(TypeError, match="JSON serializable"):
+        client.set_exact_trackers(torrent_hash, object())
+
+    assert client.trackers_by_hash[torrent_hash] is original_trackers
+    assert client._exact_tracker_wire_by_hash is original_cache
+    assert client._exact_tracker_wire_by_hash[torrent_hash] is original_wire_payload
+
+
 def test_tracker_attribute_uses_exact_endpoint_and_redundant_transport_is_rejected(tmp_path: Path) -> None:
     """Catch a fake wrapper that misrepresents attribute access as embedded data."""
     tracker_fixture = _tracker_fixture_module()
