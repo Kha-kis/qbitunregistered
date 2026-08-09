@@ -1,12 +1,12 @@
 """Tests for the command-line coordinator."""
 
 import json
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
 from qbitunregistered import __version__
-from qbitunregistered.cli import EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, EXIT_SUCCESS, main
+from qbitunregistered.cli import EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, EXIT_SUCCESS, _fetch_initial_torrents, main
 from qbitunregistered.operations.unregistered_checks import (
     DeletionAction,
     PlannedTorrentDeletion,
@@ -77,6 +77,96 @@ def _destructive_unregistered_config(tmp_path, **overrides):
         delete_files={"unregistered": True},
         **overrides,
     )
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["unregistered", "tag_by_tracker", "seeding_management"],
+)
+def test_tracker_operations_use_one_bulk_initial_snapshot(operation: str) -> None:
+    """Tracker operations request embedded metadata in the initial snapshot."""
+    client = Mock()
+    embedded = [{"url": "https://tracker.example/announce"}]
+    torrent = {"hash": "hash", "trackers": embedded}
+    client.torrents.info.return_value = [torrent]
+
+    assert _fetch_initial_torrents(client, [operation]) == [torrent]
+
+    client.torrents.info.assert_called_once_with(include_trackers=True)
+    client.torrents_trackers.assert_not_called()
+
+
+def test_non_tracker_operations_keep_ordinary_initial_snapshot() -> None:
+    """Non-tracker operations retain the compatible ordinary snapshot."""
+    client = Mock()
+    torrent = Mock(hash="hash")
+    client.torrents.info.return_value = [torrent]
+
+    assert _fetch_initial_torrents(client, ["pause", "orphaned"]) == [torrent]
+
+    client.torrents.info.assert_called_once_with()
+
+
+def test_rejected_bulk_request_retries_ordinary_snapshot() -> None:
+    """Servers rejecting optional bulk metadata retain exact-read compatibility."""
+    client = Mock()
+    torrent = Mock(hash="legacy-hash")
+    client.torrents.info.side_effect = [TypeError("include_trackers is unsupported"), [torrent]]
+
+    assert _fetch_initial_torrents(client, ["unregistered"]) == [torrent]
+
+    assert client.torrents.info.call_args_list == [
+        call(include_trackers=True),
+        call(),
+    ]
+
+
+def test_bulk_request_keyboard_interrupt_propagates_without_ordinary_retry() -> None:
+    """Interrupting an optional bulk request must not trigger another API call."""
+    client = Mock()
+    client.torrents.info.side_effect = KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    client.torrents.info.assert_called_once_with(include_trackers=True)
+
+
+def test_main_fails_closed_for_present_malformed_embedded_trackers(tmp_path) -> None:
+    """Malformed embedded metadata aborts dry-run unregistered checks without mutation."""
+
+    class TorrentMapping(dict):
+        def __getattr__(self, name: str):
+            try:
+                return self[name]
+            except KeyError as error:
+                raise AttributeError(name) from error
+
+    config_path = _write_config(tmp_path, dry_run=True)
+    client = Mock()
+    client.torrents.info.return_value = [
+        TorrentMapping(
+            hash="hash",
+            name="content.mkv",
+            save_path=str(tmp_path),
+            content_path=str(tmp_path / "content.mkv"),
+            category="",
+            tags="",
+            trackers=None,
+        )
+    ]
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(["--config", str(config_path), "--unregistered"])
+
+    assert result == EXIT_GENERAL_ERROR
+    client.torrents.info.assert_called_once_with(include_trackers=True)
+    client.torrents_trackers.assert_not_called()
+    client.torrents_delete.assert_not_called()
+    client.torrents_add_tags.assert_not_called()
 
 
 def test_main_runs_with_minimal_config(tmp_path, capsys) -> None:
