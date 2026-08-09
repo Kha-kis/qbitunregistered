@@ -53,8 +53,16 @@ def test_windows_descriptor_delta_detects_replacement_and_new_number() -> None:
 @pytest.mark.parametrize(
     ("stdin_alias", "inheritable", "expected"),
     [
-        (True, True, "descriptor=9; stdio_aliases=0; inheritable=true"),
-        (False, OSError(errno.EBADF, "closed"), "descriptor=9; stdio_aliases=none; inheritable=unknown"),
+        (
+            True,
+            True,
+            "descriptor=9; stdio_aliases=0; inheritable=true; stat_fingerprint=(32768, 7, 60, 0)",
+        ),
+        (
+            False,
+            OSError(errno.EBADF, "closed"),
+            "descriptor=9; stdio_aliases=none; inheritable=unknown; stat_fingerprint=(32768, 7, 60, 0)",
+        ),
     ],
 )
 def test_windows_descriptor_metadata_is_sanitized_and_race_safe(
@@ -91,7 +99,10 @@ def test_windows_descriptor_failure_reports_only_node_and_metadata(
         "tests/test_example.py::test_leak",
         3,
         regular,
-    ) == ("nodeid=tests/test_example.py::test_leak; " "descriptor=3; stdio_aliases=none; inheritable=false")
+    ) == (
+        "nodeid=tests/test_example.py::test_leak; phase=teardown; descriptor=3; "
+        "stdio_aliases=none; inheritable=false; stat_fingerprint=(32768, 7, 70, 0)"
+    )
 
 
 def test_windows_descriptor_teardown_uses_exception_safe_wrapper() -> None:

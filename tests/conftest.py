@@ -15,6 +15,7 @@ from qbitunregistered.cache import clear_cache
 
 _WINDOWS_CRT_DESCRIPTOR_LIMIT = 8192
 _WINDOWS_REGULAR_DESCRIPTOR_BASELINE = pytest.StashKey[dict[int, os.stat_result]]()
+_WINDOWS_SESSION_REGULAR_BASELINE: dict[int, os.stat_result] = {}
 
 
 def _diagnostic_descriptor_stat(descriptor: int) -> os.stat_result | None:
@@ -63,24 +64,55 @@ def _format_windows_descriptor_metadata(descriptor: int, descriptor_stat: os.sta
         inheritable = str(os.get_inheritable(descriptor)).lower()
     except OSError:
         inheritable = "unknown"
-    return f"descriptor={descriptor}; stdio_aliases={stdio_aliases}; inheritable={inheritable}"
+    fingerprint = (
+        descriptor_stat.st_mode,
+        descriptor_stat.st_dev,
+        descriptor_stat.st_ino,
+        descriptor_stat.st_size,
+    )
+    return (
+        f"descriptor={descriptor}; stdio_aliases={stdio_aliases}; "
+        f"inheritable={inheritable}; stat_fingerprint={fingerprint}"
+    )
 
 
 def _format_windows_descriptor_failure(
     nodeid: str,
     descriptor: int,
     descriptor_stat: os.stat_result,
+    *,
+    phase: str = "teardown",
 ) -> str:
     """Format the temporary diagnostic failure without descriptor-backed paths."""
     metadata = _format_windows_descriptor_metadata(descriptor, descriptor_stat)
-    return f"nodeid={nodeid}; {metadata}"
+    return f"nodeid={nodeid}; phase={phase}; {metadata}"
+
+
+def pytest_sessionstart() -> None:
+    """Snapshot regular descriptors before collection and test execution."""
+    if sys.platform == "win32":
+        _WINDOWS_SESSION_REGULAR_BASELINE.clear()
+        _WINDOWS_SESSION_REGULAR_BASELINE.update(_collect_windows_unsafe_regular_descriptors())
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item: pytest.Item) -> None:
     """Snapshot regular descriptors before each Windows test sets up fixtures."""
     if sys.platform == "win32":
-        item.stash[_WINDOWS_REGULAR_DESCRIPTOR_BASELINE] = _collect_windows_unsafe_regular_descriptors()
+        current = _collect_windows_unsafe_regular_descriptors()
+        gained = _new_windows_regular_descriptors(_WINDOWS_SESSION_REGULAR_BASELINE, current)
+        if gained:
+            descriptor = min(gained)
+            pytest.fail(
+                _format_windows_descriptor_failure(
+                    item.nodeid,
+                    descriptor,
+                    gained[descriptor],
+                    phase="setup",
+                ),
+                pytrace=False,
+            )
+        item.stash[_WINDOWS_REGULAR_DESCRIPTOR_BASELINE] = current
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
