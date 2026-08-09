@@ -326,6 +326,70 @@ def _run_import_bootstrap_fixture(
     )
 
 
+def _build_tqdm_dependency_tree(tmp_path: Path) -> tuple[str, ...]:
+    """Create one small, importable tqdm source tree and package data."""
+    dependency_root = tmp_path / "environment" / "site-packages"
+    tqdm_root = dependency_root / "tqdm"
+    contrib_root = tqdm_root / "contrib"
+    contrib_root.mkdir(parents=True)
+    (tqdm_root / "__init__.py").write_bytes(b'__version__ = "test"\n')
+    (tqdm_root / "std.py").write_bytes(b"class tqdm:\n    pass\n")
+    (contrib_root / "__init__.py").write_bytes(b'NAME = "contrib"\n')
+    (contrib_root / "bells.py").write_bytes(b"ENABLED = True\n")
+    bytecode_root = tqdm_root / "__pycache__"
+    bytecode_root.mkdir()
+    (bytecode_root / "std.cpython-311.pyc").write_bytes(b"source-backed cache data")
+    (tqdm_root / "README.txt").write_bytes(b"ordinary package data\n")
+    return (str(dependency_root.resolve()),)
+
+
+def _build_unsafe_tqdm_tree(tmp_path: Path, mutation: str) -> tuple[str, ...]:
+    """Create exactly one selected invalid tqdm source-tree shape."""
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    dependency_root = Path(dependency_paths[0])
+    tqdm_root = dependency_root / "tqdm"
+
+    if mutation == "duplicate_root":
+        second_root = tmp_path / "second" / "site-packages"
+        second_tqdm_root = second_root / "tqdm"
+        second_tqdm_root.mkdir(parents=True)
+        (second_tqdm_root / "__init__.py").write_bytes(b"SECOND = True\n")
+        return (*dependency_paths, str(second_root.resolve()))
+    if mutation == "symlink_source":
+        target = tmp_path / "redirected.py"
+        target.write_bytes(b"REDIRECTED = True\n")
+        try:
+            (tqdm_root / "redirected.py").symlink_to(target)
+        except (NotImplementedError, OSError) as error:
+            pytest.skip(f"platform cannot create a symbolic link: {error}")
+    elif mutation == "redirected_package":
+        target = tmp_path / "redirected_package"
+        target.mkdir()
+        (target / "__init__.py").write_bytes(b"REDIRECTED = True\n")
+        try:
+            (tqdm_root / "redirected_package").symlink_to(target, target_is_directory=True)
+        except (NotImplementedError, OSError) as error:
+            pytest.skip(f"platform cannot create a symbolic link: {error}")
+    elif mutation == "casefold_collision":
+        collision_root = tqdm_root / "Collision"
+        collision_root.mkdir()
+        (collision_root / "__init__.py").write_bytes(b"VALUE = 1\n")
+        (tqdm_root / "collision.py").write_bytes(b"VALUE = 2\n")
+    elif mutation == "bytecode_only":
+        (tqdm_root / "bytecode_only.pyc").write_bytes(b"not bytecode")
+    elif mutation == "native_extension":
+        extension_suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
+        (tqdm_root / f"native_extension{extension_suffix}").write_bytes(b"not native code")
+    elif mutation == "oversized_source":
+        (tqdm_root / "oversized.py").write_bytes(b"#" * (1024 * 1024 + 1))
+    elif mutation == "too_many_sources":
+        for index in range(256):
+            (tqdm_root / f"module_{index:03d}.py").write_bytes(b"VALUE = 1\n")
+    else:
+        raise AssertionError(f"unknown unsafe tree mutation: {mutation}")
+    return dependency_paths
+
+
 def _set_test_index_flag(
     repository_root: Path,
     relative_path: str,
@@ -3633,6 +3697,288 @@ def test_dependency_environment_digest_tracks_paths_and_contents_not_mtime(
 
     (package_root / "renamed.py").write_text("VALUE = 2\n", encoding="utf-8")
     assert import_bootstrap.dependency_environment_digest(dependency_paths) != content_changed
+
+
+def test_immutable_tqdm_manifest_is_canonical_bounded_source_metadata(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    dependency_root = Path(dependency_paths[0])
+    expected_sources = [
+        ("tqdm", "tqdm/__init__.py", True, b'__version__ = "test"\n'),
+        ("tqdm.contrib", "tqdm/contrib/__init__.py", True, b'NAME = "contrib"\n'),
+        ("tqdm.contrib.bells", "tqdm/contrib/bells.py", False, b"ENABLED = True\n"),
+        ("tqdm.std", "tqdm/std.py", False, b"class tqdm:\n    pass\n"),
+    ]
+    expected_manifest = {
+        "namespace": "tqdm",
+        "schema_version": 1,
+        "sources": [
+            {
+                "fullname": fullname,
+                "is_package": is_package,
+                "relative_path": relative_path,
+                "root_index": 0,
+                "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                "size": len(source_bytes),
+            }
+            for fullname, relative_path, is_package, source_bytes in expected_sources
+        ],
+    }
+
+    assert import_bootstrap.IMMUTABLE_TQDM_MANIFEST_ARGUMENT == "--immutable-tqdm-manifest"
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+    assert manifest == json.dumps(expected_manifest, sort_keys=True, separators=(",", ":"))
+    assert str(dependency_root) not in manifest
+    assert "source_bytes" not in manifest
+    original_dependency_digest = import_bootstrap.dependency_environment_digest(dependency_paths)
+    (dependency_root / "tqdm" / "README.txt").write_bytes(b"changed ordinary package data\n")
+    assert import_bootstrap.immutable_tqdm_manifest(dependency_paths) == manifest
+    assert import_bootstrap.dependency_environment_digest(dependency_paths) != original_dependency_digest
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "duplicate_root",
+        "symlink_source",
+        "redirected_package",
+        "casefold_collision",
+        "bytecode_only",
+        "native_extension",
+        "oversized_source",
+        "too_many_sources",
+    ],
+)
+def test_immutable_tqdm_manifest_rejects_unsafe_source_trees(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    dependency_paths = _build_unsafe_tqdm_tree(tmp_path, mutation)
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+
+def test_capture_immutable_tqdm_sources_returns_verified_immutable_bytes(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+    sources = import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+
+    assert tuple(source.fullname for source in sources) == (
+        "tqdm",
+        "tqdm.contrib",
+        "tqdm.contrib.bells",
+        "tqdm.std",
+    )
+    assert tuple(source.source_bytes for source in sources) == (
+        b'__version__ = "test"\n',
+        b'NAME = "contrib"\n',
+        b"ENABLED = True\n",
+        b"class tqdm:\n    pass\n",
+    )
+    assert all(source.relative_path.is_relative_to("tqdm") for source in sources)
+    with pytest.raises(FrozenInstanceError):
+        sources[0].source_bytes = b"replacement"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "malformed_json",
+        "unknown_top_level_key",
+        "wrong_schema_type",
+        "wrong_schema_version",
+        "wrong_namespace_type",
+        "wrong_namespace",
+        "wrong_sources_type",
+        "unknown_source_key",
+        "wrong_source_field_type",
+        "wrong_package_type",
+        "duplicate_record",
+        "path_traversal",
+        "reordered_records",
+        "noncanonical_json",
+        "size_drift",
+        "hash_drift",
+        "missing_record",
+    ],
+)
+def test_capture_immutable_tqdm_sources_rejects_malformed_or_drifted_manifest(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    canonical_manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    manifest_data = json.loads(canonical_manifest)
+
+    if mutation == "malformed_json":
+        raw_manifest = "{"
+    else:
+        if mutation == "unknown_top_level_key":
+            manifest_data["unexpected"] = True
+        elif mutation == "wrong_schema_type":
+            manifest_data["schema_version"] = True
+        elif mutation == "wrong_schema_version":
+            manifest_data["schema_version"] = 2
+        elif mutation == "wrong_namespace_type":
+            manifest_data["namespace"] = ["tqdm"]
+        elif mutation == "wrong_namespace":
+            manifest_data["namespace"] = "other"
+        elif mutation == "wrong_sources_type":
+            manifest_data["sources"] = {}
+        elif mutation == "unknown_source_key":
+            manifest_data["sources"][0]["unexpected"] = True
+        elif mutation == "wrong_source_field_type":
+            manifest_data["sources"][0]["root_index"] = False
+        elif mutation == "wrong_package_type":
+            manifest_data["sources"][0]["is_package"] = 1
+        elif mutation == "duplicate_record":
+            manifest_data["sources"].append(dict(manifest_data["sources"][0]))
+        elif mutation == "path_traversal":
+            manifest_data["sources"][0]["relative_path"] = "../tqdm/__init__.py"
+        elif mutation == "reordered_records":
+            manifest_data["sources"].reverse()
+        elif mutation == "size_drift":
+            manifest_data["sources"][0]["size"] += 1
+        elif mutation == "hash_drift":
+            manifest_data["sources"][0]["sha256"] = "0" * 64
+        elif mutation == "missing_record":
+            manifest_data["sources"].pop()
+        if mutation == "noncanonical_json":
+            raw_manifest = json.dumps(manifest_data, indent=2, sort_keys=True)
+        else:
+            raw_manifest = json.dumps(manifest_data, sort_keys=True, separators=(",", ":"))
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, raw_manifest)
+
+
+def test_capture_immutable_tqdm_sources_rejects_installed_tree_drift(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    tqdm_root = Path(dependency_paths[0]) / "tqdm"
+
+    (tqdm_root / "new_module.py").write_bytes(b"VALUE = 1\n")
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+
+    (tqdm_root / "new_module.py").unlink()
+    (tqdm_root / "std.py").write_bytes(b"class tqdm:\n    stop\n")
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+
+
+@pytest.mark.parametrize(
+    ("without_no_follow", "replacement_kind"),
+    [(False, "regular"), (True, "regular"), (True, "symlink")],
+)
+def test_capture_immutable_tqdm_sources_rejects_source_swap_during_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    without_no_follow: bool,
+    replacement_kind: str,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    manifest = import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+    source_path = Path(dependency_paths[0]) / "tqdm" / "std.py"
+    replacement_path = tmp_path / "replacement.py"
+    replacement_path.write_bytes(source_path.read_bytes())
+    original_path = tmp_path / "original.py"
+    real_open = os.open
+    swapped = False
+
+    def swap_before_open(path: os.PathLike[str] | str, flags: int, mode: int = 0o777) -> int:
+        nonlocal swapped
+        if Path(path) == source_path and not swapped:
+            swapped = True
+            source_path.replace(original_path)
+            if replacement_kind == "symlink":
+                try:
+                    source_path.symlink_to(original_path)
+                except (NotImplementedError, OSError) as error:
+                    pytest.skip(f"platform cannot create a symbolic link: {error}")
+            else:
+                replacement_path.replace(source_path)
+        return real_open(path, flags, mode)
+
+    if without_no_follow:
+        monkeypatch.delattr(import_bootstrap.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.setattr(import_bootstrap.os, "open", swap_before_open)
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, manifest)
+    assert swapped is True
+
+
+def test_capture_immutable_tqdm_sources_rejects_oversized_manifest(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap._capture_immutable_tqdm_sources(dependency_paths, " " * (256 * 1024 + 1))
+
+
+def test_immutable_tqdm_manifest_rejects_excessive_total_source_bytes(
+    tmp_path: Path,
+) -> None:
+    dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+    tqdm_root = Path(dependency_paths[0]) / "tqdm"
+    for index in range(8):
+        (tqdm_root / f"large_{index}.py").write_bytes(b"#" * (1024 * 1024))
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap.immutable_tqdm_manifest(dependency_paths)
+
+
+@pytest.mark.parametrize("root_shape", ["absent", "namespace_only", "top_level_ambiguity"])
+def test_immutable_tqdm_manifest_requires_one_unambiguous_package_root(
+    tmp_path: Path,
+    root_shape: str,
+) -> None:
+    dependency_root = tmp_path / "environment" / "site-packages"
+    dependency_root.mkdir(parents=True)
+    if root_shape == "namespace_only":
+        tqdm_root = dependency_root / "tqdm"
+        tqdm_root.mkdir()
+        (tqdm_root / "std.py").write_bytes(b"VALUE = 1\n")
+    elif root_shape == "top_level_ambiguity":
+        dependency_paths = _build_tqdm_dependency_tree(tmp_path)
+        dependency_root = Path(dependency_paths[0])
+        (dependency_root / "tqdm.py").write_bytes(b"VALUE = 1\n")
+    elif root_shape != "absent":
+        raise AssertionError(f"unknown root shape: {root_shape}")
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap.immutable_tqdm_manifest((str(dependency_root.resolve()),))
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    [
+        "tqdm.pyc",
+        "tqdm.pyo",
+        f"tqdm{importlib.machinery.EXTENSION_SUFFIXES[0]}",
+    ],
+)
+def test_immutable_tqdm_manifest_rejects_earlier_top_level_import_artifact(
+    tmp_path: Path,
+    artifact_name: str,
+) -> None:
+    earlier_root = tmp_path / "earlier" / "site-packages"
+    earlier_root.mkdir(parents=True)
+    (earlier_root / artifact_name).write_bytes(b"untrusted import artifact")
+    later_paths = _build_tqdm_dependency_tree(tmp_path / "later")
+
+    with pytest.raises(import_bootstrap.DependencyEnvironmentError):
+        import_bootstrap.immutable_tqdm_manifest((str(earlier_root.resolve()), *later_paths))
 
 
 def test_dependency_environment_digest_rejects_redirecting_entries(
