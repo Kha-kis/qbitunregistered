@@ -20,10 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an OS/native syscall sandbox and cannot observe redirected-stdio writes or
   `send`/`sendall` on sockets connected before it became active.
 - Documented standalone tracker evaluation and isolated paired
-  `tracker-full` comparison. The current exact-only control allows one tracker
-  read per torrent; the optimization target is one combined bulk request with
-  unchanged safety evidence. Standalone baselines remain provisional because
-  contemporaneous paired comparison is canonical.
+  `tracker-full` comparison. The gauntlet establishes an exact-only control
+  with one tracker read per torrent; the now-shipped candidate uses one
+  conditional bulk snapshot and zero exact tracker reads when embedded metadata
+  is complete. Standalone baselines remain provisional, and contemporaneous
+  paired comparison remains canonical for performance acceptance; no
+  protected-live wall-clock gain is claimed.
 
 ### Changed
 
