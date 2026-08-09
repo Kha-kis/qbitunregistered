@@ -236,6 +236,25 @@ def test_tracker_metadata_is_reused_across_preview_execution_and_seeding() -> No
     client.torrents_add_tags.assert_not_called()
 
 
+def test_malformed_primed_tracker_metadata_does_not_trigger_disappearance_refresh() -> None:
+    """Malformed successful bulk metadata is a hard failure, not an absence hint."""
+    from qbitunregistered.cache import clear_cache
+    from qbitunregistered.operations.seeding_management import (
+        MalformedEmbeddedTrackerMetadataError,
+        prime_torrent_trackers,
+    )
+    from qbitunregistered.operations.unregistered_checks import _fetch_available_torrent_trackers_batch
+
+    clear_cache()
+    client = MagicMock()
+    prime_torrent_trackers(client, [{"hash": "bad-hash", "trackers": None}])
+
+    with pytest.raises(MalformedEmbeddedTrackerMetadataError):
+        _fetch_available_torrent_trackers_batch(client, ["bad-hash"])
+    client.torrents_trackers.assert_not_called()
+    client.torrents.info.assert_not_called()
+
+
 def _unregistered_torrent(torrent_hash: str = "hash") -> MagicMock:
     """Return the minimum complete torrent double for unregistered scanning."""
     return MagicMock(
