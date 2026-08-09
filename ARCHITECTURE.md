@@ -746,9 +746,11 @@ conservative model of the visible `qbittorrent-api` 2026.8.0 containers,
 mapping normalization, freshness, and endpoint delegation; they do not claim
 complete internal or byte-for-byte allocator equivalence. A canonical
 quality-bar table locks every named scenario's control and candidate endpoint,
-exit, terminal-phase, and observation-order evidence. Earlier tracker
-artifacts lack that contract identity and are non-comparable with schema
-version 9.
+exit, terminal-phase, and observation-order evidence. The aggregate primary
+triple derives exactly one artifact role; every other primary pass and all
+twelve scenarios must match it. Earlier tracker artifacts lack this
+artifact-wide enforcement and are non-comparable before schema 9 / evaluator
+1.10.0.
 
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,

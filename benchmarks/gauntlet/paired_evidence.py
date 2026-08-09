@@ -11,7 +11,9 @@ from benchmarks.gauntlet.baseline import (
     ISOLATION_COUNTER_KEYS,
     MUTATION_COUNTER_KEYS,
     QualityBar,
-    tracker_scenario_matches_any_contract,
+    TrackerScenarioRole,
+    derive_tracker_artifact_role,
+    tracker_scenarios_match_role_contracts,
 )
 
 CHILD_RESULT_KEYS = {
@@ -226,7 +228,12 @@ def _sanitize_measurement_policy(
     return sanitized
 
 
-def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: str) -> dict[str, object]:
+def _sanitize_scenarios(
+    value: object,
+    quality_bar: QualityBar,
+    profile_name: str,
+    role: TrackerScenarioRole,
+) -> dict[str, object]:
     profile = quality_bar.profiles[profile_name]
     scenarios = _exact_mapping(value, set(profile.scenario_action_digests), "scenarios")
     sanitized: dict[str, object] = {}
@@ -289,13 +296,13 @@ def _sanitize_scenarios(value: object, quality_bar: QualityBar, profile_name: st
             "mutation_counters": mutation_counters,
             "isolation_counters": isolation_counters,
         }
-        if not tracker_scenario_matches_any_contract(
-            name,
-            sanitized_evidence,
-            quality_bar.tracker_scenario_contracts,
-        ):
-            raise PairedEvidenceError(f"scenarios.{name} does not match a canonical transport contract")
         sanitized[name] = sanitized_evidence
+    if not tracker_scenarios_match_role_contracts(
+        sanitized,
+        quality_bar.tracker_scenario_contracts,
+        role,
+    ):
+        raise PairedEvidenceError("scenarios do not match the artifact transport role")
     return sanitized
 
 
@@ -368,6 +375,36 @@ def sanitize_child_result(  # noqa: C901
     identity_verified = result["identity_verified"]
     if not isinstance(identity_verified, bool):
         raise PairedEvidenceError("identity_verified must be a boolean")
+    endpoint_counters = _endpoint_mapping(
+        result["endpoint_counters"],
+        endpoint_keys,
+        "endpoint_counters",
+    )
+    timed_endpoint_counters = [
+        _endpoint_mapping(item, endpoint_keys, f"timed_sample_endpoint_counters[{index}]")
+        for index, item in enumerate(timed_counters)
+    ]
+    pass_endpoint_counters = {
+        "warmup": _endpoint_mapping(
+            pass_counters["warmup"],
+            endpoint_keys,
+            "pass_endpoint_counters.warmup",
+        ),
+        "memory": _endpoint_mapping(
+            pass_counters["memory"],
+            endpoint_keys,
+            "pass_endpoint_counters.memory",
+        ),
+    }
+    artifact_role: TrackerScenarioRole | None = None
+    if profile_kind == "tracker":
+        torrent_count = canonical_profile.workload["torrents"]
+        artifact_role = derive_tracker_artifact_role(endpoint_counters, torrent_count)
+        other_primary_counters = [*timed_endpoint_counters, *pass_endpoint_counters.values()]
+        if artifact_role is None or any(
+            derive_tracker_artifact_role(item, torrent_count) != artifact_role for item in other_primary_counters
+        ):
+            raise PairedEvidenceError("tracker primary evidence does not have one canonical transport role")
     sanitized_result: dict[str, object] = {
         "schema": quality_bar.result_schema,
         "schema_version": quality_bar.evaluator_schema_version,
@@ -392,27 +429,9 @@ def sanitize_child_result(  # noqa: C901
         ),
         "reconciliation": reconciliation,
         "candidate_counts": candidate_counts,
-        "endpoint_counters": _endpoint_mapping(
-            result["endpoint_counters"],
-            endpoint_keys,
-            "endpoint_counters",
-        ),
-        "timed_sample_endpoint_counters": [
-            _endpoint_mapping(item, endpoint_keys, f"timed_sample_endpoint_counters[{index}]")
-            for index, item in enumerate(timed_counters)
-        ],
-        "pass_endpoint_counters": {
-            "warmup": _endpoint_mapping(
-                pass_counters["warmup"],
-                endpoint_keys,
-                "pass_endpoint_counters.warmup",
-            ),
-            "memory": _endpoint_mapping(
-                pass_counters["memory"],
-                endpoint_keys,
-                "pass_endpoint_counters.memory",
-            ),
-        },
+        "endpoint_counters": endpoint_counters,
+        "timed_sample_endpoint_counters": timed_endpoint_counters,
+        "pass_endpoint_counters": pass_endpoint_counters,
         "mutation_counters": _integer_mapping(
             result["mutation_counters"],
             MUTATION_COUNTER_KEYS,
@@ -446,6 +465,8 @@ def sanitize_child_result(  # noqa: C901
         ),
     }
     if profile_kind == "tracker":
+        if artifact_role is None:
+            raise PairedEvidenceError("tracker artifact transport role is missing")
         execution_action_digest = _digest(
             result["execution_action_digest"],
             "execution_action_digest",
@@ -461,7 +482,12 @@ def sanitize_child_result(  # noqa: C901
             raise PairedEvidenceError("isolation_counters are not canonical")
         sanitized_result["execution_action_digest"] = execution_action_digest
         sanitized_result["isolation_counters"] = isolation_counters
-        sanitized_result["scenarios"] = _sanitize_scenarios(result["scenarios"], quality_bar, profile_name)
+        sanitized_result["scenarios"] = _sanitize_scenarios(
+            result["scenarios"],
+            quality_bar,
+            profile_name,
+            artifact_role,
+        )
     return sanitized_result
 
 

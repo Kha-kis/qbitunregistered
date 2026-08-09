@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Tracker gauntlet schema 9 now measures the production-owned initial torrent
+- Tracker gauntlet schema 9 / evaluator 1.10.0 now measures the
+  production-owned initial torrent
   snapshot through the real CLI in every fresh warm-up, timed, and memory pass.
   Control is exactly one ordinary snapshot plus `N` exact tracker reads;
   candidate must replace it with one bulk snapshot and zero exact reads. The
@@ -38,8 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   All twelve semantic scenarios now traverse the real CLI and retain exact
   endpoint, exit-code, phase-order, mutation, and isolation evidence. One
   canonical quality-bar table validates each scenario's control/candidate
-  contract for standalone, sanitized, local, and paired evaluation. Earlier
-  tracker artifacts are invalid.
+  contract for standalone, sanitized, local, and paired evaluation. The
+  aggregate primary triple derives one artifact role, and every primary pass
+  plus all twelve scenarios must match that role without per-scenario mixing.
+  Earlier tracker artifacts are invalid.
 - Clarified that evaluator establishment must be reviewed and merged before
   production optimization, evaluator inputs stay unchanged on optimization
   branches, private review orchestration is not repository content, and a live

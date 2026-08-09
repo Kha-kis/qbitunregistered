@@ -307,10 +307,12 @@ identical production code. It is a stability check: ratios should be near
 `1.0`; it cannot satisfy the tracker transport gate because candidate passes
 must use one bulk request while control passes must use exact requests.
 
-Earlier tracker artifacts predate the canonical per-scenario
-endpoint/exit/phase/order contract table. They are non-comparable and must not
-be used as control evidence; regenerate quick and full artifacts with schema
-version 9.
+Earlier tracker artifacts predate artifact-wide role enforcement. They are
+non-comparable and must not be used as control evidence; regenerate quick and
+full artifacts with schema version 9 and evaluator version 1.10.0. One role is
+derived from the aggregate primary endpoint triple, every primary pass must
+retain it, and all twelve scenarios must match that same role's canonical
+contracts.
 
 ## qBittorrent file metadata fixture
 

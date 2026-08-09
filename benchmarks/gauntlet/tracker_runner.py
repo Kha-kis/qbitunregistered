@@ -20,7 +20,11 @@ from types import SimpleNamespace
 from typing import Iterator, Literal, Protocol, TypedDict, cast
 from unittest.mock import patch
 
-from benchmarks.gauntlet.baseline import load_quality_bar, tracker_scenario_matches_any_contract
+from benchmarks.gauntlet.baseline import (
+    derive_tracker_artifact_role,
+    load_quality_bar,
+    tracker_scenarios_match_role_contracts,
+)
 from benchmarks.gauntlet.fixture_factory import MUTATION_COUNTER_KEYS
 from benchmarks.gauntlet.runner import (
     DEFAULT_SAMPLES,
@@ -574,16 +578,7 @@ def validate_tracker_endpoint_counts(
     profile: TrackerGauntletProfile,
 ) -> None:
     """Accept only one complete ordinary/exact or one embedded snapshot."""
-    if set(endpoint_counts) != set(TRACKER_READ_ENDPOINTS):
-        raise GauntletSafetyError("tracker API evidence does not match the locked endpoint schema")
-    if any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in endpoint_counts.values()):
-        raise GauntletSafetyError("tracker API evidence contains malformed counts")
-    transport = (
-        endpoint_counts["torrents.info"],
-        endpoint_counts["torrents.info.include_trackers"],
-        endpoint_counts["torrents_trackers"],
-    )
-    if transport not in {(1, 0, profile.torrent_count), (0, 1, 0)}:
+    if derive_tracker_artifact_role(endpoint_counts, profile.torrent_count) is None:
         raise GauntletSafetyError("tracker API evidence is partial, redundant, or outside the locked budget")
 
 
@@ -1174,8 +1169,6 @@ def evaluate_tracker_scenarios(  # noqa: C901
             "mutation_counters": _scenario_mutation_counters(fixture, production_audit),
             "isolation_counters": dict(production_audit.counters),
         }
-        if not tracker_scenario_matches_any_contract(name, scenario_evidence, scenario_contracts):
-            raise GauntletSafetyError("tracker scenario CLI evidence did not match a locked transport contract")
         evidence[name] = scenario_evidence
 
     with tempfile.TemporaryDirectory(prefix="qbitunregistered-tracker-scenarios-") as temporary_root:
@@ -1398,6 +1391,10 @@ def evaluate_tracker_scenarios(  # noqa: C901
             raise GauntletSafetyError("tracker dry-run was not bound to the preview snapshot")
         record(name, fixture, before, result, action_digest=_intended_action_digest(result.summary))
     clear_cache()
+    if not any(
+        tracker_scenarios_match_role_contracts(evidence, scenario_contracts, role) for role in ("control", "candidate")
+    ):
+        raise GauntletSafetyError("tracker scenarios do not share one locked transport role")
     return evidence
 
 
@@ -1435,6 +1432,15 @@ def evaluate_tracker_fixture(
         for item in all_evidence[1:]
     ):
         raise GauntletSafetyError("tracker evaluator evidence changed between passes")
+    artifact_role = derive_tracker_artifact_role(warmup.endpoint_counters, fixture.profile.torrent_count)
+    if artifact_role is None or any(
+        derive_tracker_artifact_role(item.endpoint_counters, fixture.profile.torrent_count) != artifact_role
+        for item in all_evidence[1:]
+    ):
+        raise GauntletSafetyError("tracker primary passes do not share one transport role")
+    scenario_contracts = load_quality_bar(Path(__file__).with_name("quality-bar.toml")).tracker_scenario_contracts
+    if not tracker_scenarios_match_role_contracts(scenarios, scenario_contracts, artifact_role):
+        raise GauntletSafetyError("tracker scenarios do not match the primary transport role")
     execution_action_digest = _shadow_execution_action_digest(
         fixture.profile,
         fixture.seed,

@@ -25,9 +25,11 @@ from benchmarks.gauntlet.baseline import (
     ProfileQualityBar,
     QualityBar,
     QualityBarError,
+    TrackerScenarioRole,
     compare_result,
+    derive_tracker_artifact_role,
     load_quality_bar_bytes,
-    tracker_scenario_matches_role_contract,
+    tracker_scenarios_match_role_contracts,
 )
 from benchmarks.gauntlet.identity import (
     RepositoryIdentity,
@@ -51,7 +53,7 @@ from benchmarks.gauntlet.runner import DEFAULT_SAMPLES
 
 PAIRED_SCHEMA_NAME = "qbitunregistered.gauntlet.paired-result"
 PAIRED_SCHEMA_VERSION = 6
-PAIRING_VERSION = "2.6.0"
+PAIRING_VERSION = "2.7.0"
 PAIRED_ORDER: tuple[Literal["control", "candidate"], ...] = (
     "control",
     "candidate",
@@ -389,8 +391,7 @@ def compare_paired_results(  # noqa: C901
     if profile.kind == "tracker":
         torrent_count = profile.workload["torrents"]
 
-        def role_transport_matches(result: Mapping[str, object], role: str) -> bool:
-            expected_shape = (1, 0, torrent_count) if role == "control" else (0, 1, 0)
+        def role_transport_matches(result: Mapping[str, object], role: TrackerScenarioRole) -> bool:
             raw_timed = result.get("timed_sample_endpoint_counters")
             raw_passes = result.get("pass_endpoint_counters")
             if not isinstance(raw_timed, list) or not isinstance(raw_passes, dict):
@@ -402,36 +403,14 @@ def compare_paired_results(  # noqa: C901
                 raw_passes.get("memory"),
             ]
             for counters in counter_sets:
-                if not isinstance(counters, dict):
-                    return False
-                endpoint_shape = (
-                    counters.get("torrents.info"),
-                    counters.get("torrents.info.include_trackers"),
-                    counters.get("torrents_trackers"),
-                )
-                if (
-                    set(counters)
-                    != {
-                        "torrents.info",
-                        "torrents.info.include_trackers",
-                        "torrents_trackers",
-                    }
-                    or endpoint_shape != expected_shape
-                ):
+                if derive_tracker_artifact_role(counters, torrent_count) != role:
                     return False
             raw_scenarios = result.get("scenarios")
-            if not isinstance(raw_scenarios, dict) or set(raw_scenarios) != set(quality_bar.tracker_scenario_contracts):
-                return False
-            for name in quality_bar.tracker_scenario_contracts:
-                scenario = raw_scenarios.get(name)
-                if not tracker_scenario_matches_role_contract(
-                    name,
-                    scenario,
-                    quality_bar.tracker_scenario_contracts,
-                    cast(Literal["control", "candidate"], role),
-                ):
-                    return False
-            return True
+            return tracker_scenarios_match_role_contracts(
+                raw_scenarios,
+                quality_bar.tracker_scenario_contracts,
+                role,
+            )
 
         transport_passes = all(
             role_transport_matches(result, role) for role, result in zip(PAIRED_ORDER, results, strict=True)

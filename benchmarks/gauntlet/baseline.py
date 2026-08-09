@@ -712,34 +712,44 @@ def _observed_tracker_scenario_contract(value: object) -> TrackerScenarioContrac
     )
 
 
-def tracker_scenario_matches_role_contract(
-    name: str,
-    evidence: object,
+def derive_tracker_artifact_role(
+    endpoint_counters: object,
+    torrent_count: int,
+) -> TrackerScenarioRole | None:
+    """Derive one tracker artifact role from an exact primary endpoint triple."""
+    counters = _mapping_of_ints(endpoint_counters)
+    endpoint_keys = {
+        "torrents.info",
+        "torrents.info.include_trackers",
+        "torrents_trackers",
+    }
+    if isinstance(torrent_count, bool) or torrent_count < 1 or counters is None or set(counters) != endpoint_keys:
+        return None
+    shape = (
+        counters["torrents.info"],
+        counters["torrents.info.include_trackers"],
+        counters["torrents_trackers"],
+    )
+    if shape == (1, 0, torrent_count):
+        return "control"
+    if shape == (0, 1, 0):
+        return "candidate"
+    return None
+
+
+def tracker_scenarios_match_role_contracts(
+    value: object,
     contracts: Mapping[str, TrackerScenarioRoleContracts],
     role: TrackerScenarioRole,
 ) -> bool:
-    """Return whether evidence exactly matches the named role contract."""
-    role_contracts = contracts.get(name)
-    if role_contracts is None:
+    """Return whether every named scenario matches one artifact role."""
+    if not isinstance(value, Mapping) or set(value) != set(contracts):
         return False
-    expected = role_contracts.control if role == "control" else role_contracts.candidate
-    return _observed_tracker_scenario_contract(evidence) == expected
-
-
-def tracker_scenario_matches_any_contract(
-    name: str,
-    evidence: object,
-    contracts: Mapping[str, TrackerScenarioRoleContracts],
-) -> bool:
-    """Return whether standalone evidence matches either revision's exact contract."""
-    return tracker_scenario_matches_role_contract(
-        name, evidence, contracts, "control"
-    ) or tracker_scenario_matches_role_contract(
-        name,
-        evidence,
-        contracts,
-        "candidate",
-    )
+    for name, role_contracts in contracts.items():
+        expected = role_contracts.control if role == "control" else role_contracts.candidate
+        if _observed_tracker_scenario_contract(value.get(name)) != expected:
+            return False
+    return True
 
 
 def _runtime_reconciliation(
@@ -783,10 +793,11 @@ def _runtime_tracker_scenarios(
     value: object,
     profile: ProfileQualityBar,
     contracts: Mapping[str, TrackerScenarioRoleContracts],
+    role: TrackerScenarioRole | None,
 ) -> dict[str, object] | None:
     if profile.kind != "tracker":
         return {} if value is None else None
-    if not isinstance(value, dict) or set(value) != TRACKER_SCENARIO_NAMES:
+    if role is None or not isinstance(value, dict) or set(value) != TRACKER_SCENARIO_NAMES:
         return None
     sanitized: dict[str, object] = {}
     endpoint_keys = {
@@ -826,7 +837,6 @@ def _runtime_tracker_scenarios(
             or exit_code not in {0, 1}
             or terminal_phase not in {"execution_complete", "preview_fail_closed", "execution_fail_closed"}
             or observation_order not in [["preview"], ["preview", "execution"]]
-            or not tracker_scenario_matches_any_contract(name, raw_evidence, contracts)
         ):
             return None
         sanitized[name] = {
@@ -839,6 +849,8 @@ def _runtime_tracker_scenarios(
             "mutation_counters": mutation_counters,
             "isolation_counters": isolation_counters,
         }
+    if not tracker_scenarios_match_role_contracts(sanitized, contracts, role):
+        return None
     return sanitized
 
 
@@ -925,10 +937,16 @@ def _result_gate(
     workload = _mapping_of_ints(result.get("workload"))
     candidates = _mapping_of_ints(result.get("candidate_counts"))
     reconciliation = _runtime_reconciliation(result.get("reconciliation"), profile.kind)
+    artifact_role = (
+        derive_tracker_artifact_role(result.get("endpoint_counters"), profile.workload["torrents"])
+        if profile.kind == "tracker"
+        else None
+    )
     scenarios = _runtime_tracker_scenarios(
         result.get("scenarios"),
         profile,
         quality_bar.tracker_scenario_contracts,
+        artifact_role,
     )
     matches = (
         result.get("schema") == quality_bar.result_schema
@@ -997,6 +1015,11 @@ def _api_gate(
     if not all(within_budget(item) for item in all_passes):
         return _gate("fail", "one or more per-pass API counts violate the locked budget")
     if profile.kind == "tracker":
+        artifact_role = derive_tracker_artifact_role(normalized, profile.workload["torrents"])
+        if artifact_role is None or any(
+            derive_tracker_artifact_role(item, profile.workload["torrents"]) != artifact_role for item in all_passes[1:]
+        ):
+            return _gate("fail", "tracker primary passes do not share one transport role")
         return _gate(
             "pass",
             "all passes use one locked complete tracker transport",

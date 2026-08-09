@@ -441,3 +441,39 @@ The fake wrapper is described as a source-faithful, conservative visible
 container model based on `qbittorrent-api` 2026.8.0. The evaluator locks
 observed container types, normalization, freshness, and endpoint delegation;
 it does not claim complete internal or byte-for-byte allocator equivalence.
+
+## Establish correction round 7: artifact-wide transport roles
+
+One tracker artifact has exactly one transport role. The evaluator derives it
+only from the aggregate primary endpoint counters and the canonical profile
+torrent count: control is exactly `(1, 0, N)` and candidate is exactly
+`(0, 1, 0)` in ordinary/bulk/exact order. Missing, extra, boolean, negative,
+partial, redundant, or any other counter evidence has no role and fails
+closed. Timed, warm-up, and memory primary evidence must derive the same role.
+
+All twelve scenarios must then match the corresponding member of the same
+role in the canonical quality-bar contract table. A candidate-primary artifact
+cannot contain even one control scenario; a control-primary artifact cannot
+contain even one candidate scenario; and a scenario collection cannot mix
+roles. The prior per-scenario union API is removed so no boundary can
+accidentally validate each scenario independently against either revision.
+
+`baseline.py` owns two shared typed APIs. `derive_tracker_artifact_role(...)`
+returns `control`, `candidate`, or `None` from one exact primary triple.
+`tracker_scenarios_match_role_contracts(...)` accepts only the exact twelve
+scenario names and validates every member against one explicit derived role.
+Standalone comparison, paired-child reconstruction, local tracker result
+generation, and paired comparison all consume these APIs. Paired comparison
+also requires the derived artifact role to equal the orchestrator-assigned
+ABBA/BAAB role.
+
+The JSON result shape, quality-bar TOML shape, paired-result shape, and all
+canonical contract values remain unchanged, so quality-bar schema 7, result
+schema 9, and paired schema 6 remain unchanged. Evaluator version advances to
+1.10.0 and pairing version to 2.7.0 because those identities distinguish the
+hardened acceptance semantics from artifacts and paired reports produced by
+the earlier union-validating implementation. Primary transports, malformed/
+fallback/preflight behavior, fixture/action/reconciliation digests, mutation
+and isolation locks, CPU `1.0`, and memory `1.25` remain unchanged. Round-6
+artifacts are non-comparable by evaluator identity; clean round-7 controls are
+required.

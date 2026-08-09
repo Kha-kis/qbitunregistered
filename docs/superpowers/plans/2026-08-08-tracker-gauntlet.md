@@ -891,3 +891,75 @@ smoke outside the checkout, and `git diff --check`. Commit one evaluator-only
 change, generate clean round-6 tracker quick/full JSON under `/tmp`, validate
 all scenario/primary contracts and zero counters, hash both artifacts, and
 append the ignored task report and progress ledger.
+
+### Task 8: Establish correction round 7
+
+**Files:**
+- Modify: `benchmarks/gauntlet/baseline.py`
+- Modify: `benchmarks/gauntlet/paired_evidence.py`
+- Modify: `benchmarks/gauntlet/paired.py`
+- Modify: `benchmarks/gauntlet/tracker_runner.py`
+- Modify: `benchmarks/gauntlet/runner.py`
+- Modify: `benchmarks/gauntlet/quality-bar.toml`
+- Test: `tests/test_gauntlet_runner.py`
+- Modify: root/evaluator/contribution/architecture/changelog/design/plan docs
+- Append ignored evidence: `.superpowers/sdd/2026-08-08-tracker-gauntlet/`
+
+**Interfaces:**
+- `derive_tracker_artifact_role(endpoint_counters: object, torrent_count: int)
+  -> TrackerScenarioRole | None` derives one exact primary transport role.
+- `tracker_scenarios_match_role_contracts(value: object, contracts:
+  Mapping[str, TrackerScenarioRoleContracts], role: TrackerScenarioRole) ->
+  bool` validates the complete named scenario collection against that role.
+
+- [x] **Step 1: Add artifact-role RED tests**
+
+Add literal tests that forge candidate primary plus one control scenario and
+control primary plus one candidate scenario, mix several scenario roles,
+mutate the primary triple without changing scenarios, and assert standalone
+result rejection plus paired-child sanitizer rejection. Keep pure twelve-
+scenario control and candidate artifacts as passing controls, and directly
+exercise the wished-for typed derivation and collection APIs.
+
+- [x] **Step 2: Add local and paired-boundary RED tests**
+
+Monkeypatch local scenario evaluation to return the opposite role's complete
+literal scenario collection while real primary passes retain the control
+shape; require `GauntletSafetyError`. Assign one internally consistent pure
+candidate artifact to a control crossover position and require the paired
+transport gate to fail.
+
+- [x] **Step 3: Run focused tests and verify RED**
+
+Run the new nodes before implementation. The mixed standalone artifacts and
+sanitizer must currently pass because each scenario independently matches the
+union; local result generation must accept an opposite-role collection; and
+the wished-for derivation/collection symbols must be absent. Passing pure-role
+and paired-assignment controls remain valid boundary evidence.
+
+- [x] **Step 4: Implement shared artifact-role enforcement**
+
+Replace the public per-scenario union/role functions with
+`derive_tracker_artifact_role(...)` and
+`tracker_scenarios_match_role_contracts(...)`. Use them in standalone result
+and API gates, paired-child reconstruction, local result construction, and the
+paired role gate. Refactor local endpoint validation through the shared
+derivation. Preserve every canonical contract value and oracle digest.
+
+- [x] **Step 5: Advance implementation identity and document the boundary**
+
+Keep quality/result/paired schemas at 7/9/6 because no emitted or configured
+shape changes. Advance evaluator/pairing implementations to 1.10.0/2.7.0 so
+old union-validating artifacts are non-comparable. Update operator,
+architecture, contribution, changelog, design, and plan wording without
+changing thresholds or canonical evidence values.
+
+- [x] **Step 6: Verify, commit, and generate round-7 controls**
+
+Run focused GREEN, all gauntlet runner/safety tests, full pytest with coverage,
+explicit `gauntlet_full` with JUnit, Black, fatal/scoped Flake8, BasedPyright
+CLI and actual LSP, mypy, pip-audit, Bandit, build, installed-wheel smoke, and
+diff/scope/invariant review. Commit one evaluator-only change, generate clean
+round-7 tracker quick/full JSON sequentially under `/tmp`, validate their one
+control role, all twelve matching scenarios, digests, and zero counters, hash
+both artifacts, and append the ignored task report and progress ledger.

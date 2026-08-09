@@ -590,6 +590,27 @@ def _fixed_tracker_paired_runs() -> list[dict[str, Any]]:
     ]
 
 
+def _set_tracker_scenario_role(
+    result: dict[str, Any],
+    name: str,
+    role: str,
+) -> None:
+    """Apply one independently literal scenario contract to fixed evidence."""
+    shape, exit_code, terminal_phase, observation_order = _tracker_scenario_contract(role)[name]
+    result["scenarios"][name].update(
+        {
+            "endpoint_counters": {
+                "torrents.info": shape[0],
+                "torrents.info.include_trackers": shape[1],
+                "torrents_trackers": shape[2],
+            },
+            "exit_code": exit_code,
+            "terminal_phase": terminal_phase,
+            "observation_order": list(observation_order),
+        }
+    )
+
+
 def test_quality_bar_bytes_loader_matches_path_loader_and_rejects_invalid_utf8() -> None:
     source = QUALITY_BAR_PATH.read_bytes()
 
@@ -1847,6 +1868,25 @@ def test_tracker_primary_passes_use_fresh_fixture_state(
     assert len(set(roots)) == len(roots)
 
 
+def test_local_tracker_result_rejects_scenarios_opposite_primary_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject local result construction when scenarios disagree with primary transport."""
+    tracker_runner = _tracker_runner_module()
+    fixture = _small_tracker_fixture(tmp_path, seed=159)
+    candidate_scenarios = copy.deepcopy(_valid_tracker_quick_result("candidate")["scenarios"])
+
+    monkeypatch.setattr(
+        tracker_runner,
+        "evaluate_tracker_scenarios",
+        lambda _fixture, *, production_audit: copy.deepcopy(candidate_scenarios),
+    )
+
+    with pytest.raises(GauntletSafetyError, match="role|transport|scenario"):
+        tracker_runner.evaluate_tracker_fixture(fixture, samples=DEFAULT_SAMPLES)
+
+
 def test_tracker_scenarios_use_real_cli_and_lock_control_phase_contracts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2058,7 +2098,7 @@ def test_tracker_oracle_dispatches_through_shared_versioned_result(tmp_path: Pat
     assert result["profile"] == "tracker-quick"
     assert result["schema"] == "qbitunregistered.gauntlet.result"
     assert result["schema_version"] == 9
-    assert result["evaluator_version"] == "1.9.0"
+    assert result["evaluator_version"] == "1.10.0"
     assert result["scope"] == "orphan_and_tracker_dry_run_evaluation"
     assert result["commit"] == "unknown"
     assert result["candidate_state"] == {"clean": None, "diff_sha256": "unknown"}
@@ -2104,7 +2144,7 @@ def test_tracker_oracle_quality_bar_locks_kind_specific_result() -> None:
 
     assert quick.kind == full.kind == "tracker"
     assert paired.PAIRED_SCHEMA_VERSION == 6
-    assert paired.PAIRING_VERSION == "2.6.0"
+    assert paired.PAIRING_VERSION == "2.7.0"
     assert quick.tier == "round"
     assert full.tier == "candidate"
     assert quick.fixture_manifest_digest == "348948093b6f400156f97e29c4314a1b0836f31e4d7b3b59d16781008e1a0988"
@@ -2186,7 +2226,7 @@ def test_tracker_scenario_rejects_cross_field_success_rewrite() -> None:
     quality_bar = load_quality_bar(QUALITY_BAR_PATH)
 
     assert compare_result(result, quality_bar)["gates"]["result"]["status"] == "fail"
-    with pytest.raises(PairedEvidenceError, match="contract|canonical"):
+    with pytest.raises(PairedEvidenceError, match="contract|canonical|role"):
         sanitize_child_result(result, quality_bar)
 
 
@@ -2221,47 +2261,106 @@ def test_all_tracker_scenario_role_contracts_are_valid_standalone(role: str) -> 
     assert sanitize_child_result(result, quality_bar)["scenarios"] == result["scenarios"]
 
 
-def test_standalone_scenario_union_does_not_weaken_paired_role_contract() -> None:
-    """Allow either revision standalone while paired comparison enforces its assigned role."""
+@pytest.mark.parametrize(
+    ("primary_role", "scenario_role"),
+    (("candidate", "control"), ("control", "candidate")),
+)
+def test_artifact_role_rejects_one_opposite_role_scenario(
+    primary_role: str,
+    scenario_role: str,
+) -> None:
+    """Reject one scenario forged from the role opposite the primary transport."""
     quality_bar = load_quality_bar(QUALITY_BAR_PATH)
-    candidate = _valid_tracker_quick_result("candidate")
-    shape, exit_code, terminal_phase, observation_order = _tracker_scenario_contract("control")["complete_embedded"]
-    candidate["scenarios"]["complete_embedded"].update(
-        {
-            "endpoint_counters": {
-                "torrents.info": shape[0],
-                "torrents.info.include_trackers": shape[1],
-                "torrents_trackers": shape[2],
-            },
-            "exit_code": exit_code,
-            "terminal_phase": terminal_phase,
-            "observation_order": observation_order,
-        }
-    )
+    result = _valid_tracker_quick_result(primary_role)
+    _set_tracker_scenario_role(result, "complete_embedded", scenario_role)
 
-    assert gauntlet_baseline.tracker_scenario_matches_any_contract(
-        "complete_embedded",
-        candidate["scenarios"]["complete_embedded"],
-        quality_bar.tracker_scenario_contracts,
-    )
-    assert gauntlet_baseline.tracker_scenario_matches_role_contract(
-        "complete_embedded",
-        candidate["scenarios"]["complete_embedded"],
-        quality_bar.tracker_scenario_contracts,
-        "control",
-    )
-    assert not gauntlet_baseline.tracker_scenario_matches_role_contract(
-        "complete_embedded",
-        candidate["scenarios"]["complete_embedded"],
-        quality_bar.tracker_scenario_contracts,
-        "candidate",
-    )
-    assert compare_result(candidate, quality_bar)["gates"]["result"]["status"] == "pass"
-    assert sanitize_child_result(candidate, quality_bar)["scenarios"] == candidate["scenarios"]
+    assert compare_result(result, quality_bar)["gates"]["result"]["status"] == "fail"
+    with pytest.raises(PairedEvidenceError, match="role|transport|contract"):
+        sanitize_child_result(result, quality_bar)
 
+
+def test_artifact_role_rejects_multiple_mixed_scenarios() -> None:
+    """Reject a collection whose individually canonical scenarios mix both roles."""
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+    result = _valid_tracker_quick_result("candidate")
+    for name in tuple(result["scenarios"])[::2]:
+        _set_tracker_scenario_role(result, name, "control")
+
+    assert compare_result(result, quality_bar)["gates"]["result"]["status"] == "fail"
+    with pytest.raises(PairedEvidenceError, match="role|transport|contract"):
+        sanitize_child_result(result, quality_bar)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    (
+        (1, 0, 1_300),
+        (1, 1, 0),
+    ),
+)
+def test_artifact_role_rejects_primary_rewrite_without_scenario_changes(
+    shape: tuple[int, int, int],
+) -> None:
+    """Reject opposite-role or invalid primary evidence with unchanged scenarios."""
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+    result = _valid_tracker_quick_result("candidate")
+    result["endpoint_counters"] = {
+        "torrents.info": shape[0],
+        "torrents.info.include_trackers": shape[1],
+        "torrents_trackers": shape[2],
+    }
+
+    assert compare_result(result, quality_bar)["gates"]["result"]["status"] == "fail"
+    with pytest.raises(PairedEvidenceError, match="role|transport|contract"):
+        sanitize_child_result(result, quality_bar)
+
+
+def test_artifact_role_rejects_primary_pass_role_drift() -> None:
+    """Reject timed evidence whose transport role differs from the artifact role."""
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+    result = _valid_tracker_quick_result("control")
+    result["timed_sample_endpoint_counters"][2] = {
+        "torrents.info": 0,
+        "torrents.info.include_trackers": 1,
+        "torrents_trackers": 0,
+    }
+
+    assert compare_result(result, quality_bar)["gates"]["api"]["status"] == "fail"
+    with pytest.raises(PairedEvidenceError, match="role|transport"):
+        sanitize_child_result(result, quality_bar)
+
+
+@pytest.mark.parametrize(
+    ("role", "shape"),
+    (("control", (1, 0, 1_300)), ("candidate", (0, 1, 0))),
+)
+def test_shared_artifact_role_api_accepts_only_one_complete_role(
+    role: str,
+    shape: tuple[int, int, int],
+) -> None:
+    """Derive one literal primary role and validate its complete scenario collection."""
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
+    result = _valid_tracker_quick_result(role)
+
+    assert gauntlet_baseline.derive_tracker_artifact_role(result["endpoint_counters"], 1_300) == role
+    assert gauntlet_baseline.tracker_scenarios_match_role_contracts(
+        result["scenarios"],
+        quality_bar.tracker_scenario_contracts,
+        cast(gauntlet_baseline.TrackerScenarioRole, role),
+    )
+    assert tuple(result["endpoint_counters"].values()) == shape
+
+
+def test_paired_role_rejects_internally_consistent_opposite_artifact() -> None:
+    """Require the derived artifact role to match the assigned crossover role."""
+    quality_bar = load_quality_bar(QUALITY_BAR_PATH)
     runs = _fixed_tracker_paired_runs()
-    selected = next(run for run in runs if run["role"] == "candidate")
-    selected["result"] = candidate
+    selected = next(run for run in runs if run["role"] == "control")
+    replacement = _valid_tracker_quick_result("candidate")
+    replacement["commit"] = selected["result"]["commit"]
+    replacement["candidate_state"] = copy.deepcopy(selected["result"]["candidate_state"])
+    selected["result"] = replacement
+
     assert compare_paired_results(runs, quality_bar)["gates"]["transport"]["status"] == "fail"
 
 
@@ -2416,7 +2515,10 @@ def test_tracker_paired_comparison_requires_exact_to_bulk_endpoint_collapse(tmp_
                     "torrents_trackers": 0,
                 }
             )
-    assert compare_paired_results(aggregate_only, quality_bar)["gates"]["transport"]["status"] == "fail"
+    aggregate_rejected = compare_paired_results(aggregate_only, quality_bar)
+    aggregate_gate = aggregate_rejected["gates"].get("transport", aggregate_rejected["gates"]["child_gates"])
+    assert aggregate_gate["status"] == "fail"
+    assert aggregate_rejected["overall"] == "fail"
     for run in runs:
         if run["role"] != "candidate":
             continue
@@ -2469,7 +2571,10 @@ def test_tracker_paired_comparison_requires_exact_to_bulk_endpoint_collapse(tmp_
                 "torrents_trackers": invalid_shape[2],
             }
         )
-        assert compare_paired_results(malformed, quality_bar)["gates"]["transport"]["status"] == "fail"
+        rejected = compare_paired_results(malformed, quality_bar)
+        rejected_gate = rejected["gates"].get("transport", rejected["gates"]["child_gates"])
+        assert rejected_gate["status"] == "fail"
+        assert rejected["overall"] == "fail"
 
 
 def _bulk_fail_closed_malformed_scenarios(
@@ -2495,6 +2600,13 @@ def _bulk_fail_closed_malformed_scenarios(
         return real_analyze_impact(client, torrents, config, operations)
 
     monkeypatch.setattr(tracker_runner, "analyze_impact", analyze_with_bulk_failure)
+    # This characterization isolates one candidate branch; the artifact-wide
+    # role gate is covered separately and would reject the other control cases.
+    monkeypatch.setattr(
+        tracker_runner,
+        "tracker_scenarios_match_role_contracts",
+        lambda _value, _contracts, _role: True,
+    )
     return cast(dict[str, Any], tracker_runner.evaluate_tracker_scenarios(fixture))
 
 

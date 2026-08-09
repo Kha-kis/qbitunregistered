@@ -680,8 +680,9 @@ production calls, and invokes the real CLI so the initial torrent response is
 inside every measured pass. Paired control must use one ordinary snapshot plus
 `N` exact tracker reads; candidate must replace it with one bulk snapshot and
 zero exact reads. Each semantic scenario must match its named control or
-candidate endpoint/exit/phase/order contract; paired comparison then enforces
-the assigned role. Artifacts older than evaluator schema 9 are non-comparable.
+candidate endpoint/exit/phase/order contract selected by that same primary
+transport role; per-scenario role mixing fails in standalone and paired modes.
+Artifacts before schema 9 / evaluator 1.10.0 are non-comparable.
 This audit hook is not a syscall-level network
 sandbox and cannot separately observe `send` or `sendall` on a socket connected
 before the guarded boundary. See the
