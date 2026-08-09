@@ -3977,7 +3977,7 @@ def test_windows_bounded_dependency_reader_tolerates_only_cross_interface_ctime_
     process_os_name = os.name
     path_before = _dependency_source_stat(payload, ctime_ns=17)
     descriptor_stat = _dependency_source_stat(payload, ctime_ns=19)
-    path_after = _dependency_source_stat(payload, ctime_ns=23)
+    path_after = _dependency_source_stat(payload, ctime_ns=17)
     _mock_dependency_source_read(
         monkeypatch,
         payload,
@@ -4002,6 +4002,7 @@ def test_windows_bounded_dependency_reader_tolerates_only_cross_interface_ctime_
     ("platform_name", "mutation"),
     [
         ("posix", "path_ctime"),
+        ("nt", "path_ctime"),
         ("nt", "descriptor_ctime"),
         ("nt", "path_inode"),
         ("nt", "path_size"),

@@ -437,8 +437,10 @@ def _read_bounded_regular_file(
             path_stat = os.lstat(path)
         except OSError as error:
             raise DependencyEnvironmentError("could not revalidate an installed dependency safely") from error
-        if _entry_is_redirecting(path_stat) or _path_descriptor_entry_identity(path_stat) != _path_descriptor_entry_identity(
-            after
+        if (
+            _entry_is_redirecting(path_stat)
+            or _stable_entry_identity(path_stat) != _stable_entry_identity(expected_stat)
+            or _path_descriptor_entry_identity(path_stat) != _path_descriptor_entry_identity(after)
         ):
             raise DependencyEnvironmentError("installed dependency entry changed during validation")
     return b"".join(chunks)
