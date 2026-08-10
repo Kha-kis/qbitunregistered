@@ -9,11 +9,32 @@ from qbitunregistered.types import QBittorrentClient
 
 _TRACKER_CACHE_MISS = object()
 _MALFORMED_TRACKER_METADATA = object()
+_MISSING_TORRENT_FIELD = object()
+_TRACKER_INFO_BATCH_SIZE = 100
+_TRACKER_IDENTITY_FIELDS = (
+    "hash",
+    "added_on",
+    "name",
+    "save_path",
+    "content_path",
+    "category",
+    "tags",
+    "completion_on",
+    "state",
+)
 _PSEUDO_TRACKER_URLS = ("** [DHT] **", "** [PeX] **", "** [LSD] **")
 
 
-class MalformedEmbeddedTrackerMetadataError(RuntimeError):
+class TrackerMetadataValidationError(RuntimeError):
+    """Raised when tracker metadata cannot be bound safely to a snapshot."""
+
+
+class MalformedEmbeddedTrackerMetadataError(TrackerMetadataValidationError):
     """Raised when a successful bulk response contains malformed trackers."""
+
+
+class EmbeddedTrackerMetadataUnavailable(RuntimeError):
+    """Raised when the first optional tracker batch is unsupported."""
 
 
 def _tracker_cache_key(torrent_hash: str, cache_scope: int) -> str:
@@ -32,20 +53,78 @@ def _store_tracker_metadata(
     get_cache().set_for_execution(_tracker_cache_key(torrent_hash, cache_scope), trackers)
 
 
-def prime_torrent_trackers(client: QBittorrentClient, torrents: Sequence[Any]) -> None:
-    """Preload embedded tracker metadata for one authoritative snapshot."""
-    torrent_hashes: set[str] = set()
+def _torrent_field(torrent: Any, field: str) -> object:
+    """Read one torrent-info field without invoking API-backed properties."""
+    if isinstance(torrent, Mapping):
+        return torrent.get(field, _MISSING_TORRENT_FIELD)
+    return vars(torrent).get(field, _MISSING_TORRENT_FIELD)
+
+
+def _torrent_identity(torrent: Any) -> dict[str, object]:
+    """Return the stable fields that bind tracker metadata to a snapshot."""
+    identity: dict[str, object] = {}
+    for field in _TRACKER_IDENTITY_FIELDS:
+        value = _torrent_field(torrent, field)
+        if value is not _MISSING_TORRENT_FIELD:
+            identity[field] = value
+    return identity
+
+
+def _validated_initial_torrent_identities(torrents: Sequence[Any]) -> tuple[list[str], dict[str, dict[str, object]]]:
+    """Return ordered hashes and stable identities from one ordinary snapshot."""
+    torrent_hashes: list[str] = []
+    identities_by_hash: dict[str, dict[str, object]] = {}
     for torrent in torrents:
-        torrent_hash = torrent.get("hash") if isinstance(torrent, Mapping) else getattr(torrent, "hash", None)
-        if not isinstance(torrent_hash, str) or not torrent_hash or torrent_hash in torrent_hashes:
-            raise RuntimeError("qBittorrent returned a missing or duplicate torrent hash while preloading tracker metadata")
-        torrent_hashes.add(torrent_hash)
+        torrent_hash = _torrent_field(torrent, "hash")
+        if not isinstance(torrent_hash, str) or not torrent_hash or torrent_hash in identities_by_hash:
+            raise TrackerMetadataValidationError(
+                "qBittorrent returned a missing or duplicate torrent hash while preloading tracker metadata"
+            )
+        torrent_hashes.append(torrent_hash)
+        identities_by_hash[torrent_hash] = _torrent_identity(torrent)
+    return torrent_hashes, identities_by_hash
+
+
+def _validated_tracker_batch(
+    response: object,
+    requested_hashes: Sequence[str],
+    initial_identities: Mapping[str, Mapping[str, object]],
+) -> dict[str, list[Any] | object] | None:
+    """Validate one complete tracker-bearing response without publishing it."""
+    if not isinstance(response, Sequence) or isinstance(response, (str, bytes, bytearray)):
+        raise TrackerMetadataValidationError("qBittorrent returned a malformed tracker metadata batch")
+
+    requested_hash_set = set(requested_hashes)
+    seen_hashes: set[str] = set()
+    batch_torrents: list[tuple[str, Mapping[Any, Any]]] = []
+    for torrent in response:
+        if not isinstance(torrent, Mapping):
+            raise TrackerMetadataValidationError("qBittorrent returned a malformed tracker metadata batch entry")
+        torrent_hash = torrent.get("hash")
+        if not isinstance(torrent_hash, str) or not torrent_hash or torrent_hash in seen_hashes:
+            raise TrackerMetadataValidationError(
+                "qBittorrent returned a malformed or duplicate hash in a tracker metadata batch"
+            )
+        seen_hashes.add(torrent_hash)
+        batch_torrents.append((torrent_hash, torrent))
+
+    if seen_hashes != requested_hash_set:
+        raise TrackerMetadataValidationError(
+            "qBittorrent tracker metadata batch contained missing or unexpected torrent hashes"
+        )
+
+    tracker_field_count = sum("trackers" in torrent for _, torrent in batch_torrents)
+    if tracker_field_count == 0:
+        return None
+    if tracker_field_count != len(batch_torrents):
+        raise TrackerMetadataValidationError("qBittorrent inconsistently omitted tracker metadata within one batch")
 
     tracker_metadata_by_hash: dict[str, list[Any] | object] = {}
-    for torrent in torrents:
-        if not isinstance(torrent, Mapping) or "trackers" not in torrent:
-            continue
-        torrent_hash = cast(str, torrent.get("hash"))
+    for torrent_hash, torrent in batch_torrents:
+        if any(_torrent_field(torrent, field) != value for field, value in initial_identities[torrent_hash].items()):
+            raise TrackerMetadataValidationError(
+                f"qBittorrent torrent changed while fetching tracker metadata for {torrent_hash}"
+            )
         trackers = torrent["trackers"]
         if isinstance(trackers, list):
             tracker_metadata_by_hash[torrent_hash] = trackers
@@ -53,6 +132,37 @@ def prime_torrent_trackers(client: QBittorrentClient, torrents: Sequence[Any]) -
             tracker_metadata_by_hash[torrent_hash] = list(trackers)
         else:
             tracker_metadata_by_hash[torrent_hash] = _MALFORMED_TRACKER_METADATA
+    return tracker_metadata_by_hash
+
+
+def prime_torrent_trackers(client: QBittorrentClient, torrents: Sequence[Any]) -> None:
+    """Fetch and atomically cache bounded tracker batches for one snapshot."""
+    torrent_hashes, initial_identities = _validated_initial_torrent_identities(torrents)
+    tracker_metadata_by_hash: dict[str, list[Any] | object] = {}
+    embedded_support_established = False
+
+    for batch_start in range(0, len(torrent_hashes), _TRACKER_INFO_BATCH_SIZE):
+        batch_hashes = torrent_hashes[batch_start : batch_start + _TRACKER_INFO_BATCH_SIZE]
+        try:
+            response = client.torrents.info(torrent_hashes=batch_hashes, include_trackers=True)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as error:
+            if not embedded_support_established:
+                raise EmbeddedTrackerMetadataUnavailable("qBittorrent does not support embedded tracker metadata") from error
+            raise TrackerMetadataValidationError(
+                "qBittorrent tracker batch failed after embedded tracker support was established"
+            ) from error
+
+        batch_metadata = _validated_tracker_batch(response, batch_hashes, initial_identities)
+        if batch_metadata is None:
+            if not embedded_support_established:
+                raise EmbeddedTrackerMetadataUnavailable("qBittorrent omitted optional embedded tracker metadata")
+            raise TrackerMetadataValidationError(
+                "qBittorrent omitted tracker metadata after embedded tracker support was established"
+            )
+        embedded_support_established = True
+        tracker_metadata_by_hash.update(batch_metadata)
 
     cache_scope = id(client)
     get_cache().set_for_execution(_bulk_tracker_cache_key(cache_scope), tracker_metadata_by_hash)

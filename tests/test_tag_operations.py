@@ -329,10 +329,10 @@ class TestTrackerTagging:
             }
         }
 
-        prime_torrent_trackers(
-            first_client,
-            [{"hash": "same-hash", "trackers": [{"url": "https://first.example/announce"}]}],
-        )
+        first_client.torrents.info.return_value = [
+            {"hash": "same-hash", "trackers": [{"url": "https://first.example/announce"}]}
+        ]
+        prime_torrent_trackers(first_client, [{"hash": "same-hash"}])
 
         assert find_tracker_config(first_client, torrent, config) == {"tag": "first"}
         assert find_tracker_config(second_client, torrent, config) == {"tag": "second"}
@@ -350,7 +350,8 @@ class TestTrackerTagging:
         client = Mock()
         embedded = [{"url": "https://tracker.example/announce", "status": 2, "msg": ""}]
 
-        prime_torrent_trackers(client, [{"hash": "embedded-hash", "trackers": embedded}])
+        client.torrents.info.return_value = [{"hash": "embedded-hash", "trackers": embedded}]
+        prime_torrent_trackers(client, [{"hash": "embedded-hash"}])
 
         assert fetch_torrent_trackers(client, "embedded-hash", cache_scope=id(client)) == embedded
         client.torrents_trackers.assert_not_called()
@@ -368,22 +369,21 @@ class TestTrackerTagging:
         first_trackers = [{"url": "https://first.example/announce"}]
         second_trackers = [{"url": "https://second.example/announce"}]
 
-        prime_torrent_trackers(
-            client,
-            [
-                {"hash": "first-hash", "trackers": first_trackers},
-                {"hash": "second-hash", "trackers": second_trackers},
-            ],
-        )
+        client.torrents.info.return_value = [
+            {"hash": "first-hash", "trackers": first_trackers},
+            {"hash": "second-hash", "trackers": second_trackers},
+        ]
+        prime_torrent_trackers(client, [{"hash": "first-hash"}, {"hash": "second-hash"}])
 
         assert get_cache().stats()["size"] == 1
         assert fetch_torrent_trackers(client, "first-hash", cache_scope=id(client)) is first_trackers
         assert fetch_torrent_trackers(client, "second-hash", cache_scope=id(client)) is second_trackers
         client.torrents_trackers.assert_not_called()
 
-    def test_omitted_tracker_metadata_falls_back_only_for_that_torrent(self) -> None:
+    def test_uniform_first_batch_omission_uses_compatible_exact_reads(self) -> None:
         from qbitunregistered.cache import clear_cache
         from qbitunregistered.operations.seeding_management import (
+            EmbeddedTrackerMetadataUnavailable,
             fetch_torrent_trackers,
             prime_torrent_trackers,
         )
@@ -391,16 +391,11 @@ class TestTrackerTagging:
         clear_cache()
         client = Mock()
         client.torrents_trackers.return_value = [{"url": "https://legacy.example/announce"}]
-        embedded = [{"url": "https://bulk.example/announce"}]
-        prime_torrent_trackers(
-            client,
-            [
-                {"hash": "bulk-hash", "trackers": embedded},
-                {"hash": "legacy-hash"},
-            ],
-        )
+        client.torrents.info.return_value = [{"hash": "legacy-hash"}]
 
-        assert fetch_torrent_trackers(client, "bulk-hash", cache_scope=id(client)) == embedded
+        with pytest.raises(EmbeddedTrackerMetadataUnavailable):
+            prime_torrent_trackers(client, [{"hash": "legacy-hash"}])
+
         assert fetch_torrent_trackers(client, "legacy-hash", cache_scope=id(client)) == [
             {"url": "https://legacy.example/announce"}
         ]
@@ -416,7 +411,9 @@ class TestTrackerTagging:
 
         clear_cache()
         client = Mock()
-        prime_torrent_trackers(client, [{"hash": "bad-hash", "trackers": malformed}])
+        client.torrents.info.return_value = [{"hash": "bad-hash", "trackers": malformed}]
+
+        prime_torrent_trackers(client, [{"hash": "bad-hash"}])
 
         with pytest.raises(RuntimeError, match="malformed tracker metadata.*bad-hash"):
             fetch_torrent_trackers(client, "bad-hash", cache_scope=id(client))
@@ -467,10 +464,8 @@ class TestTrackerTagging:
         clear_cache()
         client = Mock()
         torrent = Mock(hash="hash")
-        prime_torrent_trackers(
-            client,
-            [{"hash": "hash", "trackers": [{"url": "https://real.example/announce"}]}],
-        )
+        client.torrents.info.return_value = [{"hash": "hash", "trackers": [{"url": "https://real.example/announce"}]}]
+        prime_torrent_trackers(client, [{"hash": "hash"}])
         config = {
             "tracker_tags": {
                 "real.example": {"tag": "real"},

@@ -247,12 +247,13 @@ def test_malformed_primed_tracker_metadata_does_not_trigger_disappearance_refres
 
     clear_cache()
     client = MagicMock()
-    prime_torrent_trackers(client, [{"hash": "bad-hash", "trackers": None}])
+    client.torrents.info.return_value = [{"hash": "bad-hash", "trackers": None}]
+    prime_torrent_trackers(client, [{"hash": "bad-hash"}])
 
     with pytest.raises(MalformedEmbeddedTrackerMetadataError):
         _fetch_available_torrent_trackers_batch(client, ["bad-hash"])
     client.torrents_trackers.assert_not_called()
-    client.torrents.info.assert_not_called()
+    client.torrents.info.assert_called_once_with(torrent_hashes=["bad-hash"], include_trackers=True)
 
 
 def _unregistered_torrent(torrent_hash: str = "hash") -> MagicMock:
