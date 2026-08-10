@@ -113,6 +113,12 @@ def _validated_tracker_batch(
             "qBittorrent tracker metadata batch contained missing or unexpected torrent hashes"
         )
 
+    for torrent_hash, torrent in batch_torrents:
+        if any(_torrent_field(torrent, field) != value for field, value in initial_identities[torrent_hash].items()):
+            raise TrackerMetadataValidationError(
+                f"qBittorrent torrent changed while fetching tracker metadata for {torrent_hash}"
+            )
+
     tracker_field_count = sum("trackers" in torrent for _, torrent in batch_torrents)
     if tracker_field_count == 0:
         return None
@@ -121,10 +127,6 @@ def _validated_tracker_batch(
 
     tracker_metadata_by_hash: dict[str, list[Any] | object] = {}
     for torrent_hash, torrent in batch_torrents:
-        if any(_torrent_field(torrent, field) != value for field, value in initial_identities[torrent_hash].items()):
-            raise TrackerMetadataValidationError(
-                f"qBittorrent torrent changed while fetching tracker metadata for {torrent_hash}"
-            )
         trackers = torrent["trackers"]
         if isinstance(trackers, list):
             tracker_metadata_by_hash[torrent_hash] = trackers

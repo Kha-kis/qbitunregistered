@@ -230,6 +230,25 @@ def test_uniformly_omitted_first_batch_uses_exact_tracker_reads() -> None:
     assert fetch_torrent_trackers(client, "legacy-hash", cache_scope=id(client)) == [{"url": "https://exact.example/announce"}]
 
 
+def test_uniform_omission_with_identity_drift_fails_closed_before_fallback() -> None:
+    """A same-hash replacement cannot masquerade as an unsupported tracker field."""
+    from qbitunregistered.cache import clear_cache, get_cache
+
+    clear_cache()
+    client = Mock()
+    original = _torrent_info_payload("reused-hash")
+    replacement = _torrent_info_payload("reused-hash", added_on=1_800_000_000)
+    client.torrents.info.side_effect = [[original], [replacement]]
+
+    with pytest.raises(RuntimeError, match="changed while fetching tracker metadata.*reused-hash"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    assert get_cache().stats()["size"] == 0
+    client.torrents_trackers.assert_not_called()
+    client.torrents_delete.assert_not_called()
+    client.torrents_add_tags.assert_not_called()
+
+
 def test_later_tracker_batch_failure_publishes_no_partial_cache() -> None:
     """A failed second batch cannot expose trackers accepted from the first batch."""
     from qbitunregistered.operations.seeding_management import fetch_torrent_trackers
