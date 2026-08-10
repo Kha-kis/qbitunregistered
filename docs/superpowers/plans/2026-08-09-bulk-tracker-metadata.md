@@ -16,7 +16,7 @@ client-scoped cache used by exact fallback.
 
 ## Global Constraints
 
-- Read and follow `/home/khak1s/projects/qbitunregistered/AGENTS.md` before changing code.
+- Read and follow the repository-root `AGENTS.md` before changing code.
 - Every Python implementation and review task uses a `python_pro` agent.
 - Use test-driven development: add one focused failing test, run it and record the expected failure, then write the minimum production change and rerun it.
 - Use BasedPyright for navigation and diagnostics. Run `uv run basedpyright` and exercise `uv run basedpyright-langserver --stdio` through an LSP client for changed Python files.
@@ -613,8 +613,10 @@ Run:
 
 ```bash
 git status --short
-git worktree add --detach /home/khak1s/projects/qbitunregistered-bulk-tracker-control e90bcf1bfda9539105aff266295b061683870649
-git -C /home/khak1s/projects/qbitunregistered-bulk-tracker-control status --short
+CONTROL_WORKTREE=/path/to/qbitunregistered-bulk-tracker-control
+CANDIDATE_WORKTREE=/path/to/qbitunregistered-bulk-trackers
+git worktree add --detach "$CONTROL_WORKTREE" e90bcf1bfda9539105aff266295b061683870649
+git -C "$CONTROL_WORKTREE" status --short
 ```
 
 Expected: both status commands print nothing. If the explicit control path
@@ -623,14 +625,14 @@ instead of recreating it.
 
 - [ ] **Step 2: Run the paired quick tracker gauntlet**
 
-From `/home/khak1s/projects/qbitunregistered-bulk-trackers`, run:
+From the candidate worktree, run:
 
 ```bash
 tracker_results_dir=$(mktemp -d)
 uv run python -I -S -B benchmarks/gauntlet/launcher.py \
   --profile tracker-quick \
-  --paired-control /home/khak1s/projects/qbitunregistered-bulk-tracker-control \
-  --paired-candidate /home/khak1s/projects/qbitunregistered-bulk-trackers \
+  --paired-control "$CONTROL_WORKTREE" \
+  --paired-candidate "$CANDIDATE_WORKTREE" \
   --output "$tracker_results_dir/tracker-quick.json"
 ```
 
@@ -646,8 +648,8 @@ Reuse the same private temporary result directory in the same shell:
 ```bash
 uv run python -I -S -B benchmarks/gauntlet/launcher.py \
   --profile tracker-full \
-  --paired-control /home/khak1s/projects/qbitunregistered-bulk-tracker-control \
-  --paired-candidate /home/khak1s/projects/qbitunregistered-bulk-trackers \
+  --paired-control "$CONTROL_WORKTREE" \
+  --paired-candidate "$CANDIDATE_WORKTREE" \
   --output "$tracker_results_dir/tracker-full.json"
 ```
 
