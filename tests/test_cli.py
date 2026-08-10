@@ -1,12 +1,12 @@
 """Tests for the command-line coordinator."""
 
 import json
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
 from qbitunregistered import __version__
-from qbitunregistered.cli import EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, EXIT_SUCCESS, main
+from qbitunregistered.cli import EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, EXIT_SUCCESS, _fetch_initial_torrents, main
 from qbitunregistered.operations.unregistered_checks import (
     DeletionAction,
     PlannedTorrentDeletion,
@@ -50,6 +50,38 @@ def _empty_client(tmp_path):
         return []
 
     client.torrents_trackers.side_effect = tracker_metadata
+
+    def torrent_info(**kwargs):
+        torrents = client.torrents.info.return_value
+        requested_hashes = kwargs.get("torrent_hashes")
+        if requested_hashes is None:
+            return torrents
+
+        tracker_torrents = []
+        for torrent in torrents:
+            torrent_values = torrent if isinstance(torrent, dict) else vars(torrent)
+            if torrent_values.get("hash") not in requested_hashes:
+                continue
+            tracker_torrent = {
+                field: torrent_values[field]
+                for field in (
+                    "hash",
+                    "added_on",
+                    "name",
+                    "save_path",
+                    "content_path",
+                    "category",
+                    "tags",
+                    "completion_on",
+                    "state",
+                )
+                if field in torrent_values
+            }
+            tracker_torrent["trackers"] = torrent_values.get("trackers", [])
+            tracker_torrents.append(tracker_torrent)
+        return tracker_torrents
+
+    client.torrents.info.side_effect = torrent_info
     return client
 
 
@@ -77,6 +109,368 @@ def _destructive_unregistered_config(tmp_path, **overrides):
         delete_files={"unregistered": True},
         **overrides,
     )
+
+
+def _torrent_info_payload(torrent_hash: str, **overrides: object) -> dict[str, object]:
+    """Return a complete stable torrent-info mapping for acquisition tests."""
+    payload: dict[str, object] = {
+        "hash": torrent_hash,
+        "added_on": 1_700_000_000,
+        "name": f"{torrent_hash}.mkv",
+        "save_path": "/downloads",
+        "content_path": f"/downloads/{torrent_hash}.mkv",
+        "category": "movies",
+        "tags": "managed",
+        "completion_on": 1_700_000_100,
+        "state": "stoppedUP",
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["unregistered", "tag_by_tracker", "seeding_management"],
+)
+def test_tracker_operations_use_one_bounded_tracker_batch(operation: str) -> None:
+    """Tracker operations retain the ordinary snapshot and fetch its trackers by hash."""
+    client = Mock()
+    embedded = [{"url": "https://tracker.example/announce"}]
+    torrent = _torrent_info_payload("hash")
+    embedded_torrent = _torrent_info_payload("hash", trackers=embedded)
+    client.torrents.info.side_effect = [[torrent], [embedded_torrent]]
+
+    assert _fetch_initial_torrents(client, [operation]) == [torrent]
+
+    assert client.torrents.info.call_args_list == [
+        call(),
+        call(torrent_hashes=["hash"], include_trackers=True),
+    ]
+    client.torrents_trackers.assert_not_called()
+
+
+def test_non_tracker_operations_keep_ordinary_initial_snapshot() -> None:
+    """Non-tracker operations retain the compatible ordinary snapshot."""
+    client = Mock()
+    torrent = Mock(hash="hash")
+    client.torrents.info.return_value = [torrent]
+
+    assert _fetch_initial_torrents(client, ["pause", "orphaned"]) == [torrent]
+
+    client.torrents.info.assert_called_once_with()
+
+
+def test_rejected_first_tracker_batch_uses_the_existing_ordinary_snapshot() -> None:
+    """Servers rejecting optional tracker metadata retain exact-read compatibility."""
+    client = Mock()
+    torrent = _torrent_info_payload("legacy-hash")
+    client.torrents.info.side_effect = [[torrent], TypeError("include_trackers is unsupported")]
+
+    assert _fetch_initial_torrents(client, ["unregistered"]) == [torrent]
+
+    assert client.torrents.info.call_args_list == [
+        call(),
+        call(torrent_hashes=["legacy-hash"], include_trackers=True),
+    ]
+
+
+def test_tracker_batch_keyboard_interrupt_propagates_after_ordinary_snapshot() -> None:
+    """Interrupting an optional tracker request must not enter exact fallback."""
+    client = Mock()
+    torrent = _torrent_info_payload("hash")
+    client.torrents.info.side_effect = [[torrent], KeyboardInterrupt()]
+
+    with pytest.raises(KeyboardInterrupt):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    assert client.torrents.info.call_args_list == [
+        call(),
+        call(torrent_hashes=["hash"], include_trackers=True),
+    ]
+    client.torrents_trackers.assert_not_called()
+
+
+def test_tracker_metadata_uses_three_ordered_batches_for_201_torrents() -> None:
+    """A collection larger than two bounds never becomes one unbounded response."""
+    from qbitunregistered.operations.seeding_management import fetch_torrent_trackers
+
+    client = Mock()
+    torrents = [_torrent_info_payload(f"hash-{index:03d}") for index in range(201)]
+
+    def info(**kwargs):
+        batch_hashes = kwargs.get("torrent_hashes")
+        if batch_hashes is None:
+            return torrents
+        return [_torrent_info_payload(torrent_hash, trackers=[]) for torrent_hash in reversed(batch_hashes)]
+
+    client.torrents.info.side_effect = info
+
+    assert _fetch_initial_torrents(client, ["unregistered"]) == torrents
+    assert client.torrents.info.call_args_list == [
+        call(),
+        call(torrent_hashes=[f"hash-{index:03d}" for index in range(100)], include_trackers=True),
+        call(torrent_hashes=[f"hash-{index:03d}" for index in range(100, 200)], include_trackers=True),
+        call(torrent_hashes=["hash-200"], include_trackers=True),
+    ]
+    assert fetch_torrent_trackers(client, "hash-000", cache_scope=id(client)) == []
+    assert fetch_torrent_trackers(client, "hash-200", cache_scope=id(client)) == []
+    client.torrents_trackers.assert_not_called()
+
+
+def test_uniformly_omitted_first_batch_uses_exact_tracker_reads() -> None:
+    """A server that silently ignores includeTrackers retains compatibility."""
+    from qbitunregistered.operations.seeding_management import fetch_torrent_trackers
+
+    client = Mock()
+    torrent = _torrent_info_payload("legacy-hash")
+    client.torrents.info.side_effect = [[torrent], [dict(torrent)]]
+    client.torrents_trackers.return_value = [{"url": "https://exact.example/announce"}]
+
+    assert _fetch_initial_torrents(client, ["unregistered"]) == [torrent]
+    assert fetch_torrent_trackers(client, "legacy-hash", cache_scope=id(client)) == [{"url": "https://exact.example/announce"}]
+
+
+def test_uniform_omission_with_identity_drift_fails_closed_before_fallback() -> None:
+    """A same-hash replacement cannot masquerade as an unsupported tracker field."""
+    from qbitunregistered.cache import clear_cache, get_cache
+
+    clear_cache()
+    client = Mock()
+    original = _torrent_info_payload("reused-hash")
+    replacement = _torrent_info_payload("reused-hash", added_on=1_800_000_000)
+    client.torrents.info.side_effect = [[original], [replacement]]
+
+    with pytest.raises(RuntimeError, match="changed while fetching tracker metadata.*reused-hash"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    assert get_cache().stats()["size"] == 0
+    client.torrents_trackers.assert_not_called()
+    client.torrents_delete.assert_not_called()
+    client.torrents_add_tags.assert_not_called()
+
+
+def test_later_tracker_batch_failure_publishes_no_partial_cache() -> None:
+    """A failed second batch cannot expose trackers accepted from the first batch."""
+    from qbitunregistered.operations.seeding_management import fetch_torrent_trackers
+
+    client = Mock()
+    torrents = [_torrent_info_payload(f"hash-{index:03d}") for index in range(101)]
+
+    def info(**kwargs):
+        batch_hashes = kwargs.get("torrent_hashes")
+        if batch_hashes is None:
+            return torrents
+        if batch_hashes == ["hash-100"]:
+            raise RuntimeError("second batch unavailable")
+        return [_torrent_info_payload(torrent_hash, trackers=[]) for torrent_hash in batch_hashes]
+
+    client.torrents.info.side_effect = info
+    client.torrents_trackers.return_value = [{"url": "https://exact.example/announce"}]
+
+    with pytest.raises(RuntimeError, match="after embedded tracker support was established"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    assert fetch_torrent_trackers(client, "hash-000", cache_scope=id(client)) == [{"url": "https://exact.example/announce"}]
+    client.torrents_trackers.assert_called_once_with(torrent_hash="hash-000")
+
+
+def test_later_uniform_omission_fails_closed_without_partial_cache() -> None:
+    """A server cannot stop returning embedded metadata midway through a transaction."""
+    from qbitunregistered.operations.seeding_management import fetch_torrent_trackers
+
+    client = Mock()
+    torrents = [_torrent_info_payload(f"hash-{index:03d}") for index in range(101)]
+
+    def info(**kwargs):
+        batch_hashes = kwargs.get("torrent_hashes")
+        if batch_hashes is None:
+            return torrents
+        if batch_hashes == ["hash-100"]:
+            return [_torrent_info_payload("hash-100")]
+        return [_torrent_info_payload(torrent_hash, trackers=[]) for torrent_hash in batch_hashes]
+
+    client.torrents.info.side_effect = info
+    client.torrents_trackers.return_value = []
+
+    with pytest.raises(RuntimeError, match="omitted tracker metadata after embedded tracker support was established"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    assert fetch_torrent_trackers(client, "hash-000", cache_scope=id(client)) == []
+    client.torrents_trackers.assert_called_once_with(torrent_hash="hash-000")
+
+
+@pytest.mark.parametrize(
+    "batch_response",
+    [
+        None,
+        "not-a-sequence",
+        ["not-a-mapping"],
+        [],
+        [_torrent_info_payload("hash", trackers=[]), _torrent_info_payload("hash", trackers=[])],
+        [_torrent_info_payload("unexpected", trackers=[])],
+        [_torrent_info_payload("hash", trackers=[]), _torrent_info_payload("unexpected", trackers=[])],
+    ],
+)
+def test_malformed_or_inconsistent_tracker_batch_fails_closed(batch_response: object) -> None:
+    """Malformed, duplicate, missing, and extra batch identities cannot seed the cache."""
+    client = Mock()
+    torrent = _torrent_info_payload("hash")
+    client.torrents.info.side_effect = [[torrent], batch_response]
+
+    with pytest.raises(RuntimeError, match="tracker metadata batch"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    client.torrents_trackers.assert_not_called()
+
+
+def test_partially_omitted_first_batch_fails_closed() -> None:
+    """Only a uniformly omitted first response identifies an unsupported API."""
+    client = Mock()
+    torrents = [_torrent_info_payload("first"), _torrent_info_payload("second")]
+    client.torrents.info.side_effect = [
+        torrents,
+        [
+            _torrent_info_payload("first", trackers=[]),
+            _torrent_info_payload("second"),
+        ],
+    ]
+
+    with pytest.raises(RuntimeError, match="inconsistently omitted tracker metadata"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    client.torrents_trackers.assert_not_called()
+
+
+@pytest.mark.parametrize("malformed", [None, "not-a-list", b"not-a-list", {"url": "wrong-shape"}])
+def test_present_malformed_tracker_sequence_fails_closed(malformed: object) -> None:
+    """A present malformed tracker value never becomes compatibility fallback."""
+    from qbitunregistered.operations.seeding_management import fetch_torrent_trackers
+
+    client = Mock()
+    torrent = _torrent_info_payload("hash")
+    client.torrents.info.side_effect = [[torrent], [_torrent_info_payload("hash", trackers=malformed)]]
+
+    assert _fetch_initial_torrents(client, ["unregistered"]) == [torrent]
+    with pytest.raises(RuntimeError, match="malformed tracker metadata.*hash"):
+        fetch_torrent_trackers(client, "hash", cache_scope=id(client))
+
+    client.torrents_trackers.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    [
+        ("added_on", 1_700_000_001),
+        ("name", "replacement.mkv"),
+        ("save_path", "/other"),
+        ("content_path", "/other/replacement.mkv"),
+        ("category", "other"),
+        ("tags", "changed"),
+        ("completion_on", 1_700_000_101),
+        ("state", "downloading"),
+    ],
+)
+def test_tracker_batch_stable_identity_drift_fails_closed(field: str, changed_value: object) -> None:
+    """Tracker metadata cannot be bound to a changed or same-hash re-added torrent."""
+    client = Mock()
+    torrent = _torrent_info_payload("hash")
+    changed = _torrent_info_payload("hash", trackers=[], **{field: changed_value})
+    client.torrents.info.side_effect = [[torrent], [changed]]
+
+    with pytest.raises(RuntimeError, match="changed while fetching tracker metadata.*hash"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    client.torrents_trackers.assert_not_called()
+
+
+def test_tracker_batch_ignores_stable_field_unavailable_in_initial_snapshot() -> None:
+    """A field absent from the authoritative snapshot is not an identity basis."""
+    client = Mock()
+    torrent = _torrent_info_payload("hash")
+    del torrent["category"]
+    client.torrents.info.side_effect = [
+        [torrent],
+        [_torrent_info_payload("hash", category=None, trackers=[])],
+    ]
+
+    assert _fetch_initial_torrents(client, ["unregistered"]) == [torrent]
+    client.torrents_trackers.assert_not_called()
+
+
+def test_tracker_batch_distinguishes_present_none_from_missing_stable_field() -> None:
+    """A present ``None`` identity value cannot disappear in the tracker batch."""
+    client = Mock()
+    torrent = _torrent_info_payload("hash", category=None)
+    tracker_torrent = _torrent_info_payload("hash", trackers=[])
+    del tracker_torrent["category"]
+    client.torrents.info.side_effect = [[torrent], [tracker_torrent]]
+
+    with pytest.raises(RuntimeError, match="changed while fetching tracker metadata.*hash"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    client.torrents_trackers.assert_not_called()
+
+
+@pytest.mark.parametrize("invalid_hash", [None, "", 42])
+def test_invalid_initial_torrent_hash_fails_before_tracker_batches(invalid_hash: object) -> None:
+    """Invalid authoritative identities fail before any optional request."""
+    client = Mock()
+    client.torrents.info.return_value = [_torrent_info_payload("hash", hash=invalid_hash)]
+
+    with pytest.raises(RuntimeError, match="missing or duplicate torrent hash"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    client.torrents.info.assert_called_once_with()
+
+
+def test_duplicate_initial_torrent_hash_fails_before_tracker_batches() -> None:
+    """Duplicate authoritative identities fail before any optional request."""
+    client = Mock()
+    client.torrents.info.return_value = [_torrent_info_payload("same"), _torrent_info_payload("same")]
+
+    with pytest.raises(RuntimeError, match="missing or duplicate torrent hash"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    client.torrents.info.assert_called_once_with()
+
+
+def test_main_fails_closed_for_present_malformed_embedded_trackers(tmp_path) -> None:
+    """Malformed embedded metadata aborts dry-run unregistered checks without mutation."""
+
+    class TorrentMapping(dict):
+        def __getattr__(self, name: str):
+            try:
+                return self[name]
+            except KeyError as error:
+                raise AttributeError(name) from error
+
+    config_path = _write_config(tmp_path, dry_run=True)
+    client = Mock()
+    torrent = TorrentMapping(
+        hash="hash",
+        name="content.mkv",
+        save_path=str(tmp_path),
+        content_path=str(tmp_path / "content.mkv"),
+        category="",
+        tags="",
+        trackers=None,
+    )
+    client.torrents.info.side_effect = [[torrent], [torrent]]
+
+    with (
+        patch("qbitunregistered.cli.create_client", return_value=client),
+        patch("qbitunregistered.cli.NotificationManager"),
+    ):
+        result = main(["--config", str(config_path), "--unregistered"])
+
+    assert result == EXIT_GENERAL_ERROR
+    assert client.torrents.info.call_args_list == [
+        call(),
+        call(torrent_hashes=["hash"], include_trackers=True),
+    ]
+    client.torrents_trackers.assert_not_called()
+    client.torrents_delete.assert_not_called()
+    client.torrents_add_tags.assert_not_called()
 
 
 def test_main_runs_with_minimal_config(tmp_path, capsys) -> None:

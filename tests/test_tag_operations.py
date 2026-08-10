@@ -4,6 +4,8 @@ from datetime import datetime
 from collections import defaultdict
 from unittest.mock import Mock, patch
 
+import pytest
+
 
 class MockTorrent(Mock):
     """Mock torrent object for testing."""
@@ -313,13 +315,12 @@ class TestTrackerTagging:
 
     def test_tracker_cache_is_isolated_by_client(self):
         from qbitunregistered.cache import clear_cache
-        from qbitunregistered.operations.seeding_management import find_tracker_config
+        from qbitunregistered.operations.seeding_management import find_tracker_config, prime_torrent_trackers
 
         clear_cache()
         torrent = Mock(hash="same-hash")
         first_client = Mock()
         second_client = Mock()
-        first_client.torrents_trackers.return_value = [{"url": "https://first.example/announce"}]
         second_client.torrents_trackers.return_value = [{"url": "https://second.example/announce"}]
         config = {
             "tracker_tags": {
@@ -328,10 +329,152 @@ class TestTrackerTagging:
             }
         }
 
+        first_client.torrents.info.return_value = [
+            {"hash": "same-hash", "trackers": [{"url": "https://first.example/announce"}]}
+        ]
+        prime_torrent_trackers(first_client, [{"hash": "same-hash"}])
+
         assert find_tracker_config(first_client, torrent, config) == {"tag": "first"}
         assert find_tracker_config(second_client, torrent, config) == {"tag": "second"}
-        first_client.torrents_trackers.assert_called_once()
+        first_client.torrents_trackers.assert_not_called()
         second_client.torrents_trackers.assert_called_once()
+
+    def test_primed_tracker_metadata_replaces_exact_reads(self) -> None:
+        from qbitunregistered.cache import clear_cache
+        from qbitunregistered.operations.seeding_management import (
+            fetch_torrent_trackers,
+            prime_torrent_trackers,
+        )
+
+        clear_cache()
+        client = Mock()
+        embedded = [{"url": "https://tracker.example/announce", "status": 2, "msg": ""}]
+
+        client.torrents.info.return_value = [{"hash": "embedded-hash", "trackers": embedded}]
+        prime_torrent_trackers(client, [{"hash": "embedded-hash"}])
+
+        assert fetch_torrent_trackers(client, "embedded-hash", cache_scope=id(client)) == embedded
+        client.torrents_trackers.assert_not_called()
+
+    def test_primed_tracker_metadata_uses_one_client_scoped_cache_entry(self) -> None:
+        """A bulk response stays bulk in memory and retains its decoded lists."""
+        from qbitunregistered.cache import clear_cache, get_cache
+        from qbitunregistered.operations.seeding_management import (
+            fetch_torrent_trackers,
+            prime_torrent_trackers,
+        )
+
+        clear_cache()
+        client = Mock()
+        first_trackers = [{"url": "https://first.example/announce"}]
+        second_trackers = [{"url": "https://second.example/announce"}]
+
+        client.torrents.info.return_value = [
+            {"hash": "first-hash", "trackers": first_trackers},
+            {"hash": "second-hash", "trackers": second_trackers},
+        ]
+        prime_torrent_trackers(client, [{"hash": "first-hash"}, {"hash": "second-hash"}])
+
+        assert get_cache().stats()["size"] == 1
+        assert fetch_torrent_trackers(client, "first-hash", cache_scope=id(client)) is first_trackers
+        assert fetch_torrent_trackers(client, "second-hash", cache_scope=id(client)) is second_trackers
+        client.torrents_trackers.assert_not_called()
+
+    def test_uniform_first_batch_omission_uses_compatible_exact_reads(self) -> None:
+        from qbitunregistered.cache import clear_cache
+        from qbitunregistered.operations.seeding_management import (
+            EmbeddedTrackerMetadataUnavailable,
+            fetch_torrent_trackers,
+            prime_torrent_trackers,
+        )
+
+        clear_cache()
+        client = Mock()
+        client.torrents_trackers.return_value = [{"url": "https://legacy.example/announce"}]
+        client.torrents.info.return_value = [{"hash": "legacy-hash"}]
+
+        with pytest.raises(EmbeddedTrackerMetadataUnavailable):
+            prime_torrent_trackers(client, [{"hash": "legacy-hash"}])
+
+        assert fetch_torrent_trackers(client, "legacy-hash", cache_scope=id(client)) == [
+            {"url": "https://legacy.example/announce"}
+        ]
+        client.torrents_trackers.assert_called_once_with(torrent_hash="legacy-hash")
+
+    @pytest.mark.parametrize("malformed", [None, "not-a-list", b"not-a-list", {"url": "wrong-shape"}])
+    def test_present_malformed_embedded_trackers_fail_without_exact_fallback(self, malformed: object) -> None:
+        from qbitunregistered.cache import clear_cache
+        from qbitunregistered.operations.seeding_management import (
+            fetch_torrent_trackers,
+            prime_torrent_trackers,
+        )
+
+        clear_cache()
+        client = Mock()
+        client.torrents.info.return_value = [{"hash": "bad-hash", "trackers": malformed}]
+
+        prime_torrent_trackers(client, [{"hash": "bad-hash"}])
+
+        with pytest.raises(RuntimeError, match="malformed tracker metadata.*bad-hash"):
+            fetch_torrent_trackers(client, "bad-hash", cache_scope=id(client))
+        client.torrents_trackers.assert_not_called()
+
+    def test_duplicate_bulk_hashes_reject_before_any_entry_is_primed(self) -> None:
+        from qbitunregistered.cache import clear_cache
+        from qbitunregistered.operations.seeding_management import (
+            fetch_torrent_trackers,
+            prime_torrent_trackers,
+        )
+
+        clear_cache()
+        client = Mock()
+        client.torrents_trackers.return_value = [{"url": "https://exact.example/announce"}]
+        torrents = [
+            {"hash": "duplicate", "trackers": [{"url": "https://first.example/announce"}]},
+            {"hash": "duplicate", "trackers": [{"url": "https://second.example/announce"}]},
+        ]
+
+        with pytest.raises(RuntimeError, match="missing or duplicate torrent hash"):
+            prime_torrent_trackers(client, torrents)
+
+        assert fetch_torrent_trackers(client, "duplicate", cache_scope=id(client)) == [
+            {"url": "https://exact.example/announce"}
+        ]
+        client.torrents_trackers.assert_called_once_with(torrent_hash="duplicate")
+
+    @pytest.mark.parametrize("invalid_hash", [None, "", 42])
+    def test_invalid_bulk_hashes_are_rejected(self, invalid_hash: object) -> None:
+        from qbitunregistered.cache import clear_cache
+        from qbitunregistered.operations.seeding_management import prime_torrent_trackers
+
+        clear_cache()
+        with pytest.raises(RuntimeError, match="missing or duplicate torrent hash"):
+            prime_torrent_trackers(
+                Mock(),
+                [{"hash": invalid_hash, "trackers": [{"url": "https://tracker.example/announce"}]}],
+            )
+
+    def test_primed_trackers_preserve_pseudo_tracker_matching_priority(self) -> None:
+        from qbitunregistered.cache import clear_cache
+        from qbitunregistered.operations.seeding_management import (
+            find_tracker_config,
+            prime_torrent_trackers,
+        )
+
+        clear_cache()
+        client = Mock()
+        torrent = Mock(hash="hash")
+        client.torrents.info.return_value = [{"hash": "hash", "trackers": [{"url": "https://real.example/announce"}]}]
+        prime_torrent_trackers(client, [{"hash": "hash"}])
+        config = {
+            "tracker_tags": {
+                "real.example": {"tag": "real"},
+                "dht": {"tag": "pseudo"},
+            }
+        }
+
+        assert find_tracker_config(client, torrent, config) == {"tag": "pseudo"}
+        client.torrents_trackers.assert_not_called()
 
 
 class TestCrossSeedTagging:

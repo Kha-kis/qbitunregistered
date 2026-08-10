@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, TypedDict, cast
 
+from benchmarks.gauntlet.tracker_fixture import TRACKER_BULK_BATCH_SIZE
+
 GateStatus = Literal["pass", "fail", "pending", "non_comparable"]
 TrackerScenarioRole = Literal["control", "candidate"]
 TrackerTerminalPhase = Literal["execution_complete", "preview_fail_closed", "execution_fail_closed"]
@@ -359,7 +361,7 @@ def _tracker_api_evidence(value: object, description: str) -> tuple[tuple[int, i
             )
         )
     resolved = tuple(transports)
-    if resolved[1] != (0, 1, 0) or resolved[0][0:2] != (1, 0) or resolved[0][2] < 1:
+    if resolved[1][0] != 1 or resolved[1][1] < 1 or resolved[1][2] != 0 or resolved[0][0:2] != (1, 0) or resolved[0][2] < 1:
         raise QualityBarError(f"{description}.allowed_endpoint_shapes do not lock exact and bulk responses")
     return resolved
 
@@ -732,7 +734,8 @@ def derive_tracker_artifact_role(
     )
     if shape == (1, 0, torrent_count):
         return "control"
-    if shape == (0, 1, 0):
+    batch_count = math.ceil(torrent_count / TRACKER_BULK_BATCH_SIZE)
+    if shape == (1, batch_count, 0):
         return "candidate"
     return None
 

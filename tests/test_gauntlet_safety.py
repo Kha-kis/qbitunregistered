@@ -982,11 +982,14 @@ def test_tracker_optional_embedded_transport_is_validated_before_normalization(
     }
     assert fixture.client.mutation_total == 0
     assert _filesystem_snapshot(fixture.root) == before
+    fixture.client.reset_read_counts()
+    ordinary = fixture.client.torrents.info()
+    requested_hashes = tuple(torrent.hash for torrent in ordinary)
     if mode == "rejected":
         with pytest.raises(TypeError, match="include_trackers"):
-            fixture.client.torrents.info(include_trackers=True)
+            fixture.client.torrents.info(torrent_hashes=requested_hashes, include_trackers=True)
     else:
-        embedded = fixture.client.torrents.info(include_trackers=True)
+        embedded = fixture.client.torrents.info(torrent_hashes=requested_hashes, include_trackers=True)
         if mode == "supported":
             assert all(isinstance(torrent["trackers"], list) for torrent in embedded)
         elif mode == "omitted":
@@ -1212,6 +1215,11 @@ def test_tracker_actual_cli_unregistered_dry_run_keeps_all_state_unchanged(
 
     exit_code = main(["--config", str(config_path), "--unregistered", "--dry-run"])
 
+    assert fixture.client.read_counts == {
+        "torrents.info": 1,
+        "torrents.info.include_trackers": 1,
+        "torrents_trackers": 0,
+    }
     assert exit_code == EXIT_SUCCESS
     assert fixture.client.mutation_total == 0
     assert fixture.client.logout_count == 1

@@ -41,7 +41,10 @@ in 3.0. New integrations should use the installed console commands or
 2. Load and validate config.json
 3. Setup logging (console + optional file)
 4. Connect to qBittorrent API
-5. Fetch all torrents once (reused by all modules)
+5. Fetch the ordinary authoritative torrent snapshot once. If a
+   tracker-dependent operation is selected, request embedded tracker metadata
+   for stable ordered groups of at most 100 snapshot hashes and atomically
+   prime the execution-local tracker cache.
 6. Build a complete impact preview for every selected operation unless `--yes` explicitly bypasses it
 7. Require confirmation for non-dry-run execution and reuse confirmed filesystem plans
 8. Execute enabled operations. Orphan scanning precedes hard-link creation;
@@ -57,7 +60,8 @@ in 3.0. New integrations should use the installed console commands or
 - Graceful exception handling per operation (failure in one doesn't block others)
 - A hard-link failure blocks only dependent unregistered file cleanup; unrelated
   selected operations continue and both failures appear in the final summary
-- Torrents fetched once and passed to all modules (avoid redundant API calls)
+- Torrents fetched once and passed to all modules; only tracker-dependent
+  operation sets request additional bounded embedded-tracker batches
 - Operation results tracked for summary reporting
 
 ### 2. Application Modules
@@ -95,6 +99,8 @@ in 3.0. New integrations should use the installed console commands or
 - General cached values use a 300-second TTL
 - Torrent tracker and file metadata remain cached for the complete execution,
   including scans that take longer than 300 seconds
+- Tracker entries are scoped by both torrent hash and client identity; embedded
+  metadata from one client or execution cannot satisfy another client's read
 - Global singleton instance accessible to all modules
 - Entries and statistics are reset when each CLI execution begins
 - Decorator pattern for easy application to functions
@@ -108,7 +114,10 @@ in 3.0. New integrations should use the installed console commands or
 
 **Use Cases**:
 - Tracker information shared by impact, unregistered, tagging, and seeding
-  operations
+  operations. Tracker-dependent runs validate the ordinary snapshot, fetch
+  complete bounded embedded batches, and publish them atomically; unsupported
+  first batches use the exact endpoint, while malformed or incomplete
+  established transports fail closed
 - Torrent file information shared by orphan discovery and ownership checks
 - Default save paths (cached globally)
 - Category information (cached globally)
@@ -180,6 +189,19 @@ so execution cannot process a same-hash re-add through the stale bulk snapshot.
 An execution-time removal that conflicts with a supplied deletion plan aborts
 before tagging or deletion. Active or uncertain state also fails closed before
 tagging.
+
+The initial snapshot is always ordinary. When an enabled operation needs
+tracker matching, its validated hashes are divided into ordered 100-hash
+`include_trackers` requests. Rejection or total omission on the first batch
+uses compatible exact tracker reads. Once support is established, every batch
+must return exactly its requested identities with a consistently present
+tracker field; otherwise acquisition fails closed before publishing any
+partial cache. A present malformed tracker field is retained as a rejected
+sentinel and aborts when consumed, before an exact read or disappearance
+refresh can reinterpret it. Pseudo tracker URLs (DHT,
+PeX, and LSD) keep their historic matching priority before embedded real URLs
+for tagging and seeding, but do not create synthesized unregistered-status
+records.
 
 #### `qbitunregistered/operations/orphaned.py` - Detect & Delete Orphaned Files
 
@@ -300,10 +322,12 @@ separate seeding-management operation.
 **Core Responsibility**: Enforce seed time and ratio limits per tracker
 
 **Architecture**:
-- `find_tracker_config()`: Locate matching tracker in config (uses cached tracker fetching)
+- `find_tracker_config()`: Locate matching tracker in config using client-scoped,
+  execution-local cached metadata; pseudo URLs retain priority over real URLs
 - `apply_seed_limits()`: Consolidated batched application of both time and ratio limits
-- `fetch_torrent_trackers()`: Execution-scoped tracker API calls shared with
-  impact and unregistered checks
+- `fetch_torrent_trackers()`: Returns metadata atomically primed from complete
+  ordered tracker batches or, when the first batch was unsupported, one
+  compatible exact tracker read; present malformed metadata fails closed
 
 **Batching**: Groups torrents by (time_limit, ratio_limit) tuple
 - Reduces API calls for 1000 torrents from 1000 to number of unique configurations
@@ -456,6 +480,8 @@ Main Script
 ├─ Load config → Validate
 ├─ Connect to qBittorrent
 ├─ Fetch torrents once (cached, reused)
+│  └─ For unregistered, tag-by-tracker, or seeding-management: request
+│     embedded trackers and prime client-scoped execution metadata
 ├─ For each enabled operation:
 │  ├─ Load operation-specific config
 │  ├─ Process torrents
@@ -475,20 +501,29 @@ Main Script
 **Optimized Approach** (current):
 - Tag by tracker: Group by tag → 5 tags = 5 calls
 - Seeding management: Group by limits → 3 configs = 3 calls  
+- Tracker-dependent operations: one ordinary snapshot plus one
+  `include_trackers` request per 100 hashes and zero exact tracker reads when
+  every embedded `trackers` field is complete; an unsupported first batch
+  optional snapshots or omitted fields retain the compatible exact-read path
 - Orphaned files: one bulk snapshot plus exact file-list requests only for
   uncertain or candidate-overlapping multi-file torrents; existing regular
   single-file torrents require no file-list request
 
 ### Caching Strategy
 
-**Cache Scope**: In-memory, cleared between script runs
+**Cache Scope**: In-memory, cleared between script runs; tracker values are
+also scoped to the qBittorrent client that supplied them
 **Lifetime**: 300 seconds by default; tracker and torrent-file metadata lasts
 until the execution cache is cleared
-**Keys Generated**: `(prefix, function_name, args, kwargs)` → JSON/pickle hash
+**Keys Generated**: General values use `(prefix, function_name, args, kwargs)`
+→ JSON/pickle hash. Tracker metadata uses the explicit client-identity and
+torrent-hash key so it cannot cross clients.
 
 **Cached Operations**:
-1. Tracker fetching: `fetch_torrent_trackers(client, torrent_hash)` → one API
-   fetch per client/torrent/execution
+1. Tracker fetching: `fetch_torrent_trackers(client, torrent_hash)` → complete
+   embedded metadata from the validated bounded batches, or one exact fetch per
+   client/torrent/execution when the first optional batch was unsupported.
+   Present malformed metadata fails closed.
 2. Torrent-file fetching: `fetch_torrent_files(client, torrent_hash)` → one API
    fetch per client/torrent/execution, except an explicit post-orphan-scan
    refresh that replaces a possibly older entry
@@ -619,11 +654,15 @@ Each script module is independent and can be:
 - Torrents list passed to avoid redundant fetching
 - Enables testing and flexibility
 
-### 3. Caching Decorator
+### 3. Execution-Scoped Tracker Metadata
 ```python
-@cached(ttl=None, key_prefix="torrent_trackers", skip_first_arg=True)
-def fetch_torrent_trackers(client, torrent_hash, *, cache_scope):
-    return client.torrents_trackers(torrent_hash)
+if tracker_dependent_operations:
+    torrents = client.torrents.info()
+    prime_torrent_trackers(client, torrents)
+
+# A complete embedded field is reused; an omitted field can use the exact
+# endpoint. A present malformed field raises a safety error instead.
+trackers = fetch_torrent_trackers(client, torrent_hash, cache_scope=id(client))
 ```
 
 ### 4. Batching Pattern
@@ -692,8 +731,8 @@ evaluation.
 The gauntlet exposes separate quick/full profile pairs for orphan ownership and
 tracker metadata. Every primary tracker pass invokes the real `cli.main()`
 orchestrator with a sanitized temporary configuration and an in-memory client.
-The CLI owns whether its one initial snapshot is ordinary or includes tracker
-metadata. Transparent evaluator observers retain the structured return from
+The CLI owns the ordinary initial snapshot and the bounded filtered tracker
+batches that follow it. Transparent evaluator observers retain the structured return from
 the real `analyze_impact()` boundary and the result of the real
 `unregistered_checks()` dry-run, require the preview plan to be reused by
 identity, and fail closed if either call is missing, duplicated, reordered, or
@@ -720,15 +759,18 @@ its observation. Linux and Windows inventory Python descriptors completely;
 other platforms fail closed before production.
 
 Each warm-up, timed, and memory pass owns a fresh fixture. The fake builds its
-server-side response models and canonical bulk and exact wire bytes before
+server-side response models and canonical ordinary, 100-hash batch, and exact
+wire bytes before
 timing or allocation tracing starts. The measured boundary then allocates a
 fresh received bytes buffer, JSON-decodes it, and constructs the response
-wrappers before ending immediately after `unregistered_checks()` returns.
+wrappers for the ordinary snapshot and every filtered batch before ending
+immediately after `unregistered_checks()` returns.
 This measures client response allocation and lifetime without fixture or fake
 server serialization work.
 The control endpoint triple is `(1, 0, N)` and the candidate triple is
-`(0, 1, 0)` in ordinary/bulk/exact order. The candidate bulk response replaces
-the ordinary response; evaluator code never materializes both. Paired
+`(1, ceil(N / 100), 0)` in ordinary/bulk/exact order: `(1, 13, 0)` for quick
+and `(1, 130, 0)` for full. The candidate retains the ordinary response and
+adds exact ordered filtered batches. Paired
 comparison assigns the exact triple to every pass by role; generic allowed or
 aggregate-only transports cannot substitute for the required collapse.
 Synthetic runtime has a `1.0` regression
@@ -757,8 +799,9 @@ triple derives exactly one artifact role; every other primary pass and all
 twelve scenarios must match it. Tracker artifacts before evaluator 1.12.0 lack
 this artifact-wide role enforcement and pre-existing descriptor rejection.
 Evaluator 1.12.0 artifacts include those protections but counted fake server
-response construction inside the client measurement. Comparable tracker
-evidence therefore requires schema 9 / evaluator 1.13.0.
+response construction inside the client measurement. Evaluator 1.13.0 models
+the retired one-shot response. Comparable bounded-batch evidence therefore
+requires schema 9 / evaluator 1.14.0 and pairing identity 2.10.0.
 
 The operator-selected source launcher is the entry trust root and requires the
 `python -I -S -B` startup semantics, including isolated, no-site, safe-path,

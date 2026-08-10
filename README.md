@@ -365,6 +365,28 @@ still appears in a confirmed deletion plan, the operation aborts before tagging
 or deletion. An active torrent, malformed response, or failed refresh also
 aborts the operation.
 
+### Tracker metadata acquisition
+
+Only tracker-dependent operation sets (unregistered checks, tag-by-tracker,
+and seeding management) request embedded tracker metadata. The CLI first keeps
+the ordinary authoritative torrent snapshot, validates its stable ordered
+unique hashes, and then requests `include_trackers=True` for consecutive groups
+of at most 100 hashes. Complete batches populate the execution-local cache, so
+no per-torrent exact tracker reads are needed. Runs without one of those
+operations stop after the ordinary snapshot.
+
+Older servers remain compatible when the first optional batch is rejected or
+omits tracker metadata completely: the already-acquired ordinary snapshot is
+retained and exact per-torrent reads provide the fallback. After batch support
+has been established, a rejected, missing, partial, reordered, duplicate, or
+identity-mismatched batch fails closed without publishing a partial cache. A
+`trackers` field that is present but malformed is cached as rejected metadata
+and fails closed when consumed; it is never treated as permission to fall back.
+For tagging and seeding compatibility, pseudo tracker URLs (DHT, PeX, and LSD)
+are checked before embedded real tracker URLs, but they are not synthesized as
+unregistered-status records. Tracker metadata is cached only for the current
+execution and client; no live qBittorrent data is persisted.
+
 For an existing regular single-file torrent, the canonical bulk
 `content_path` is already an exact owned pathname, so no per-torrent file-list
 request is needed. Multi-file torrents still use exact file paths; their file
@@ -672,20 +694,24 @@ If you encounter issues, check the following:
 
 Your contributions make this project better! Feel free to report bugs, suggest features, or submit pull requests. For major changes, please open an issue first to discuss what you'd like to change.
 
-Tracker batching changes are evaluated with deterministic `tracker-quick` and
-`tracker-full` gauntlets before any protected live dry-run. The evaluator locks
+The shipped tracker-metadata acquisition is evaluated with deterministic
+`tracker-quick` and `tracker-full` gauntlets before any protected live dry-run.
+The evaluator locks
 the preview and fresh-fake shadow execution actions, rejects unsafe pre-existing
 Python regular-file descriptors, denies audited write acquisition/mutations
 plus connection, DNS, `sendto`, and `sendmsg` attempts during production calls,
 and invokes the real CLI so client-side wire receipt, decoding, response
-wrapping, and the initial torrent response lifetime are inside every measured
-pass while fake server response construction remains outside. Paired control must use one ordinary snapshot plus
-`N` exact tracker reads; candidate must replace it with one bulk snapshot and
-zero exact reads. Each semantic scenario must match its named control or
+wrapping, and the ordinary-plus-batched torrent response lifetime are inside
+every measured pass while fake server response construction remains outside.
+Paired control must use one ordinary snapshot plus `N` exact tracker reads; the
+shipped candidate keeps that snapshot and adds `ceil(N / 100)` ordered tracker
+batches with zero exact reads. The quick and full endpoint triples are
+`(1, 13, 0)` and `(1, 130, 0)` in ordinary/bulk/exact order. Each semantic scenario must match its named control or
 candidate endpoint/exit/phase/order contract selected by that same primary
 transport role; per-scenario role mixing fails in standalone and paired modes.
-Artifacts require schema 9 / evaluator 1.13.0. Evaluator 1.12.0 artifacts are
-also non-comparable because they counted fake server response construction.
+Artifacts require schema 9 / evaluator 1.14.0 and paired evaluator identity
+2.10.0. Evaluator 1.13.0 and earlier artifacts are non-comparable because they
+measure a different one-shot transport or measurement boundary.
 This is a single-threaded Python-runtime boundary, not an OS syscall sandbox.
 Native extensions, `ctypes`, direct syscalls, raw Win32 handles, writes through
 redirected standard descriptors, and `send`/`sendall` on a socket connected

@@ -17,7 +17,10 @@ from qbitunregistered.file_operations import (
     rollback_recycle_bin_moves,
     verify_file_identity,
 )
-from qbitunregistered.operations.seeding_management import fetch_torrent_trackers
+from qbitunregistered.operations.seeding_management import (
+    MalformedEmbeddedTrackerMetadataError,
+    fetch_torrent_trackers,
+)
 from qbitunregistered.types import QBittorrentClient, TorrentInfo
 
 
@@ -351,6 +354,8 @@ def _fetch_available_torrent_trackers_batch(
                 fetch_torrent_trackers(client, torrent_hash, cache_scope=id(client)),
             )
         except (KeyboardInterrupt, SystemExit):
+            raise
+        except MalformedEmbeddedTrackerMetadataError:
             raise
         except Exception as tracker_error:
             failures_by_hash.setdefault(torrent_hash, tracker_error)

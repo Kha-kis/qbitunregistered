@@ -21,7 +21,12 @@ from qbitunregistered.operations.unregistered_checks import (
     unregistered_checks,
 )
 from qbitunregistered.operations.tag_by_tracker import tag_by_tracker
-from qbitunregistered.operations.seeding_management import apply_seed_limits
+from qbitunregistered.operations.seeding_management import (
+    EmbeddedTrackerMetadataUnavailable,
+    TrackerMetadataValidationError,
+    apply_seed_limits,
+    prime_torrent_trackers,
+)
 from qbitunregistered.operations.torrent_management import pause_torrents, resume_torrents
 from qbitunregistered.operations.auto_remove import auto_remove
 from qbitunregistered.operations.auto_tmm import apply_auto_tmm_per_torrent
@@ -50,6 +55,8 @@ EXIT_SUCCESS = 0
 EXIT_GENERAL_ERROR = 1
 EXIT_CONFIG_ERROR = 2
 EXIT_CONNECTION_ERROR = 3
+
+_TRACKER_METADATA_OPERATIONS = frozenset({"unregistered", "tag_by_tracker", "seeding_management"})
 
 
 def _nonblank_recycle_bin_path(value: str) -> str:
@@ -169,6 +176,28 @@ def _selected_operations(args: argparse.Namespace) -> list[str]:
         ("tag_by_cross_seed", "tag_cross_seeding"),
     )
     return [operation for attribute, operation in operation_flags if getattr(args, attribute)]
+
+
+def _fetch_initial_torrents(
+    client: QBittorrentClient,
+    operations: Sequence[str],
+) -> list[TorrentInfo]:
+    """Fetch one authoritative snapshot and bounded trackers when useful."""
+    torrents = cast(list[TorrentInfo], list(client.torrents.info()))
+    if not _TRACKER_METADATA_OPERATIONS.intersection(operations):
+        return torrents
+
+    try:
+        prime_torrent_trackers(client, torrents)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except EmbeddedTrackerMetadataUnavailable as error:
+        cause = error.__cause__
+        logging.warning(
+            "Bulk tracker metadata is unavailable; using compatible exact tracker reads (%s)",
+            type(cause).__name__ if cause is not None else type(error).__name__,
+        )
+    return torrents
 
 
 def _format_orphaned_operation_result(file_count: int, dry_run: bool, recycle_bin: str | None) -> str:
@@ -462,6 +491,8 @@ def main(argv: list[str] | None = None) -> int:
     # Apply logging configuration
     logging.basicConfig(level=log_level, handlers=log_handlers, force=True)  # Override any existing config
 
+    operations_to_run = _selected_operations(args)
+
     # Connect to qBittorrent client
     try:
         client = cast(QBittorrentClient, create_client(config))
@@ -471,9 +502,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # Define torrents
     try:
-        torrents = cast(list[TorrentInfo], list(client.torrents.info()))
+        torrents = _fetch_initial_torrents(client, operations_to_run)
     except (KeyboardInterrupt, SystemExit):
         raise
+    except TrackerMetadataValidationError:
+        logging.exception("Tracker metadata validation failed; aborting before any operation")
+        try:
+            client.auth_log_out()
+        except Exception:
+            pass
+        return EXIT_GENERAL_ERROR
     except Exception:
         logging.exception("Failed to retrieve torrent list from qBittorrent")
         sys.exit(EXIT_CONNECTION_ERROR)
@@ -489,7 +527,6 @@ def main(argv: list[str] | None = None) -> int:
     # ============================================================
     # IMPACT PREVIEW (if not using --yes flag)
     # ============================================================
-    operations_to_run = _selected_operations(args)
     impact_summary = None
 
     if not operations_to_run:

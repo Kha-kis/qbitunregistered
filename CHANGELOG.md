@@ -20,25 +20,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an OS/native syscall sandbox and cannot observe redirected-stdio writes or
   `send`/`sendall` on sockets connected before it became active.
 - Documented standalone tracker evaluation and isolated paired
-  `tracker-full` comparison. The current exact-only control allows one tracker
-  read per torrent; the optimization target is one combined bulk request with
-  unchanged safety evidence. Standalone baselines remain provisional because
-  contemporaneous paired comparison is canonical.
+  `tracker-full` comparison. The gauntlet establishes an exact-only control
+  with one tracker read per torrent; the now-shipped candidate uses bounded
+  100-hash tracker batches and zero exact tracker reads when embedded metadata
+  is complete. Standalone baselines remain provisional, and contemporaneous
+  paired comparison remains canonical for performance acceptance; no
+  protected-live wall-clock gain is claimed.
 
 ### Changed
 
-- Tracker gauntlet schema 9 / evaluator 1.13.0 now measures client-side wire
-  receipt, JSON decoding, response wrapping, and production use while excluding
-  construction and serialization of the fake server response graph. Canonical
-  exact-response wire data is prepared for both control and candidate before
-  measurement, and every observed response receives a distinct bytes buffer.
-  The 1.25 memory cap, result schemas, and pairing identity remain unchanged;
-  evaluator 1.12.0 tracker artifacts are non-comparable.
+- Tracker-dependent acquisition now keeps the ordinary authoritative snapshot
+  and fetches embedded tracker metadata in stable ordered batches of at most
+  100 hashes. Complete quick/full candidates use 13/130 filtered
+  `includeTrackers` requests and zero exact tracker reads. The cache is
+  published only after every batch validates against the original identities;
+  later rejection, omission, partial coverage, reordering, duplication, or
+  identity drift fails closed. First-batch rejection or total omission retains
+  the exact-read compatibility path.
+- Tracker gauntlet evaluator identity is now 1.14.0 and pairing identity is
+  2.10.0. It preconstructs fake server models and ordinary/batch wire bytes,
+  then measures fresh client receipt, JSON decode, wrappers, and the lifetime
+  of the ordinary snapshot plus every 100-hash tracker batch. Result schema 9,
+  quality schema 7, paired schema 6, ABBA/BAAB ordering, and performance
+  thresholds are unchanged. Evaluator 1.13.0 and earlier tracker artifacts are
+  invalid and non-comparable with this bounded transport.
+- Pseudo tracker URLs retain their matching priority without creating
+  synthesized unregistered-status records, and tracker metadata remains
+  execution-local and client-scoped.
 - Tracker gauntlet schema 9 now measures the
   production-owned initial torrent
   snapshot through the real CLI in every fresh warm-up, timed, and memory pass.
   Control is exactly one ordinary snapshot plus `N` exact tracker reads;
-  candidate must replace it with one bulk snapshot and zero exact reads. The
+  candidate keeps the ordinary snapshot, adds `ceil(N / 100)` tracker batches,
+  and performs zero exact reads. The
   effective torrent-info payload now owns the manifest after every mutable
   snapshot field is overlaid, and fake response wrappers conservatively model
   the visible containers, normalization, freshness, and endpoint delegation of
@@ -51,8 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate primary triple derives one artifact role, and every primary pass
   plus all twelve scenarios must match that role without per-scenario mixing.
   Earlier tracker artifacts are invalid.
-- Paired evaluator identity is now 1.13.0 and pairing identity is 2.9.0 without
-  changing result schema 9 or paired-result schema 6. Paired children keep all
+- Paired evaluation keeps result schema 9 and paired-result schema 6. Paired children keep all
   installed dependency roots off `sys.path`, execute real `tqdm` only from
   captured manifest-matching bytes, and use the evaluator-owned fail-closed
   fake-client shim as the qBittorrent boundary. Apprise remains intentionally
