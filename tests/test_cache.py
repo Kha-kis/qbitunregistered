@@ -42,6 +42,45 @@ class TestSimpleCache:
             "hit_rate": 100.0,
         }
 
+    def test_mapping_value_rejects_an_expired_requested_outer_entry(self):
+        """Nested lookup applies normal expiry checks to its requested cache entry."""
+        cache = SimpleCache()
+        default = object()
+        with patch("qbitunregistered.cache.time.time", side_effect=[100.0, 100.0, 102.0]):
+            cache.set("bulk", {"hash": []}, ttl=1)
+
+            assert cache.get_mapping_value("bulk", "hash", default, namespace="torrent_trackers") is default
+
+        assert cache.stats() == {"hits": 0, "misses": 1, "size": 0, "hit_rate": 0.0}
+        assert cache.namespace_stats("torrent_trackers") == {
+            "hits": 0,
+            "misses": 0,
+            "api_fetches": 0,
+            "hit_rate": 0,
+        }
+
+    def test_mapping_value_cleans_unrelated_expiry_on_logical_access_threshold(self):
+        """Nested lookup advances cleanup once per logical outer-cache access."""
+        cache = SimpleCache()
+        cache.set_for_execution("bulk", {"hash": []})
+        with (
+            patch.object(SimpleCache, "CLEANUP_ACCESS_THRESHOLD", 2),
+            patch("qbitunregistered.cache.time.time", side_effect=[100.0, 100.0, 102.0]),
+        ):
+            cache.set("expired", "value", ttl=1)
+
+            assert cache.get_mapping_value("bulk", "hash", namespace="torrent_trackers") == []
+            assert cache.stats()["size"] == 2
+            assert cache.get_mapping_value("bulk", "hash", namespace="torrent_trackers") == []
+
+        assert cache.stats() == {"hits": 4, "misses": 0, "size": 1, "hit_rate": 100.0}
+        assert cache.namespace_stats("torrent_trackers") == {
+            "hits": 2,
+            "misses": 0,
+            "api_fetches": 0,
+            "hit_rate": 100.0,
+        }
+
     def test_cache_expiry(self):
         """Test that cached values expire after TTL."""
         cache = SimpleCache(default_ttl=1)  # 1 second TTL

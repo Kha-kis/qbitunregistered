@@ -9,6 +9,8 @@ Cache Design Notes:
 - Torrent tracker and file metadata lives for the complete execution because
   scans can run substantially longer than the general cache TTL
 - Other cached values retain the default 300-second TTL
+- Nested mapping resolution is one logical cache access for cleanup cadence,
+  even when compatibility statistics record both outer and resolved hits
 """
 
 import time
@@ -98,7 +100,22 @@ class SimpleCache:
         *,
         namespace: str = "",
     ) -> Any:
-        """Resolve one value from a cached mapping without a second cache lookup."""
+        """Resolve one nested value as a single logical cache access.
+
+        The requested outer entry receives the same expiry and periodic-cleanup
+        checks as :meth:`get`. A resolved nested value retains the historical
+        aggregate and namespace hit counts without advancing cleanup cadence or
+        duplicating the outer-entry debug log.
+
+        Args:
+            key: Outer cache key containing a mapping.
+            item_key: Key to resolve from the cached mapping.
+            default: Value returned when either key is unavailable or expired.
+            namespace: Optional statistics namespace for a resolved hit.
+
+        Returns:
+            The resolved mapping value, or ``default`` when unavailable.
+        """
         mapping = self.get(key, _CACHE_MISS)
         if isinstance(mapping, dict):
             value = mapping.get(item_key, _CACHE_MISS)
@@ -109,8 +126,8 @@ class SimpleCache:
         if value is _CACHE_MISS:
             return default
 
-        # Preserve aggregate and namespace statistics from the historical
-        # second cache lookup after resolving this nested value.
+        # This is statistics compatibility, not a second logical access. Do
+        # not advance cleanup cadence or repeat the outer-entry debug log.
         self._record_hit(namespace)
         return value
 
