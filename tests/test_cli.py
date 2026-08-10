@@ -383,6 +383,34 @@ def test_tracker_batch_stable_identity_drift_fails_closed(field: str, changed_va
     client.torrents_trackers.assert_not_called()
 
 
+def test_tracker_batch_ignores_stable_field_unavailable_in_initial_snapshot() -> None:
+    """A field absent from the authoritative snapshot is not an identity basis."""
+    client = Mock()
+    torrent = _torrent_info_payload("hash")
+    del torrent["category"]
+    client.torrents.info.side_effect = [
+        [torrent],
+        [_torrent_info_payload("hash", category=None, trackers=[])],
+    ]
+
+    assert _fetch_initial_torrents(client, ["unregistered"]) == [torrent]
+    client.torrents_trackers.assert_not_called()
+
+
+def test_tracker_batch_distinguishes_present_none_from_missing_stable_field() -> None:
+    """A present ``None`` identity value cannot disappear in the tracker batch."""
+    client = Mock()
+    torrent = _torrent_info_payload("hash", category=None)
+    tracker_torrent = _torrent_info_payload("hash", trackers=[])
+    del tracker_torrent["category"]
+    client.torrents.info.side_effect = [[torrent], [tracker_torrent]]
+
+    with pytest.raises(RuntimeError, match="changed while fetching tracker metadata.*hash"):
+        _fetch_initial_torrents(client, ["unregistered"])
+
+    client.torrents_trackers.assert_not_called()
+
+
 @pytest.mark.parametrize("invalid_hash", [None, "", 42])
 def test_invalid_initial_torrent_hash_fails_before_tracker_batches(invalid_hash: object) -> None:
     """Invalid authoritative identities fail before any optional request."""
