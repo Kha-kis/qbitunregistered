@@ -11,17 +11,6 @@ _TRACKER_CACHE_MISS = object()
 _MALFORMED_TRACKER_METADATA = object()
 _MISSING_TORRENT_FIELD = object()
 _TRACKER_INFO_BATCH_SIZE = 100
-_TRACKER_IDENTITY_FIELDS = (
-    "hash",
-    "added_on",
-    "name",
-    "save_path",
-    "content_path",
-    "category",
-    "tags",
-    "completion_on",
-    "state",
-)
 _PSEUDO_TRACKER_URLS = ("** [DHT] **", "** [PeX] **", "** [LSD] **")
 
 
@@ -55,8 +44,24 @@ def _store_tracker_metadata(
 
 def _torrent_identity(torrent: Any) -> tuple[object, ...]:
     """Return the stable fingerprint that binds metadata to a snapshot."""
-    values = torrent if isinstance(torrent, Mapping) else vars(torrent)
-    return tuple(values.get(field, _MISSING_TORRENT_FIELD) for field in _TRACKER_IDENTITY_FIELDS)
+    values: Mapping[Any, Any]
+    if isinstance(torrent, dict):
+        values = torrent
+    elif isinstance(torrent, Mapping):
+        values = torrent
+    else:
+        values = vars(torrent)
+    return (
+        values.get("hash", _MISSING_TORRENT_FIELD),
+        values.get("added_on", _MISSING_TORRENT_FIELD),
+        values.get("name", _MISSING_TORRENT_FIELD),
+        values.get("save_path", _MISSING_TORRENT_FIELD),
+        values.get("content_path", _MISSING_TORRENT_FIELD),
+        values.get("category", _MISSING_TORRENT_FIELD),
+        values.get("tags", _MISSING_TORRENT_FIELD),
+        values.get("completion_on", _MISSING_TORRENT_FIELD),
+        values.get("state", _MISSING_TORRENT_FIELD),
+    )
 
 
 def _validated_initial_torrent_identities(torrents: Sequence[Any]) -> tuple[list[str], dict[str, tuple[object, ...]]]:
@@ -181,13 +186,13 @@ def fetch_torrent_trackers(client: QBittorrentClient, torrent_hash: str, *, cach
 
     cache = get_cache()
     bulk_cache_key = _bulk_tracker_cache_key(cache_scope)
-    bulk_trackers = cache.get(bulk_cache_key, _TRACKER_CACHE_MISS)
-    if bulk_trackers is not _TRACKER_CACHE_MISS and torrent_hash in cast(dict[str, object], bulk_trackers):
-        # Record a bulk hit only after resolving it, so an exact fallback keeps
-        # one cache miss per API fetch in the operator-facing statistics.
-        cache.get(bulk_cache_key, namespace="torrent_trackers")
-        cached_trackers = cast(dict[str, object], bulk_trackers)[torrent_hash]
-    else:
+    cached_trackers = cache.get_mapping_value(
+        bulk_cache_key,
+        torrent_hash,
+        _TRACKER_CACHE_MISS,
+        namespace="torrent_trackers",
+    )
+    if cached_trackers is _TRACKER_CACHE_MISS:
         cached_trackers = cache.get(
             _tracker_cache_key(torrent_hash, cache_scope),
             _TRACKER_CACHE_MISS,

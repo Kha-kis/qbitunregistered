@@ -16,6 +16,7 @@ import logging
 import json
 import pickle
 import hashlib
+from collections.abc import Mapping
 from typing import Any, Callable, Dict, Tuple, Union
 from functools import wraps
 
@@ -87,6 +88,30 @@ class SimpleCache:
 
         self._record_hit(namespace)
         logging.debug(f"Cache hit: {key}")
+        return value
+
+    def get_mapping_value(
+        self,
+        key: str,
+        item_key: str,
+        default: Any = None,
+        *,
+        namespace: str = "",
+    ) -> Any:
+        """Resolve one value from a cached mapping without a second cache lookup."""
+        mapping = self.get(key, _CACHE_MISS)
+        if isinstance(mapping, dict):
+            value = mapping.get(item_key, _CACHE_MISS)
+        elif isinstance(mapping, Mapping):
+            value = mapping.get(item_key, _CACHE_MISS)
+        else:
+            return default
+        if value is _CACHE_MISS:
+            return default
+
+        # Preserve aggregate and namespace statistics from the historical
+        # second cache lookup after resolving this nested value.
+        self._record_hit(namespace)
         return value
 
     def _record_hit(self, namespace: str) -> None:

@@ -23,6 +23,25 @@ class TestSimpleCache:
         result = cache.get("nonexistent_key")
         assert result is None
 
+    def test_mapping_value_records_resolved_hit_without_second_lookup(self):
+        """Nested execution metadata retains existing aggregate and namespace stats."""
+        cache = SimpleCache()
+        default = object()
+        trackers: list[object] = []
+        cache.set_for_execution("bulk", {"hash": trackers})
+
+        assert cache.get_mapping_value("bulk", "hash", default, namespace="torrent_trackers") is trackers
+        assert cache.get_mapping_value("bulk", "missing", default, namespace="torrent_trackers") is default
+        assert cache.get_mapping_value("absent", "hash", default, namespace="torrent_trackers") is default
+
+        assert cache.stats() == {"hits": 3, "misses": 1, "size": 1, "hit_rate": 75.0}
+        assert cache.namespace_stats("torrent_trackers") == {
+            "hits": 1,
+            "misses": 0,
+            "api_fetches": 0,
+            "hit_rate": 100.0,
+        }
+
     def test_cache_expiry(self):
         """Test that cached values expire after TTL."""
         cache = SimpleCache(default_ttl=1)  # 1 second TTL
