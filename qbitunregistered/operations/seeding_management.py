@@ -289,9 +289,9 @@ def apply_seed_limits(
     Performance: For 1,000 torrents with 5 unique limit configurations, this makes
     5 API calls instead of 1,000 (200x reduction).
 
-    Note: Tracker fetching uses per-torrent API calls with execution-scoped caching.
-    qBittorrent API doesn't support batch tracker fetching, so we rely on
-    the shared cached fetch path to minimize repeated calls within one run.
+    Tracker metadata is normally preloaded in bounded batches and cached for
+    the execution. Servers without embedded tracker metadata use compatible
+    execution-scoped exact reads instead.
 
     Args:
         client: qBittorrent client instance
