@@ -17,6 +17,7 @@ TRACKER_READ_ENDPOINTS = (
     "torrents.info.include_trackers",
     "torrents_trackers",
 )
+TRACKER_BULK_BATCH_SIZE = 100
 EXACT_UNREGISTERED_MESSAGE = "torrent is not registered"
 PREFIX_UNREGISTERED_MESSAGE = "tracker prefix unavailable: fixture"
 DEFAULT_UNREGISTERED_TAG = "unregistered"
@@ -326,32 +327,22 @@ class _FakeTrackerTorrents:
         include_trackers = kwargs.get("include_trackers") is True
         endpoint = "torrents.info.include_trackers" if include_trackers else "torrents.info"
         self._client.read_counts[endpoint] += 1
-        if include_trackers and self._client.embedded_trackers_mode == "rejected":
-            raise TypeError("include_trackers is unsupported")
-
-        snapshot = self._client.torrent_snapshot
-        if isinstance(snapshot, BaseException):
-            raise snapshot
-        if not isinstance(snapshot, Sequence) or isinstance(snapshot, (str, bytes, bytearray)):
-            return snapshot
-
-        response: list[dict[str, object]] = []
-        for index, torrent in enumerate(snapshot):
-            if not isinstance(torrent, TrackerTorrent):
+        wire_payload: bytes | None
+        if include_trackers:
+            requested_hashes = self._client.accept_bulk_tracker_request(kwargs.get("torrent_hashes"))
+            if self._client.embedded_trackers_mode == "rejected":
+                raise TypeError("include_trackers is unsupported")
+            wire_payload = self._client._bulk_tracker_wire_by_hashes[requested_hashes]
+        else:
+            if kwargs.get("torrent_hashes") is not None:
+                raise TypeError("ordinary tracker snapshots must be unfiltered")
+            snapshot = self._client.torrent_snapshot
+            if isinstance(snapshot, BaseException):
+                raise snapshot
+            wire_payload = self._client._ordinary_torrent_wire_payload
+            if wire_payload is None:
                 return snapshot
-            payload = effective_torrent_info_payload(
-                self._client.torrent_info_by_hash[torrent.hash],
-                torrent,
-            )
-            if include_trackers and self._client.embedded_trackers_mode != "omitted":
-                payload["trackers"] = (
-                    {"malformed": True}
-                    if self._client.embedded_trackers_mode == "malformed" and index == 0
-                    else self._client.trackers_by_hash[torrent.hash]
-                )
-            response.append(payload)
-        wire_payload = _encode_wire_payload(response)
-        self._client.prepare_exact_tracker_wire_payloads()
+            self._client.mark_ordinary_snapshot_served()
         self._client.begin_info_materialization()
         decoded = _receive_and_decode_wire_payload(wire_payload)
         if not isinstance(decoded, list):
@@ -378,14 +369,23 @@ class FakeTrackerClient:
             torrent_hash: list(trackers) if isinstance(trackers, Sequence) else trackers
             for torrent_hash, trackers in trackers_by_hash.items()
         }
-        self._exact_tracker_wire_by_hash: dict[str, bytes] = {}
-        self._default_exact_tracker_wire = _encode_wire_payload(_PSEUDO_TRACKERS)
-        self._measurement_in_progress = False
-        self.prepare_exact_tracker_wire_payloads()
         self.torrent_info_by_hash = {
             torrent.hash: torrent_info_payload(torrent, index) for index, torrent in enumerate(self.initial_torrents)
         }
+        self._exact_tracker_wire_by_hash: dict[str, bytes] = {}
+        self._default_exact_tracker_wire = _encode_wire_payload(_PSEUDO_TRACKERS)
+        self._ordinary_torrent_wire_payload: bytes | None = None
+        self._bulk_tracker_wire_by_hashes: dict[tuple[str, ...], bytes] = {}
+        self._expected_bulk_hash_batches = tuple(
+            tuple(torrent.hash for torrent in self.initial_torrents[offset : offset + TRACKER_BULK_BATCH_SIZE])
+            for offset in range(0, len(self.initial_torrents), TRACKER_BULK_BATCH_SIZE)
+        )
+        self._observed_bulk_hash_batches: list[tuple[str, ...]] = []
+        self._ordinary_snapshot_served = False
+        self._measurement_in_progress = False
         self.embedded_trackers_mode: EmbeddedTrackersMode = embedded_trackers_mode
+        self.prepare_exact_tracker_wire_payloads()
+        self.prepare_torrent_wire_payloads()
         self.read_counts: Counter[str] = Counter({endpoint: 0 for endpoint in TRACKER_READ_ENDPOINTS})
         self.mutation_counts: Counter[str] = Counter({endpoint: 0 for endpoint in MUTATING_ENDPOINTS})
         self.execution_action_records: list[TrackerActionRecord] = []
@@ -440,17 +440,112 @@ class FakeTrackerClient:
         """Reset every tracker read endpoint to an explicit zero."""
         self.read_counts.clear()
         self.read_counts.update({endpoint: 0 for endpoint in TRACKER_READ_ENDPOINTS})
+        self._observed_bulk_hash_batches.clear()
+        self._ordinary_snapshot_served = False
+
+    def mark_ordinary_snapshot_served(self) -> None:
+        """Record the required unfiltered snapshot before tracker batches."""
+        self._ordinary_snapshot_served = True
+
+    @staticmethod
+    def _requested_hash_tuple(value: object) -> tuple[str, ...]:
+        """Normalize the public qbittorrent-api ``torrent_hashes`` argument."""
+        if isinstance(value, str):
+            requested = tuple(value.split("|"))
+        elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            requested = tuple(value)
+        else:
+            raise TypeError("bulk tracker requests require one canonical torrent_hashes batch")
+        if not requested or any(not isinstance(item, str) or not item for item in requested):
+            raise TypeError("bulk tracker requests require non-empty hash strings")
+        return cast(tuple[str, ...], requested)
+
+    def accept_bulk_tracker_request(self, value: object) -> tuple[str, ...]:
+        """Validate and record the next exact ordered tracker batch."""
+        if not self._ordinary_snapshot_served:
+            raise ValueError("bulk tracker batches require the ordinary snapshot first")
+        requested = self._requested_hash_tuple(value)
+        if len(set(requested)) != len(requested):
+            raise ValueError("bulk tracker batch contains duplicate hashes")
+        known_hashes = {torrent.hash for torrent in self.initial_torrents}
+        if any(torrent_hash not in known_hashes for torrent_hash in requested):
+            raise ValueError("bulk tracker batch contains an unknown hash")
+        next_index = len(self._observed_bulk_hash_batches)
+        if next_index >= len(self._expected_bulk_hash_batches) or requested != self._expected_bulk_hash_batches[next_index]:
+            raise ValueError("bulk tracker request does not match the next canonical hash batch")
+        self._observed_bulk_hash_batches.append(requested)
+        return requested
+
+    def validate_bulk_tracker_requests(self) -> None:
+        """Require an attempted bulk transport to cover the snapshot exactly once."""
+        observed = tuple(self._observed_bulk_hash_batches)
+        expected = (
+            self._expected_bulk_hash_batches[:1]
+            if self.embedded_trackers_mode == "rejected"
+            else self._expected_bulk_hash_batches
+        )
+        if observed and observed != expected:
+            raise ValueError("bulk tracker requests did not complete the canonical hash batches")
+
+    def _ordinary_wire_payload(self, snapshot: object) -> bytes | None:
+        """Encode one valid ordinary fake-server response, if representable."""
+        if not isinstance(snapshot, Sequence) or isinstance(snapshot, (str, bytes, bytearray)):
+            return None
+        response: list[dict[str, object]] = []
+        for torrent in snapshot:
+            if not isinstance(torrent, TrackerTorrent):
+                return None
+            response.append(effective_torrent_info_payload(self.torrent_info_by_hash[torrent.hash], torrent))
+        return _encode_wire_payload(response)
+
+    def _bulk_wire_payloads(
+        self,
+        trackers_by_hash: Mapping[str, object],
+        mode: EmbeddedTrackersMode,
+    ) -> dict[tuple[str, ...], bytes]:
+        """Pre-encode every canonical filtered fake-server response."""
+        prepared: dict[tuple[str, ...], bytes] = {}
+        torrent_by_hash = {torrent.hash: torrent for torrent in self.initial_torrents}
+        for batch_index, requested_hashes in enumerate(self._expected_bulk_hash_batches):
+            response: list[dict[str, object]] = []
+            for item_index, torrent_hash in enumerate(requested_hashes):
+                torrent = torrent_by_hash[torrent_hash]
+                payload = effective_torrent_info_payload(self.torrent_info_by_hash[torrent_hash], torrent)
+                if mode != "omitted":
+                    payload["trackers"] = (
+                        {"malformed": True}
+                        if mode == "malformed" and batch_index == 0 and item_index == 0
+                        else trackers_by_hash[torrent_hash]
+                    )
+                response.append(payload)
+            prepared[requested_hashes] = _encode_wire_payload(response)
+        return prepared
+
+    def prepare_torrent_wire_payloads(self) -> None:
+        """Refresh ordinary and filtered response bytes before measurement."""
+        if self._measurement_in_progress:
+            raise RuntimeError("torrent wire payloads cannot be prepared during measurement")
+        ordinary = self._ordinary_wire_payload(self.torrent_snapshot)
+        bulk = self._bulk_wire_payloads(self.trackers_by_hash, self.embedded_trackers_mode)
+        self._ordinary_torrent_wire_payload = ordinary
+        self._bulk_tracker_wire_by_hashes = bulk
 
     def set_torrent_snapshot(self, snapshot: object) -> None:
         """Replace the current torrent snapshot for churn scenarios."""
+        if self._measurement_in_progress:
+            raise RuntimeError("torrent wire payload cannot be prepared during measurement")
+        ordinary = self._ordinary_wire_payload(snapshot)
         self.torrent_snapshot = snapshot
+        self._ordinary_torrent_wire_payload = ordinary
 
     def set_exact_trackers(self, torrent_hash: str, value: object) -> None:
         """Replace one exact tracker response for failure and churn scenarios."""
         if self._measurement_in_progress:
             raise RuntimeError("exact tracker wire payload cannot be prepared during measurement")
         wire_payload = self._encode_exact_tracker_wire_payload(value)
-        self.trackers_by_hash[torrent_hash] = value
+        prospective_trackers = dict(self.trackers_by_hash)
+        prospective_trackers[torrent_hash] = value
+        self.trackers_by_hash = prospective_trackers
         if wire_payload is None:
             self._exact_tracker_wire_by_hash.pop(torrent_hash, None)
         else:
@@ -458,7 +553,11 @@ class FakeTrackerClient:
 
     def set_embedded_trackers_mode(self, mode: EmbeddedTrackersMode) -> None:
         """Replace the optional embedded transport behavior."""
+        if self._measurement_in_progress:
+            raise RuntimeError("torrent wire payloads cannot be prepared during measurement")
+        bulk_payloads = self._bulk_wire_payloads(self.trackers_by_hash, mode)
         self.embedded_trackers_mode = mode
+        self._bulk_tracker_wire_by_hashes = bulk_payloads
 
     def torrents_info(self, **kwargs: Any) -> list[Any]:
         """Expose the direct API shape required by the project protocol."""
@@ -796,6 +895,7 @@ __all__ = [
     "FakeTracker",
     "FakeTrackersList",
     "TRACKER_FULL_PROFILE",
+    "TRACKER_BULK_BATCH_SIZE",
     "TRACKER_PROFILES",
     "TRACKER_QUICK_PROFILE",
     "TrackerGauntletFixture",

@@ -345,9 +345,9 @@ deviation, and separately traced peak memory. Tracker scenario results also
 retain exact endpoint counters, CLI exit code, terminal phase, observation
 order, and zero mutation/isolation counters. Candidate identity covers the
 commit plus staged, unstaged, and untracked content without including raw paths
-or diffs in the result. Tracker artifacts require schema 9 / evaluator 1.13.0;
-evaluator 1.12.0 counted fake server response construction inside client
-measurement, so its artifacts are also non-comparable. The evaluator derives
+or diffs in the result. Tracker artifacts require schema 9 / evaluator 1.14.0;
+evaluator 1.13.0 and earlier artifacts model a different transport or
+measurement boundary and are non-comparable. The evaluator derives
 one role from primary endpoint evidence and requires every primary pass plus all
 twelve scenarios to match that same canonical control or candidate role before
 paired comparison checks the assigned revision role.
@@ -382,10 +382,11 @@ decision is a paired `tracker-full` run with clean control and candidate
 worktrees, using the isolated launcher command in the
 [gauntlet evaluator guide](benchmarks/gauntlet/README.md#tracker-metadata-evaluation).
 The control uses one ordinary torrent snapshot plus `N` exact tracker requests;
-the target replaces that snapshot with one bulk response and makes no exact
-tracker requests in every paired pass while preserving all deterministic
-actions and fail-closed scenarios. The paired gate requires `(1, 0, N)` for
-every control pass and `(0, 1, 0)` for every candidate pass in
+the target retains that snapshot, requests complete embedded metadata in
+ordered batches of at most 100 hashes, and makes no exact tracker requests in
+every paired pass while preserving all deterministic actions and fail-closed
+scenarios. The paired gate requires `(1, 0, N)` for every control pass and
+`(1, ceil(N / 100), 0)` for every candidate pass in
 ordinary/bulk/exact order. Synthetic runtime is a
 regression guard at the control ratio, not evidence of live network speedup.
 
@@ -399,9 +400,12 @@ only in the reviewed `benchmarks/gauntlet/quality-bar.toml`; a performance
 change must preserve the locked action digest and zero-mutation result before
 its speed is considered.
 
-Tracker evidence is comparable only when it uses result schema 9 and evaluator
-version 1.13.0. Evaluator 1.12.0 and round-7 and earlier quick/full artifacts
-are invalid; regenerate evidence from the exact clean evaluator revision.
+Tracker evidence is comparable only when it uses result schema 9, evaluator
+version 1.14.0, and pairing identity 2.10.0. Evaluator 1.13.0 and earlier
+quick/full artifacts are invalid; regenerate evidence from the exact clean
+evaluator revision. Result schema 9, quality schema 7, paired schema 6,
+ABBA/BAAB ordering, and the existing runtime and memory thresholds are
+unchanged.
 
 The paired child trust boundary keeps all installed dependency roots off child
 `sys.path`; real `tqdm` executes only from captured manifest-matching bytes;

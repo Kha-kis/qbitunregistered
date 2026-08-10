@@ -2,9 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace ordinary torrent acquisition plus one exact tracker request per torrent with one operation-aware bulk tracker snapshot while preserving compatibility and fail-closed behavior.
+**Goal:** Retain one ordinary authoritative torrent snapshot and replace one
+exact tracker request per torrent with ordered tracker batches of at most 100
+hashes while preserving compatibility and fail-closed behavior.
 
-**Architecture:** `cli.py` selects the initial torrent-list transport from the requested operations. A tracker-focused cache API in `seeding_management.py` validates and preloads embedded mapping data into the same execution-local, client-scoped cache used by exact fallback, so existing preview and execution consumers remain transport-agnostic.
+**Architecture:** `cli.py` always acquires the ordinary initial snapshot.
+`seeding_management.py` validates its identities, requests filtered
+`include_trackers` responses in canonical 100-hash batches, validates every
+response against the snapshot, and atomically preloads the same execution-local,
+client-scoped cache used by exact fallback.
 
 **Tech Stack:** Python 3.11+, `qbittorrent-api`, pytest, `unittest.mock`, BasedPyright CLI and language server, mypy, Black, Flake8, repository tracker gauntlet.
 
@@ -19,9 +25,32 @@
 - Dry-run must not mutate qBittorrent or the filesystem. Uncertain tracker identity or metadata must fail closed.
 - Embedded trackers must be read through the mapping interface; never access a torrent's `.trackers` attribute while preloading.
 - Cache entries remain in-memory, execution-scoped, and scoped by `id(client)`.
-- A rejected optional bulk request and an omitted `trackers` key may use exact compatibility fallback. A present malformed `trackers` value must not use exact fallback.
+- Rejection or total omission on the first optional batch may use exact
+  compatibility fallback. Once support is established, incomplete, rejected,
+  reordered, or identity-mismatched batches fail closed. A present malformed
+  `trackers` value must not use exact fallback.
 - Keep fresh disappearance and pre-mutation safety snapshots intact; do not cache them away.
 - Do not access a live qBittorrent instance or media filesystem during implementation or verification.
+
+---
+
+## Bounded-batch amendment
+
+The detailed task transcript below records the earlier one-shot implementation
+sequence and is retained as development history; its one-shot request examples
+are superseded by this amendment and the linked design. The final acceptance
+contract is one ordinary snapshot followed by exact ordered unique hash batches
+of at most 100. Quick/full candidates must report `(1, 13, 0)` and
+`(1, 130, 0)` in ordinary/bulk/exact order; controls remain `(1, 0, N)`.
+Evaluator identity is 1.14.0 and pairing identity is 2.10.0, while result
+schema 9, quality schema 7, paired schema 6, ABBA/BAAB ordering, and thresholds
+remain unchanged. Evaluator 1.13.0 and earlier artifacts are invalid.
+
+The final fake-server contract constructs ordinary and per-batch response
+models and wire bytes before measurement, then includes fresh wire receipt,
+JSON decoding, wrapper construction, and all response lifetimes inside the
+client boundary. It validates batch order, uniqueness, exact coverage, and
+completion. No step may publish a partial tracker cache.
 
 ---
 

@@ -5,9 +5,11 @@
 Tracker-dependent runs currently acquire one ordinary torrent snapshot and then
 call qBittorrent's exact tracker endpoint once for every torrent. The merged
 tracker gauntlet establishes the safe replacement: qBittorrent Web API 2.15.1
-can embed tracker metadata in the initial torrent snapshot through
-`include_trackers=True`, reducing the normal request shape from one ordinary
-snapshot plus `N` exact reads to one bulk snapshot.
+can embed tracker metadata in a filtered torrent response through
+`include_trackers=True`. The bounded design retains the ordinary authoritative
+snapshot and requests embedded metadata for consecutive groups of at most 100
+hashes, reducing the normal request shape from `N` exact reads to
+`ceil(N / 100)` filtered reads without materializing one second full snapshot.
 
 This optimization is safety-sensitive. Tracker metadata participates in
 unregistered detection, impact previews, tracker tagging, seeding limits, and
@@ -16,7 +18,7 @@ behavior and keep preview and execution bound to the same accepted snapshot.
 
 ## Goals
 
-- Use one bulk tracker snapshot for runs selecting `unregistered`,
+- Use bounded tracker batches for runs selecting `unregistered`,
   `tag_by_tracker`, or `seeding_management`.
 - Reuse validated embedded metadata through the existing execution-scoped,
   client-scoped tracker cache across preview and execution.
@@ -29,14 +31,15 @@ behavior and keep preview and execution bound to the same accepted snapshot.
 
 ## Chosen approach
 
-The CLI determines selected operations before acquiring its authoritative
-torrent snapshot. If any selected operation depends on trackers, it requests
-`client.torrents.info(include_trackers=True)` once. Otherwise it retains the
-existing ordinary `client.torrents.info()` request, avoiding a larger response
-for unrelated operations.
+The CLI always acquires its authoritative torrent snapshot with ordinary
+`client.torrents.info()`. If any selected operation depends on trackers, it
+validates the snapshot's stable ordered unique hashes and requests
+`client.torrents.info(torrent_hashes=batch_hashes, include_trackers=True)` for
+each consecutive group of at most 100. Other runs stop after the ordinary
+snapshot.
 
-After a successful bulk response, a focused tracker-metadata helper validates
-and preloads the existing tracker cache. Cache entries use the same client
+After every batch succeeds, a focused tracker-metadata helper atomically
+preloads the existing tracker cache. Cache entries use the same client
 identity and torrent-hash key as `fetch_torrent_trackers`, so all current
 consumers receive the embedded data without learning about the transport.
 There is no persistent cache, database, new dependency, configuration field,
@@ -57,34 +60,39 @@ endpoint, which would recreate the `N`-request bottleneck.
    persistent invalidation would be difficult to prove safe, and the bulk API
    already removes the network bottleneck without durable state.
 
-The operation-aware single snapshot is therefore the smallest design that
-improves performance without weakening the current execution boundary.
+The ordinary snapshot plus bounded filtered batches is therefore the smallest
+design that materially reduces requests and peak memory without weakening the
+current execution boundary. A 100-hash batch is about 6.5 KB of pipe-delimited
+64-character qBittorrent hashes before the request envelope.
 
 ## Acquisition and cache contract
 
-The bulk response remains the sole authoritative initial torrent list. Before
-preloading any entries, the helper validates every torrent hash as a non-empty
-string and rejects duplicate hashes. This prevents malformed identity data from
-being attached to the wrong cache entry.
+The ordinary response remains the sole authoritative initial torrent list.
+Before requesting or preloading entries, the helper validates every torrent
+hash as a non-empty string and rejects duplicate hashes. Each batch response
+must contain exactly its requested hashes once, in a shape whose identity fields
+still match the authoritative snapshot. This prevents malformed or reordered
+data from being attached to the wrong cache entry.
 
 For each torrent:
 
 - If the mapping contains a `trackers` key with a non-string sequence value,
   the helper copies that sequence into the execution-scoped cache.
-- If the key is absent, the helper leaves that torrent uncached. Its first
-  consumer uses the existing exact endpoint, preserving compatibility with a
-  server that accepted the query but omitted optional metadata.
+- If every entry in the first batch omits the key, the optional transport is
+  treated as unsupported and no bulk cache is published. Consumers use the
+  existing exact endpoint.
+- A partially omitted batch, or any omission after support is established,
+  fails closed rather than publishing a partial cache.
 - If the key is present but its value is `None`, a string, bytes, or any other
   non-sequence value, the helper stores a failure marker or equivalent rejected
   state. A consumer must fail closed without attempting an exact fallback.
   Successful-but-malformed bulk data is not evidence that the optional feature
   is unsupported.
 
-If the bulk request itself raises, the CLI retries once with the ordinary
-snapshot and leaves tracker entries uncached. Existing exact reads then provide
-the compatibility path. If that ordinary acquisition also fails, the CLI keeps
-the existing connection-error exit behavior. Control-flow exceptions remain
-unswallowed.
+If the first batch request itself raises, the already-acquired ordinary
+snapshot is retained and tracker entries remain uncached. Existing exact reads
+then provide the compatibility path. A later request failure after support is
+established fails closed. Control-flow exceptions remain unswallowed.
 
 The cache is still cleared at execution start and end and is still scoped by
 `id(client)`. Preloaded data therefore cannot cross client instances or CLI
@@ -115,6 +123,8 @@ Python versions remain unchanged.
   qBittorrent or filesystem mutation.
 - Impact preview and execution reuse the same authoritative torrent objects and
   accepted execution-scoped tracker data.
+- Cache publication is atomic: no batch can become permission to act until the
+  entire snapshot has complete, validated tracker metadata.
 - A missing or malformed exact response for an active torrent still fails
   closed.
 - When an exact fallback fails, the existing fresh ordinary snapshot remains a
@@ -128,8 +138,8 @@ Python versions remain unchanged.
 
 ## Implementation boundaries
 
-- `qbitunregistered/cli.py` owns operation-aware initial acquisition and bulk
-  request fallback.
+- `qbitunregistered/cli.py` owns ordinary initial acquisition and invokes
+  operation-aware bounded tracker priming.
 - `qbitunregistered/operations/seeding_management.py` owns validation and
   preloading for the shared tracker cache alongside
   `fetch_torrent_trackers`.
@@ -145,10 +155,13 @@ Python versions remain unchanged.
 Implementation follows test-driven development through the required
 PythonPro agent. Regression coverage must establish:
 
-- tracker operations request exactly one bulk snapshot when supported;
+- tracker operations retain exactly one ordinary snapshot and request exactly
+  `ceil(N / 100)` canonical tracker batches when supported;
 - non-tracker operations retain exactly one ordinary snapshot;
-- a rejected bulk request retries ordinary acquisition and uses exact reads;
-- an omitted per-torrent field falls back only for that torrent;
+- first-batch rejection or total omission uses exact reads without reacquiring
+  the ordinary snapshot;
+- later rejection, omission, partial coverage, reordering, or identity drift
+  fails closed without publishing a partial cache;
 - present malformed embedded data fails during preview with no exact fallback,
   execution, or mutation;
 - exact failure, disappearance, re-addition, malformed refresh, deletion
@@ -165,7 +178,8 @@ The merged paired gauntlet is the performance and safety acceptance gate:
 - run both `tracker-quick` and `tracker-full` in the prescribed ABBA and BAAB
   ordering;
 - require control transport `(ordinary=1, bulk=0, exact=N)` and candidate
-  transport `(ordinary=0, bulk=1, exact=0)` for complete embedded metadata;
+  transport `(ordinary=1, bulk=ceil(N/100), exact=0)` for complete embedded
+  metadata: `(1,13,0)` quick and `(1,130,0)` full;
 - retain the gauntlet's compatibility and malformed-data scenario endpoint
   contracts;
 - require candidate CPU ratio no greater than `1.0` and peak-memory ratio no

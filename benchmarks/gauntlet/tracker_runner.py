@@ -864,6 +864,7 @@ def _validate_pass(
     production_audit: _ProductionBoundaryAudit,
 ) -> _TrackerPassEvidence:
     _validate_unchanged_state(fixture, initial_filesystem_digest, production_audit)
+    fixture.client.validate_bulk_tracker_requests()
     endpoint_counters = dict(fixture.client.read_counts)
     validate_tracker_endpoint_counts(endpoint_counters, fixture.profile)
     candidate_counts = _candidate_counts(pipeline.summary)
@@ -1262,6 +1263,7 @@ def evaluate_tracker_scenarios(  # noqa: C901
         action_digest: str | None = None,
     ) -> None:
         _validate_scenario_unchanged(fixture, before)
+        fixture.client.validate_bulk_tracker_requests()
         counters = _scenario_endpoint_counters(fixture)
         terminal_phase = _scenario_terminal_phase(result)
         shape = tuple(counters[endpoint] for endpoint in TRACKER_READ_ENDPOINTS)

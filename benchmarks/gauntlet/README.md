@@ -61,10 +61,13 @@ uv run python -I -S -B benchmarks/gauntlet/launcher.py \
 
 The current control transport performs one ordinary torrent-list read, no bulk
 `includeTrackers` read, and exactly one `/torrents/trackers` read for each of
-`N` torrents. A supported optimization replaces that ordinary response with
-one `includeTrackers` response and performs no exact tracker reads. The only
-accepted triples, in ordinary/bulk/exact order, are therefore `(1, 0, N)` for
-control and `(0, 1, 0)` for candidate. Every warm-up, timed, and memory pass
+`N` torrents. A supported optimization retains the ordinary response and then
+requests `includeTrackers` for each consecutive group of at most 100 validated
+snapshot hashes, performing no exact tracker reads. A qBittorrent hash is 64
+characters, so a full 100-hash pipe-delimited request is about 6.5 KB before
+the request envelope. The accepted triples, in ordinary/bulk/exact order, are
+`(1, 0, N)` for control and `(1, ceil(N / 100), 0)` for candidate: `(1, 13, 0)`
+for quick and `(1, 130, 0)` for full. Every warm-up, timed, and memory pass
 must have its role's exact triple; aggregate-only, partial, mixed, redundant,
 or synthesized evidence fails. Synthetic runtime is a
 CPU/regression guard capped at the paired control runtime, and peak memory is
@@ -103,15 +106,18 @@ evidence.
 - Runtime statistics retain all five untraced samples. Peak memory comes from a
   separate traced, untimed pass. Each primary pass uses a fresh fixture. Its
   measured interval starts immediately before the fake materializes the
-  production-selected initial torrent response and ends immediately after the
-  real `unregistered_checks()` call returns. Fixture construction, sanitized
+  ordinary torrent response, includes receipt, decode, and wrapper construction
+  for every filtered tracker batch, and ends immediately after the real
+  `unregistered_checks()` call returns. Fake server response models and
+  canonical wire encoding occur before measurement. Fixture construction, sanitized
   CLI-config creation, manifest verification, and semantic safety scenarios
   remain outside that interval.
 - The twelve normalized scenario results traverse the real CLI and lock
   compatibility and fail-closed behavior with endpoint, exit-code, terminal
   phase, observation-order, mutation, and isolation evidence. Scenario hooks
-  inject churn only after initial acquisition or after preview. Legacy omission
-  or rejection of embedded trackers may use the exact fallback; malformed
+  inject churn only after initial acquisition or after preview. Rejection or
+  total omission in the first tracker batch may use the exact fallback; once
+  support is established, incomplete later batches fail closed. Malformed
   metadata, uncertain refreshes, hash re-addition, or preflight churn must not
   authorize mutation.
 
@@ -338,13 +344,15 @@ it is retained. Arbitrary child fields cannot flow into the paired artifact.
 A self-comparison should use two isolated clean worktrees at revisions with
 identical production code. It is a stability check: ratios should be near
 `1.0`; it cannot satisfy the tracker transport gate because candidate passes
-must use one bulk request while control passes must use exact requests.
+must use all canonical 100-hash batches while control passes must use exact
+requests.
 
 Tracker artifacts before evaluator 1.12.0 predate artifact-wide role
 enforcement. Evaluator 1.12.0 adds that protection but counts fake server
-response construction inside the client measurement. Neither is comparable or
-valid control evidence; regenerate quick and full artifacts with schema version
-9 and evaluator version 1.13.0. One role is
+response construction inside the client measurement, and evaluator 1.13.0
+models the retired one-shot candidate. None is comparable or valid control
+evidence; regenerate quick and full artifacts with schema version 9, evaluator
+version 1.14.0, and pairing identity 2.10.0. One role is
 derived from the aggregate primary endpoint triple, every primary pass must
 retain it, and all twelve scenarios must match that same role's canonical
 contracts.
@@ -368,7 +376,8 @@ rebases onto this evaluator and reports zero `torrents_files` calls.
 The source-faithful fake is a conservative model of visible containers,
 normalization, freshness, and endpoint delegation in `qbittorrent-api`
 2026.8.0. Before timing or tracing begins, it constructs the fake server
-response models and canonical wire bytes for both bulk and exact transports.
+response models and canonical wire bytes for the ordinary response, every
+100-hash tracker batch, and exact fallback responses.
 The measured client boundary then allocates a fresh received bytes buffer,
 JSON-decodes it, and constructs the response wrappers. This keeps control and
 candidate measurement symmetric without charging either one for fake server

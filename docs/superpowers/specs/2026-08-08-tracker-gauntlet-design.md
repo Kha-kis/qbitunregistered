@@ -81,12 +81,12 @@ Each pass emits and validates:
   `torrents_trackers` request counts.
 
 The supported-response profile accepts the current control transport
-`(include_trackers=0, exact=N)` and a future bulk transport
-`(include_trackers=1, exact=0)`. It rejects more than one bulk request,
-more than `N` exact requests, and redundant bulk plus `N` exact requests. The
-paired optimization target is structurally one combined tracker-metadata
-request in every candidate pass while every control pass performs exactly `N`
-exact reads. Synthetic runtime is a regression guard with a maximum candidate
+`(ordinary=1, include_trackers=0, exact=N)` and the bounded candidate transport
+`(ordinary=1, include_trackers=ceil(N/100), exact=0)`. It rejects incomplete,
+reordered, duplicate, unknown, redundant, or noncanonical batch requests. The
+paired optimization target is structurally one complete ordered batch sequence
+in every candidate pass while every control pass performs exactly `N` exact
+reads. Synthetic runtime is a regression guard with a maximum candidate
 ratio of `1.0`; peak memory remains at most 125%, relative MAD at most 0.15,
 and relative range at most 0.50. No artificial latency or network service is
 introduced to manufacture a wall-clock improvement.
@@ -536,3 +536,37 @@ No emitted result or quality-bar shape changes. Quality-bar/result/paired
 schemas remain 7/9/6 and every threshold, workload, contract, and digest stays
 frozen. Evaluator identity advances to 1.11.0 because prior artifacts did not
 enforce the descriptor precondition; pairing logic remains 2.7.0.
+
+## Establish correction: bounded tracker batches
+
+The shipped candidate no longer replaces the authoritative torrent list with
+one unfiltered `includeTrackers` response. It keeps the ordinary list and sends
+its stable ordered unique hashes in consecutive batches of at most 100 through
+`torrent_hashes` plus `include_trackers=True`. Candidate primary transports are
+therefore `(1, 13, 0)` for 1,300 torrents and `(1, 130, 0)` for 13,000 torrents;
+control remains `(1, 0, N)`.
+
+The fake accepts only the next exact canonical batch. It rejects empty,
+duplicate, unknown, reordered, short, repeated, or extra hash sequences and
+requires complete coverage after a supported acquisition. Rejection or total
+tracker-field omission on the first batch may use the exact compatibility
+path. Once support is established, any later rejection, omission, partial
+coverage, identity drift, or inconsistent field presence fails closed. A
+present malformed tracker field retains the established preview-fail-closed
+scenario phase and never authorizes exact fallback.
+
+Each fresh pass constructs the ordinary response model, every canonical batch
+response model, and their wire encoding before measurement. The boundary then
+includes fresh bytes receipt, JSON decoding, wrapper construction, and the
+ordinary plus all batch response lifetimes. With 64-character hashes, a full
+100-hash pipe-delimited request is about 6.5 KB before its request envelope.
+The selected size reduced the full synthetic probe peak from 14,911,762 bytes
+for control to 13,374,834 bytes (0.897x) while keeping the median below control;
+larger probed batches consumed more peak memory.
+
+Evaluator identity advances from 1.13.0 to 1.14.0 and pairing identity from
+2.9.0 to 2.10.0. Evaluator 1.13.0 and earlier tracker artifacts are invalid and
+non-comparable. Result schema 9, quality schema 7, paired schema 6, ABBA/BAAB
+ordering, workload/digest contracts, CPU ceiling 1.0, memory ceiling 1.25, and
+all other thresholds remain unchanged. This final correction supersedes the
+one-shot candidate triples in earlier establishment rounds of this document.

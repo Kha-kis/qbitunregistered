@@ -49,7 +49,7 @@ from qbitunregistered.operations.orphaned import (
 
 SCHEMA_NAME = "qbitunregistered.gauntlet.result"
 SCHEMA_VERSION = 9
-EVALUATOR_VERSION = "1.13.0"
+EVALUATOR_VERSION = "1.14.0"
 DEFAULT_SEED = 20_260_729
 DEFAULT_SAMPLES = 5
 _RESULT_STAGING_PREFIX = ".qbit-gauntlet-"
@@ -459,7 +459,8 @@ def _measurement_policy() -> MeasurementPolicy:
         "memory_pass_timed": False,
         "application_cache": "cleared before every pass",
         "fixture_metadata": (
-            "orphan metadata is reused; each tracker pass owns a fresh fixture and measures initial snapshot acquisition"
+            "orphan metadata is reused; each tracker pass owns a fresh fixture and measures ordinary snapshot plus "
+            "tracker-batch acquisition"
         ),
         "os_page_cache": "not flushed; timed and memory passes are warm",
         "sample_rejection": "none; all five timed samples are retained",
